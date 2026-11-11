@@ -39,9 +39,9 @@ bot.start((ctx) => {
   userLang[userId] = userLang[userId] || 'ar';
 
   ctx.reply(
-    `أهلاً بك يا <b>${userName}</b> في <b>منصة عقار الجزائر الذكية (Aqar)</b> 🏠✨\n\n` +
-    `النظام المستقل والأول من نوعه لإدارة المعاملات والعروض العقارية بسرعة فائقة ومعالجة آمنة للبيانات.\n\n` +
-    `استخدم الأزرار المثبتة أسفل الشاشة للتنقل في أي وقت:`,
+    `أهلاً بك يا <b>${userName}</b> في <b>منصة عقار الجزائر (Aqar)</b> 🏠✨\n\n` +
+    `نظام ذكي متطور لإدارة وعروض العقارات بخوارزميات سحابية عالية الأداء.\n\n` +
+    `استخدم الأزرار المثبتة أسفل الشاشة للتنقل بكل مرونة:`,
     {
       parse_mode: 'HTML',
       ...getMainMenuKeyboard(userLang[userId])
@@ -51,25 +51,47 @@ bot.start((ctx) => {
 
 bot.hears(['🔍 تصفح العقارات المتاحة', '🔍 Parcourir les biens'], async (ctx) => {
   const userId = ctx.from.id;
-  delete userState[userId];
+  userState[userId] = { step: 'filtering_state' };
+
+  await ctx.reply(
+    `🔍 <b>نظام التصفية الذكي للعقارات:</b>\n\n` +
+    `اختر الولاية المستهدفة لعرض العقارات المتاحة بدقة، أو اختر "الكل" لعرض أحدث العروض:`,
+    {
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback('الجزائر العاصمة 📍', 'filter_state_الجزائر العاصمة'), Markup.button.callback('وهران 📍', 'filter_state_وهران')],
+        [Markup.button.callback('مستغانم 📍', 'filter_state_مستغانم'), Markup.button.callback('قسنطينة 📍', 'filter_state_قسنطينة')],
+        [Markup.button.callback('عنابة 📍', 'filter_state_عنابة'), Markup.button.callback('بليدة 📍', 'filter_state_البليدة')],
+        [Markup.button.callback('🌐 عرض كافة الولايات (الكل)', 'filter_state_ALL')]
+      ])
+    }
+  );
+});
+
+bot.action(/filter_state_(.+)/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const stateQuery = ctx.match[1];
+  const userId = ctx.from.id;
 
   try {
-    const { data, error } = await supabase
-      .from('test_messages')
-      .select('*')
-      .order('id', { ascending: false })
-      .limit(5);
+    let query = supabase.from('test_messages').select('*').order('id', { ascending: false }).limit(10);
 
-    if (error || !data || data.length === 0) {
-      return ctx.reply('📭 عذراً، لا توجد عقارات مسجلة حالياً في النظام.');
+    if (stateQuery !== 'ALL') {
+      query = query.eq('state_name', stateQuery);
     }
 
-    await ctx.reply('🏛 <b>إليك أحدث العروض العقارية الحية في المنصة:</b>', { parse_mode: 'HTML' });
+    const { data, error } = await query;
+
+    if (error || !data || data.length === 0) {
+      return ctx.editMessageText('📭 عذراً، لا توجد عقارات مسجلة حالياً تطابق هذا البحث في النظام.');
+    }
+
+    await ctx.editMessageText(`🏛 <b>نتائج البحث المصفاة (الولاية: ${stateQuery === 'ALL' ? 'الكل' : stateQuery}):</b>`, { parse_mode: 'HTML' });
 
     for (const item of data) {
       const caption = 
-        `🏠 <b>نوع العقار:</b> ${item.property_type || 'عقار'}\n` +
-        `📍 <b>الولاية:</b> ${item.state_name || 'الجزائر'}\n` +
+        `🏠 <b>العقار:</b> ${item.property_type || 'عقار'}\n` +
+        `📍 <b>الولاية:</b> ${item.state_name || 'غير محدد'}\n` +
         `💰 <b>السعر:</b> ${item.price || 'حسب الاتفاق'}\n` +
         `📞 <b>الهاتف:</b> <code>${item.phone || 'غير مسجل'}</code>\n` +
         `📝 <b>الوصف:</b> ${item.description || item.message || 'بدون تفاصيل'}`;
@@ -107,9 +129,10 @@ bot.hears(['🔍 تصفح العقارات المتاحة', '🔍 Parcourir les 
         });
       }
     }
+    delete userState[userId];
   } catch (err) {
     console.error(err);
-    await ctx.reply('⚠️ حدث خطأ أثناء جلب العروض، يرجى إعادة المحاولة.');
+    await ctx.reply('⚠️ حدث خطأ أثناء تصفية العروض، يرجى إعادة المحاولة.');
   }
 });
 
@@ -217,9 +240,9 @@ bot.action('set_lang_fr', async (ctx) => {
 
 bot.hears(['📞 الدعم والإدارة', '📞 Support & Contact'], async (ctx) => {
   await ctx.reply(
-    `📞 <b>مركز التواصل والدعم الفني:</b>\n\n` +
-    `فريق تطوير منصة عقار الجزائر في خدمتك لتقديم الاستفسارات أو الدعم المباشر.\n` +
-    `تواصل معنا مباشرة عبر المعرفات الرسمية للاستفسارات الفنية.`,
+    `📞 <b>مركز الدعم التقني - شركة تكنولوشن:</b>\n\n` +
+    `المنصة مصممة ومطورة خصيصاً من طرف الخبير التكنولوجي <b>السيد هشام حسني</b> (تكنولوشن).\n` +
+    `نحن في خدمتك دائماً لأي استفسار تقني أو إداري.`,
     { parse_mode: 'HTML' }
   );
 });
@@ -227,7 +250,7 @@ bot.hears(['📞 الدعم والإدارة', '📞 Support & Contact'], async 
 bot.hears(['ℹ️ عن المنصة', 'ℹ️ À propos'], async (ctx) => {
   await ctx.reply(
     `🏛 <b>عن منصة عقار الجزائر (Aqar System):</b>\n\n` +
-    `نظام رقمي ذكي مطور بأحدث المعايير البرمجية لتسهيل وتنظيم المعاملات العقارية وإدارة العروض بسرعة فائقة وتخزين سحابي آمن.`,
+    `نظام رقمي ذكي ومتطور لإدارة المعاملات والعروض العقارية، مطور بأعلى معايير الهندسة البرمجية والذكاء السحابي بواسطة الخبير <b>هشام حسني</b> (شركة تكنولوشن).`,
     { parse_mode: 'HTML' }
   );
 });
