@@ -19,13 +19,13 @@ const app = express();
 
 app.use(express.json());
 
-// ذاكرة مؤقتة لتتبع حالة المستخدم (لمعرفة هل هو في مرحلة إضافة عقار أم لا)
+// ذاكرة مؤقتة لتتبع حالة المستخدم لكل شات
 const userState = {};
 
 // 1. الترحيب الرئيسي
 bot.start((ctx) => {
   const userName = ctx.from.first_name || 'مستخدمنا الكريم';
-  delete userState[ctx.from.id]; // إعادة ضبط الحالة
+  delete userState[ctx.from.id]; // مسح أي حالة قديمة
   
   ctx.reply(
     `مرحباً بك يا <b>${userName}</b> في منصة <b>عقار الجزائر (Aqar)</b> 🏠✨\n\n` +
@@ -42,22 +42,22 @@ bot.start((ctx) => {
   );
 });
 
-// 2. زر بدء إضافة عقار (الخطوة 1: طلب تفاصيل العقار)
+// 2. زر بدء إضافة عقار (الخطوة 1: تفعيل الحالة)
 bot.action('add_property', async (ctx) => {
   await ctx.answerCbQuery();
   const userId = ctx.from.id;
   
-  // تسجيل حالة المستخدم أنه بدأ إضافة عقار
+  // تعيين حالة المستخدم بانتظار التفاصيل
   userState[userId] = { step: 'waiting_for_details' };
 
   await ctx.reply(
     `🏠 <b>بدء إضافة عقار جديد:</b>\n\n` +
-    `الرجاء إرسال تفاصيل العقار الآن (مثال: شقة للبيع في الجزائر العاصمة، السعر، المواصفات...):`,
+    `الرجاء إرسال تفاصيل العقار الآن (مثال: شقة F3 للبيع في مستغانم، السعر، والمواصفات...):`,
     { parse_mode: 'HTML' }
   );
 });
 
-// 3. زر تصفح العقارات (جلب البيانات من قاعدة البيانات)
+// 3. زر تصفح العقارات (جلب البيانات من جدول test_messages)
 bot.action('list_properties', async (ctx) => {
   await ctx.answerCbQuery();
   
@@ -84,36 +84,36 @@ bot.action('list_properties', async (ctx) => {
   }
 });
 
-// 4. تواصل مع الإدارة
+// 4. زر تواصل مع الإدارة
 bot.action('contact_admin', async (ctx) => {
   await ctx.answerCbQuery();
   await ctx.reply('📞 يمكنك إرسال استفسارك وسيقوم فريق الدعم بمراجعته في أقرب وقت.');
 });
 
-// 5. نظام الذكاء والتفاعل مع المدخلات (النصوص والصور) بناءً على حالة المستخدم
+// 5. استقبال النصوص ومعالجة حالة إدخال تفاصيل العقار
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const userText = ctx.message.text;
 
   if (userText.startsWith('/')) return;
 
-  // إذا كان المستخدم في مرحلة إضافة تفاصيل العقار
+  // التحقق هل المستخدم في مرحلة انتظار تفاصيل العقار
   if (userState[userId] && userState[userId].step === 'waiting_for_details') {
     userState[userId].details = userText;
-    userState[userId].step = 'waiting_for_image'; // الانتقال لمرحلة طلب الصورة
+    userState[userId].step = 'waiting_for_image'; // الانتقال لخطوة طلب الصورة
 
     return ctx.reply(
-      `✅ تم حفظ التفاصيل بنجاح!\n\n` +
-      `الآن، <b>أرسل صورة العقار</b> (قم برفعها وإرسالها كصورة في المحادثة) لربطها مباشرة بالإعلان:`,
+      `✅ تم استلام تفاصيل العقار بنجاح!\n\n` +
+      `📸 <b>الخطوة الأخيرة:</b> أرسل الآن صورة العقار (مرسلة كملف صورة Photo) ليتم رفعها وربطها بالإعلان تلقائياً.`,
       { parse_mode: 'HTML' }
     );
   }
 
-  // إذا أرسل نصاً عادياً وليس في حالة إضافة عقار
-  await ctx.reply('💡 استخدم الأزرار التفاعلية بالأسفل أو أرسل /start للرجوع للقائمة الرئيسية.');
+  // الرسائل العادية التي لا تتبع أي خطوة يتم تجاهلها أو الرد بتوجيه
+  await ctx.reply('💡 استخدم الأزرار التفاعلية بالأسفل أو اضغط /start للرجوع للقائمة الرئيسية.');
 });
 
-// 6. التعامل مع الصور المرسلة (وربطها بقاعدة البيانات و Supabase Storage)
+// 6. التعامل مع الصور المرسلة ورفعها إلى Supabase Storage وربطها بالجدول
 bot.on('photo', async (ctx) => {
   const userId = ctx.from.id;
 
@@ -122,14 +122,13 @@ bot.on('photo', async (ctx) => {
     try {
       await ctx.reply('⏳ جاري رفع الصورة وحفظ الإعلان في قاعدة البيانات...');
 
-      // الحصول على أعلى جودة للصورة المرسلة
+      // جلب أعلى دقة للصورة المرسلة
       const photo = ctx.message.photo[ctx.message.photo.length - 1];
       const fileId = photo.file_id;
       
-      // جلب رابط ملف الصورة من تليجرام
       const fileLink = await ctx.telegram.getFileLink(fileId);
       
-      // تحميل الصورة كـ Buffer من تليجرام
+      // تحميل الصورة كـ Buffer
       const response = await fetch(fileLink.href);
       const arrayBuffer = await response.arrayBuffer();
       const buffer = Buffer.from(arrayBuffer);
@@ -153,7 +152,7 @@ bot.on('photo', async (ctx) => {
       const mediaUrl = publicURLData.publicUrl;
       const propertyDetails = userState[userId].details;
 
-      // إدخال البيانات نهائياً في جدول test_messages
+      // إدخال البيانات في جدول test_messages
       const { error: dbError } = await supabase
         .from('test_messages')
         .insert([{ 
@@ -166,7 +165,7 @@ bot.on('photo', async (ctx) => {
         throw new Error(dbError.message);
       }
 
-      // مسح حالة المستخدم بعد الانتهاء بنجاح
+      // مسح حالة المستخدم بعد إتمام العملية بنجاح
       delete userState[userId];
 
       await ctx.reply(
@@ -182,11 +181,11 @@ bot.on('photo', async (ctx) => {
       delete userState[userId];
     }
   } else {
-    await ctx.reply('📸 أرسلت صورة، ولكن لرفعها كعقار يرجى النقر على زر "إضافة عقار جديد" أولاً.');
+    await ctx.reply('📸 أرسلت صورة، ولكن لرفعها كعقار يرجى النقر على زر "إضافة عقار جديد" واتباع الخطوات أولاً.');
   }
 });
 
-// إعداد خادم الويب هوك
+// إعداد خادم الويب هوك (Webhook) للعمل على Render
 const PORT = process.env.PORT || 3000;
 
 if (WEBHOOK_DOMAIN) {
