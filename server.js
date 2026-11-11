@@ -5,8 +5,10 @@ const { createClient } = require('@supabase/supabase-js');
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;
 const WEBHOOK_DOMAIN = process.env.WEBHOOK_DOMAIN;
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_KEY;
+
+// إعداد روابط ومفاتيح Supabase المباشرة بشكل صحيح وبدون أخطاء
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://jjrisfyotyryanhbsvlz.supabase.co';
+const SUPABASE_KEY = process.env.SUPABASE_KEY || 'sb_publishable_t7kVxzmOtz16C95U_B52FA_AJl_WK-h';
 
 if (!BOT_TOKEN) {
   console.error('Error: BOT_TOKEN environment variable is missing!');
@@ -14,8 +16,7 @@ if (!BOT_TOKEN) {
 }
 
 // تهيئة Supabase
-"const SUPABASE_URL = 'https://jjrisfyotyryanhbsvlz.supabase.co';
-const SUPABASE_KEY = 'sb_publishable_t7kVxzmOtz16C95U_B52FA_AJl_WK-h';"
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const bot = new Telegraf(BOT_TOKEN);
 const app = express();
