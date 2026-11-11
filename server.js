@@ -91,7 +91,7 @@ bot.hears(['🔍 تصفح العقارات المتاحة', '🔍 Parcourir les 
   }
 });
 
-// 3. بدء إضافة عقار جديد
+// 3. بدء إضافة عقار جديد (الخطوة 1: اختيار النوع بأزرار شبكية)
 bot.hears(['➕ إضافة عقار جديد', '➕ Ajouter un bien'], async (ctx) => {
   const userId = ctx.from.id;
   
@@ -102,7 +102,7 @@ bot.hears(['➕ إضافة عقار جديد', '➕ Ajouter un bien'], async (ct
 
   await ctx.reply(
     `🏢 <b>معالج نشر عقار جديد (الخطوة 1 من 6)</b>\n\n` +
-    `اختر أو أكتب <b>نوع العقار</b> (مثال: شقة F3، فيلا، محل تجاري، قطعة أرض...):`,
+    `اختر <b>نوع العقار</b> من القناة أدناه أو أكتبه يدوياً:`,
     {
       parse_mode: 'HTML',
       ...Markup.inlineKeyboard([
@@ -113,7 +113,7 @@ bot.hears(['➕ إضافة عقار جديد', '➕ Ajouter un bien'], async (ct
   );
 });
 
-// اختيار النوع عبر الأزرار السريعة
+// استقبال نوع العقار عبر الأزرار السريعة
 bot.action(/type_(.+)/, async (ctx) => {
   await ctx.answerCbQuery();
   const userId = ctx.from.id;
@@ -129,9 +129,47 @@ bot.action(/type_(.+)/, async (ctx) => {
   userState[userId].data.property_type = selectedType;
   userState[userId].step = 'waiting_for_state';
 
-  await ctx.reply(
+  // 📍 الانتقال للخطوة 2: اختيار الولاية عبر أزرار سريعة لأهم الولايات
+  await ctx.editMessageText(
     `✅ تم تحديد النوع: <b>${selectedType}</b>\n\n` +
-    `📍 <b>الخطوة (2 من 6):</b> حدد أو أكتب <b>اسم الولاية أو البلدية</b>:`,
+    `📍 <b>الخطوة (2 من 6):</b> اختر <b>الولاية</b> من القائمة أدناه أو اكتب اسمها يدوياً:`,
+    {
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback('الجزائر العاصمة 📍', 'state_algiers'), Markup.button.callback('وهران 📍', 'state_oran')],
+        [Markup.button.callback('مستغانم 📍', 'state_mostaganem'), Markup.button.callback('قسنطينة 📍', 'state_constantine')],
+        [Markup.button.callback('عنابة 📍', 'state_annaba'), Markup.button.callback('بليدة 📍', 'state_blida')],
+        [Markup.button.callback('تلمسان 📍', 'state_tlemcen'), Markup.button.callback('سطيف 📍', 'state_setif')]
+      ])
+    }
+  );
+});
+
+// استقبال الولاية عبر الأزرار السريعة الشبكية
+bot.action(/state_(.+)/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const userId = ctx.from.id;
+  
+  const statesMap = {
+    algiers: 'الجزائر العاصمة',
+    oran: 'وهران',
+    mostaganem: 'مستغانم',
+    constantine: 'قسنطينة',
+    annaba: 'عنابة',
+    blida: 'البليدة',
+    tlemcen: 'تلمسان',
+    setif: 'سطيف'
+  };
+  const selectedState = statesMap[ctx.match[1]] || 'غير محددة';
+
+  if (!userState[userId]) userState[userId] = { data: {} };
+  userState[userId].data.state_name = selectedState;
+  userState[userId].step = 'waiting_for_price';
+
+  // 💰 الانتقال للخطوة 3: السعر
+  await ctx.editMessageText(
+    `✅ الولاية: <b>${selectedState}</b>\n\n` +
+    `💰 <b>الخطوة (3 من 6):</b> أرسل الآن <b>السعر المطلوب</b> (مثال: 1.2 مليار، أو 6 ملايين/شهر):`,
     { parse_mode: 'HTML' }
   );
 });
@@ -152,7 +190,7 @@ bot.hears(['🌐 تغيير اللغة / Langue', '🌐 Langue / اللغة'], a
 bot.action('set_lang_ar', async (ctx) => {
   await ctx.answerCbQuery();
   userLang[ctx.from.id] = 'ar';
-  await ctx.reply('✅ تم اعتمادات اللغة العربية لنظام البوت.', getMainMenuKeyboard('ar'));
+  await ctx.reply('✅ تم اعتماد اللغة العربية لنظام البوت.', getMainMenuKeyboard('ar'));
 });
 
 bot.action('set_lang_fr', async (ctx) => {
@@ -165,8 +203,8 @@ bot.action('set_lang_fr', async (ctx) => {
 bot.hears(['📞 الدعم والإدارة', '📞 Support & Contact'], async (ctx) => {
   await ctx.reply(
     `📞 <b>مركز التواصل والدعم الفني:</b>\n\n` +
-    `فريق تطوير منصة عقار الجزائر في خدمتك لتقديم والاستفسارات أو الدعم المباشر.\n` +
-    `تواصل معنا مباشرة عبر المعرف الرسمية للاستفسارات الفنية.`,
+    `فريق تطوير منصة عقار الجزائر في خدمتك لتقديم الاستفسارات أو الدعم المباشر.\n` +
+    `تواصل معنا مباشرة عبر المعرفات الرسمية للاستفسارات الفنية.`,
     { parse_mode: 'HTML' }
   );
 });
@@ -189,18 +227,28 @@ bot.on('text', async (ctx) => {
   const state = userState[userId];
   if (!state) return;
 
-  // خطوة 1: النوع (إذا كتبه بدلاً من الضغط على الأزرار)
+  // خطوة 1: النوع (إذا كتبه يدوياً)
   if (state.step === 'waiting_for_type') {
     state.data.property_type = userText;
     state.step = 'waiting_for_state';
+    
+    // إظهار أزرار الولايات عند الإدخال اليدوي للنوع أيضاً لتسهيل الاختيار
     return ctx.reply(
       `✅ نوع العقار: <b>${userText}</b>\n\n` +
-      `📍 <b>الخطوة (2 من 6):</b> أدخل <b>اسم الولاية أو المدينة</b>:`,
-      { parse_mode: 'HTML' }
+      `📍 <b>الخطوة (2 من 6):</b> اختر <b>الولاية</b> من القائمة أدناه أو اكتبها يدوياً:`,
+      {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback('الجزائر العاصمة 📍', 'state_algiers'), Markup.button.callback('وهران 📍', 'state_oran')],
+          [Markup.button.callback('مستغانم 📍', 'state_mostaganem'), Markup.button.callback('قسنطينة 📍', 'state_constantine')],
+          [Markup.button.callback('عنابة 📍', 'state_annaba'), Markup.button.callback('بليدة 📍', 'state_blida')],
+          [Markup.button.callback('تلمسان 📍', 'state_tlemcen'), Markup.button.callback('سطيف 📍', 'state_setif')]
+        ])
+      }
     );
   }
 
-  // خطوة 2: الولاية
+  // خطوة 2: الولاية (إذا كتبها يدوياً بدلاً من الضغط على الأزرار)
   else if (state.step === 'waiting_for_state') {
     state.data.state_name = userText;
     state.step = 'waiting_for_price';
@@ -292,7 +340,7 @@ bot.on('photo', async (ctx) => {
       delete userState[userId];
 
       await ctx.reply(
-        `🎉 <b>تم نشر وثيقة العقار بنجاح في المنصة!</b>\n\n` +
+        `🎉 <b>تم نشر إعلان العقار بنجاح في المنصة!</b>\n\n` +
         `🏠 <b>النوع:</b> ${propData.property_type}\n` +
         `📍 <b>الولاية:</b> ${propData.state_name}\n` +
         `💰 <b>السعر:</b> ${propData.price}\n` +
