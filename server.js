@@ -18,308 +18,401 @@ const bot = new Telegraf(BOT_TOKEN);
 const app = express();
 
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
 
-// 🌐 1. مسار صفحة إضافة العقار (Mini App - النشر)
-app.get('/miniapp', (req, res) => {
-  res.send(`
-    <!DOCTYPE html>
-    <html lang="ar" dir="rtl">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>عقار الجزائر - إضافة عقار</title>
-        <script src="https://telegram.org/js/telegram-web-app.js"></script>
-        <style>
-            :root {
-                --bg-color: #0F172A;
-                --card-bg: #1E293B;
-                --accent-color: #0D9488;
-                --text-color: #F8FAFC;
-                --border-color: #334155;
-            }
-            body {
-                font-family: system-ui, -apple-system, sans-serif;
-                background-color: var(--bg-color);
-                color: var(--text-color);
-                margin: 0;
-                padding: 20px;
-            }
-            .container {
-                max-width: 480px;
-                margin: 0 auto;
-                background: var(--card-bg);
-                padding: 20px;
-                border-radius: 16px;
-                box-shadow: 0 10px 25px rgba(0,0,0,0.3);
-            }
-            h2 {
-                text-align: center;
-                color: #38BDF8;
-                margin-bottom: 20px;
-                font-size: 22px;
-            }
-            .form-group {
-                margin-bottom: 15px;
-            }
-            label {
-                display: block;
-                margin-bottom: 6px;
-                font-size: 14px;
-                color: #94A3B8;
-            }
-            input, select, textarea {
-                width: 100%;
-                padding: 12px;
-                border-radius: 8px;
-                border: 1px solid var(--border-color);
-                background: #0F172A;
-                color: #fff;
-                font-size: 14px;
-                box-sizing: border-box;
-            }
-            input:focus, select:focus, textarea:focus {
-                outline: none;
-                border-color: var(--accent-color);
-            }
-            button {
-                width: 100%;
-                background: var(--accent-color);
-                color: white;
-                border: none;
-                padding: 14px;
-                border-radius: 8px;
-                font-size: 16px;
-                font-weight: bold;
-                cursor: pointer;
-                margin-top: 10px;
-            }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h2>🏠 نشر عقار عبر Mini App</h2>
-            <form id="propertyForm">
-                <div class="form-group">
-                    <label>نوع العقار</label>
-                    <select id="property_type" required>
-                        <option value="شقة">شقة 🏢</option>
-                        <option value="فيلا">فيلا 🏡</option>
-                        <option value="قطعة أرض">قطعة أرض 📐</option>
-                        <option value="محل تجاري">محل تجاري 🏪</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label>الولاية</label>
-                    <select id="state_name" required>
-                        <option value="الجزائر العاصمة">الجزائر العاصمة 📍</option>
-                        <option value="وهران">وهران 📍</option>
-                        <option value="مستغانم">مستغانم 📍</option>
-                        <option value="قسنطينة">قسنطينة 📍</option>
-                        <option value="عنابة">عنابة 📍</option>
-                        <option value="البليدة">البليدة 📍</option>
-                        <option value="تلمسان">تلمسان 📍</option>
-                        <option value="سطيف">سطيف 📍</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label>السعر المطلوب</label>
-                    <input type="text" id="price" placeholder="مثال: 1.2 مليار" required>
-                </div>
-                <div class="form-group">
-                    <label>رقم الهاتف</label>
-                    <input type="text" id="phone" placeholder="0550000000" required>
-                </div>
-                <div class="form-group">
-                    <label>الوصف التفصيلي</label>
-                    <textarea id="description" rows="3" placeholder="المساحة، الوثائق، المميزات..." required></textarea>
-                </div>
-                <button type="submit" id="submitBtn">نشر الإعلان فوراً 🚀</button>
-            </form>
-        </div>
+const userState = {};
+const userLang = {};
 
-        <script>
-            let tg = window.Telegram.WebApp;
-            tg.expand();
-
-            document.getElementById('propertyForm').addEventListener('submit', async function(e) {
-                e.preventDefault();
-                const data = {
-                    property_type: document.getElementById('property_type').value,
-                    state_name: document.getElementById('state_name').value,
-                    price: document.getElementById('price').value,
-                    phone: document.getElementById('phone').value,
-                    description: document.getElementById('description').value
-                };
-                const btn = document.getElementById('submitBtn');
-                btn.innerText = '⏳ جاري الحفظ...';
-                btn.disabled = true;
-
-                try {
-                    const response = await fetch('/api/submit-property', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(data)
-                    });
-                    const result = await response.json();
-                    if(result.success) {
-                        tg.showAlert('🎉 تم نشر العقار بنجاح!');
-                        tg.close();
-                    } else {
-                        alert('⚠️ حدث خطأ.');
-                        btn.innerText = 'نشر الإعلان فوراً 🚀';
-                        btn.disabled = false;
-                    }
-                } catch (err) {
-                    alert('⚠️ خطأ في الاتصال.');
-                    btn.innerText = 'نشر الإعلان فوراً 🚀';
-                    btn.disabled = false;
-                }
-            });
-        </script>
-    </body>
-    </html>
-  `);
-});
-
-// 🌐 2. مسار صفحة تصفح العقارات (Mini App - العرض والفلترة)
-app.get('/browse', async (req, res) => {
-  try {
-    const { data: properties, error } = await supabase
-      .from('test_messages')
-      .select('*')
-      .order('id', { ascending: false })
-      .limit(20);
-
-    let cardsHtml = '';
-    if (error || !properties || properties.length === 0) {
-      cardsHtml = '<p style="text-align: center; color: #94A3B8;">📭 لا توجد عقارات مسجلة حالياً.</p>';
-    } else {
-      properties.forEach(item => {
-        cardsHtml += `
-          <div class="card">
-              <h3>🏢 ${item.property_type || 'عقار'}</h3>
-              <p>📍 <b>الولاية:</b> ${item.state_name || 'غير محدد'}</p>
-              <p>💰 <b>السعر:</b> ${item.price || 'حسب الاتفاق'}</p>
-              <p>📞 <b>الهاتف:</b> <code>${item.phone || 'غير مسجل'}</code></p>
-              <p>📝 <b>الوصف:</b> ${item.description || item.message || 'بدون تفاصيل'}</p>
-          </div>
-        `;
-      });
-    }
-
-    res.send(`
-      <!DOCTYPE html>
-      <html lang="ar" dir="rtl">
-      <head>
-          <meta charset="UTF-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <title>عقار الجزائر - تصفح العقارات</title>
-          <script src="https://telegram.org/js/telegram-web-app.js"></script>
-          <style>
-              :root {
-                  --bg-color: #0F172A;
-                  --card-bg: #1E293B;
-                  --accent-color: #0D9488;
-                  --text-color: #F8FAFC;
-                  --border-color: #334155;
-              }
-              body {
-                  font-family: system-ui, -apple-system, sans-serif;
-                  background-color: var(--bg-color);
-                  color: var(--text-color);
-                  margin: 0;
-                  padding: 15px;
-              }
-              .container {
-                  max-width: 480px;
-                  margin: 0 auto;
-              }
-              h2 {
-                  text-align: center;
-                  color: #38BDF8;
-                  margin-bottom: 20px;
-              }
-              .card {
-                  background: var(--card-bg);
-                  border: 1px solid var(--border-color);
-                  padding: 15px;
-                  border-radius: 12px;
-                  margin-bottom: 15px;
-                  box-shadow: 0 4px 10px rgba(0,0,0,0.2);
-              }
-              .card h3 {
-                  margin-top: 0;
-                  color: #38BDF8;
-                  font-size: 18px;
-              }
-              .card p {
-                  margin: 6px 0;
-                  font-size: 14px;
-                  color: #CBD5E1;
-              }
-              code {
-                  background: #0F172A;
-                  padding: 2px 6px;
-                  border-radius: 4px;
-                  color: #38BDF8;
-              }
-          </style>
-      </head>
-      <body>
-          <div class="container">
-              <h2>🏛 أحدث العروض العقارية</h2>
-              ${cardsHtml}
-          </div>
-          <script>
-              window.Telegram.WebApp.expand();
-          </script>
-      </body>
-      </html>
-    `);
-  } catch (err) {
-    res.status(500).send('Error loading properties');
-  }
-});
-
-// API حفظ العقار
-app.post('/api/submit-property', async (req, res) => {
-  try {
-    const { property_type, state_name, price, phone, description } = req.body;
-    const { error } = await supabase.from('test_messages').insert([{ 
-      property_type, state_name, price, phone, description, message: description, image_url: 'EMPTY', video_url: 'EMPTY' 
-    }]);
-    if (error) throw new Error(error.message);
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// الأزرار الرئيسية للبوت
-function getMainMenuKeyboard() {
+// 🎛 لوحة التحكم الرئيسية الثابتة
+function getMainMenuKeyboard(lang = 'ar') {
+  const isAr = lang === 'ar';
   return Markup.keyboard([
-    [Markup.button.webApp('🔍 تصفح العقارات (Mini App)', `${WEBHOOK_DOMAIN}/browse`)],
-    [Markup.button.webApp('🚀 إضافة عقار (Mini App)', `${WEBHOOK_DOMAIN}/miniapp`)],
-    ['📞 الدعم والإدارة', 'ℹ️ عن المنصة']
+    [isAr ? '🔍 تصفح العقارات المتاحة' : '🔍 Parcourir les biens', isAr ? '➕ إضافة عقار جديد' : '➕ Ajouter un bien'],
+    [isAr ? '⭐ مفضلتي' : '⭐ Mes Favoris', isAr ? '📞 الدعم والإدارة' : '📞 Support & Contact'],
+    [isAr ? '🌐 تغيير اللغة / Langue' : '🌐 Langue / اللغة', isAr ? 'ℹ️ عن المنصة' : 'ℹ️ À propos']
   ]).resize();
 }
 
+// 1. الترحيب الملكي المحايد
 bot.start((ctx) => {
-  const userName = ctx.from.first_name || 'مستخدمنا الكريم';
+  const userId = ctx.from.id;
+  delete userState[userId];
+  userLang[userId] = userLang[userId] || 'ar';
+
   ctx.reply(
-    `أهلاً بك يا <b>${userName}</b> في <b>منصة عقار الجزائر الذكية</b> 🏠✨\n\n` +
-    `استخدم الأزرار أدناه لتجربة النظام المرئي المتطور:`,
-    { parse_mode: 'HTML', ...getMainMenuKeyboard() }
+    `أهلاً بك في <b>منصة عقار الجزائر (Aqar)</b> 🏠✨\n\n` +
+    `النظام الذكي المتطور لإدارة وعروض العقارات بخوارزميات سحابية عالية الأداء.\n\n` +
+    `استخدم الأزرار المثبتة أسفل الشاشة للتنقل بكل مرونة:`,
+    {
+      parse_mode: 'HTML',
+      ...getMainMenuKeyboard(userLang[userId])
+    }
   );
 });
 
-bot.hears('📞 الدعم والإدارة', (ctx) => {
-  ctx.reply('مركز الدعم الفني -).', { parse_mode: 'Markdown' });
+// 2. نظام التصفية الذكي قبل تصفح العقارات
+bot.hears(['🔍 تصفح العقارات المتاحة', '🔍 Parcourir les biens'], async (ctx) => {
+  const userId = ctx.from.id;
+  userState[userId] = { step: 'filtering_state' };
+
+  await ctx.reply(
+    `🔍 <b>نظام التصفية الذكي للعقارات:</b>\n\n` +
+    `اختر الولاية المستهدفة لعرض العقارات المتاحة بدقة، أو اختر "الكل" لعرض أحدث العروض:`,
+    {
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback('الجزائر العاصمة 📍', 'filter_state_الجزائر العاصمة'), Markup.button.callback('وهران 📍', 'filter_state_وهران')],
+        [Markup.button.callback('مستغانم 📍', 'filter_state_مستغانم'), Markup.button.callback('قسنطينة 📍', 'filter_state_قسنطينة')],
+        [Markup.button.callback('عنابة 📍', 'filter_state_عنابة'), Markup.button.callback('بليدة 📍', 'filter_state_البليدة')],
+        [Markup.button.callback('🌐 عرض كافة الولايات (الكل)', 'filter_state_ALL')]
+      ])
+    }
+  );
 });
 
-bot.hears('ℹ️ عن المنصة', (ctx) => {
-  ctx.reply('منصة عقار الجزائر - نظام مؤسسي متطور مدعوم بتقنيات الويب الحديثة والذكاء السحابي.', { parse_mode: 'HTML' });
+// معالجة الفلترة وعرض النتائج
+bot.action(/filter_state_(.+)/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const stateQuery = ctx.match[1];
+  const userId = ctx.from.id;
+
+  try {
+    let query = supabase.from('test_messages').select('*').order('id', { ascending: false }).limit(10);
+
+    if (stateQuery !== 'ALL') {
+      query = query.eq('state_name', stateQuery);
+    }
+
+    const { data, error } = await query;
+
+    if (error || !data || data.length === 0) {
+      return ctx.editMessageText('📭 عذراً، لا توجد عقارات مسجلة حالياً تطابق هذا البحث في النظام.');
+    }
+
+    await ctx.editMessageText(`🏛 <b>نتائج البحث المصفاة (الولاية: ${stateQuery === 'ALL' ? 'الكل' : stateQuery}):</b>`, { parse_mode: 'HTML' });
+
+    for (const item of data) {
+      const caption = 
+        `🏠 <b>العقار:</b> ${item.property_type || 'عقار'}\n` +
+        `📍 <b>الولاية:</b> ${item.state_name || 'غير محدد'}\n` +
+        `💰 <b>السعر:</b> ${item.price || 'حسب الاتفاق'}\n` +
+        `📞 <b>الهاتف:</b> <code>${item.phone || 'غير مسجل'}</code>\n` +
+        `📝 <b>الوصف:</b> ${item.description || item.message || 'بدون تفاصيل'}`;
+
+      const inlineKeyboard = Markup.inlineKeyboard([
+        [
+          Markup.button.callback('📞 طلب التواصل', 'contact_admin'),
+          Markup.button.callback('❤️ حفظ في المفضلة', `fav_${item.id}`)
+        ]
+      ]);
+
+      if (item.image_url && item.image_url !== 'EMPTY') {
+        try {
+          await ctx.replyWithPhoto(item.image_url, { caption, parse_mode: 'HTML', ...inlineKeyboard });
+        } catch (imgErr) {
+          await ctx.reply(caption, { parse_mode: 'HTML', ...inlineKeyboard });
+        }
+      } else {
+        await ctx.reply(caption, { parse_mode: 'HTML', ...inlineKeyboard });
+      }
+    }
+    delete userState[userId];
+  } catch (err) {
+    console.error(err);
+    await ctx.reply('⚠️ حدث خطأ أثناء تصفية العروض، يرجى إعادة المحاولة.');
+  }
+});
+
+// 3. نظام حفظ العقار في المفضلة
+bot.action(/fav_(.+)/, async (ctx) => {
+  const propertyId = ctx.match[1];
+  const userId = ctx.from.id;
+
+  try {
+    const { data: existing } = await supabase
+      .from('user_favorites')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('property_id', propertyId)
+      .single();
+
+    if (existing) {
+      return ctx.answerCbQuery('⭐ هذا العقار موجود مسبقاً في قائمة مفضلاتك!');
+    }
+
+    const { error } = await supabase
+      .from('user_favorites')
+      .insert([{ user_id: userId, property_id: propertyId }]);
+
+    if (error) throw new Error(error.message);
+
+    await ctx.answerCbQuery('❤️ تم حفظ العقار بنجاح في قائمتك المفضلة!');
+  } catch (err) {
+    console.error('Fav Error:', err);
+    await ctx.answerCbQuery('⚠️ حدث خطأ أثناء الحفظ.');
+  }
+});
+
+// 4. عرض قائمة المفضلة
+bot.hears(['⭐ مفضلتي', '⭐ Mes Favoris'], async (ctx) => {
+  const userId = ctx.from.id;
+
+  try {
+    const { data: favs, error: favError } = await supabase
+      .from('user_favorites')
+      .select('property_id')
+      .eq('user_id', userId);
+
+    if (favError || !favs || favs.length === 0) {
+      return ctx.reply('⭐ قائمة مفضلاتك فارغة حالياً. تصفح العقارات واضغط على "حفظ في المفضلة" لإضافتها هنا.');
+    }
+
+    const propertyIds = favs.map(f => f.property_id);
+
+    const { data: properties, error: propError } = await supabase
+      .from('test_messages')
+      .select('*')
+      .in('id', propertyIds);
+
+    if (propError || !properties || properties.length === 0) {
+      return ctx.reply('📭 عذراً، لم يتم العثور على تفاصيل العقارات المفضلة.');
+    }
+
+    await ctx.reply('⭐ <b>عقاراتك المفضلة المحفوظة:</b>', { parse_mode: 'HTML' });
+
+    for (const item of properties) {
+      const caption = 
+        `🏠 <b>العقار:</b> ${item.property_type || 'عقار'}\n` +
+        `📍 <b>الولاية:</b> ${item.state_name || 'غير محدد'}\n` +
+        `💰 <b>السعر:</b> ${item.price || 'حسب الاتفاق'}\n` +
+        `📞 <b>الهاتف:</b> <code>${item.phone || 'غير مسجل'}</code>\n` +
+        `📝 <b>الوصف:</b> ${item.description || item.message || 'بدون تفاصيل'}`;
+
+      if (item.image_url && item.image_url !== 'EMPTY') {
+        await ctx.replyWithPhoto(item.image_url, { caption, parse_mode: 'HTML' });
+      } else {
+        await ctx.reply(caption, { parse_mode: 'HTML' });
+      }
+    }
+  } catch (err) {
+    console.error(err);
+    await ctx.reply('⚠️ حدث خطأ أثناء استعراض المفضلة.');
+  }
+});
+
+// 5. معالج نشر عقار جديد (خطوة بخطوة عبر الشات)
+bot.hears(['➕ إضافة عقار جديد', '➕ Ajouter un bien'], async (ctx) => {
+  const userId = ctx.from.id;
+  
+  userState[userId] = {
+    step: 'waiting_for_type',
+    data: {}
+  };
+
+  await ctx.reply(
+    `🏢 <b>معالج نشر عقار جديد (الخطوة 1 من 6)</b>\n\n` +
+    `اختر <b>نوع العقار</b> من القائمة أدناه أو أكتبه يدوياً:`,
+    {
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback('شقة 🏢', 'type_apartment'), Markup.button.callback('فيلا 🏡', 'type_villa')],
+        [Markup.button.callback('قطعة أرض 📐', 'type_land'), Markup.button.callback('محل تجاري 🏪', 'type_store')]
+      ])
+    }
+  );
+});
+
+bot.action(/type_(.+)/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const userId = ctx.from.id;
+  const typesMap = {
+    apartment: 'شقة',
+    villa: 'فيلا',
+    land: 'قطعة أرض',
+    store: 'محل تجاري'
+  };
+  const selectedType = typesMap[ctx.match[1]] || 'عقار';
+
+  if (!userState[userId]) userState[userId] = { data: {} };
+  userState[userId].data.property_type = selectedType;
+  userState[userId].step = 'waiting_for_state';
+
+  await ctx.editMessageText(
+    `✅ تم تحديد النوع: <b>${selectedType}</b>\n\n` +
+    `📍 <b>الخطوة (2 من 6):</b> اختر <b>الولاية</b> من القائمة أدناه أو اكتب اسمها يدوياً:`,
+    {
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback('الجزائر العاصمة 📍', 'state_algiers'), Markup.button.callback('وهران 📍', 'state_oran')],
+        [Markup.button.callback('مستغانم 📍', 'state_mostaganem'), Markup.button.callback('قسنطينة 📍', 'state_constantine')],
+        [Markup.button.callback('عنابة 📍', 'state_annaba'), Markup.button.callback('بليدة 📍', 'state_blida')]
+      ])
+    }
+  );
+});
+
+bot.action(/state_(.+)/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const userId = ctx.from.id;
+  
+  const statesMap = {
+    algiers: 'الجزائر العاصمة',
+    oran: 'وهران',
+    mostaganem: 'مستغانم',
+    constantine: 'قسنطينة',
+    annaba: 'عنابة',
+    blida: 'البليدة'
+  };
+  const selectedState = statesMap[ctx.match[1]] || 'غير محددة';
+
+  if (!userState[userId]) userState[userId] = { data: {} };
+  userState[userId].data.state_name = selectedState;
+  userState[userId].step = 'waiting_for_price';
+
+  await ctx.editMessageText(
+    `✅ الولاية: <b>${selectedState}</b>\n\n` +
+    `💰 <b>الخطوة (3 من 6):</b> أرسل الآن <b>السعر المطلوب</b> (مثال: 1.2 مليار):`,
+    { parse_mode: 'HTML' }
+  );
+});
+
+// 6. تغيير اللغة والدعم
+bot.hears(['🌐 تغيير اللغة / Langue', '🌐 Langue / اللغة'], async (ctx) => {
+  ctx.reply(
+    `🌐 <b>اختر لغة النظام / Choisir la langue:</b>`,
+    {
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback('🇩🇿 العربية', 'set_lang_ar'), Markup.button.callback('🇫🇷 Français', 'set_lang_fr')]
+      ])
+    }
+  );
+});
+
+bot.action('set_lang_ar', async (ctx) => {
+  await ctx.answerCbQuery();
+  userLang[ctx.from.id] = 'ar';
+  await ctx.reply('✅ تم اعتماد اللغة العربية لنظام البوت.', getMainMenuKeyboard('ar'));
+});
+
+bot.action('set_lang_fr', async (ctx) => {
+  await ctx.answerCbQuery();
+  userLang[ctx.from.id] = 'fr';
+  await ctx.reply('✅ la langue française a été activée.', getMainMenuKeyboard('fr'));
+});
+
+bot.hears(['📞 الدعم والإدارة', '📞 Support & Contact'], async (ctx) => {
+  await ctx.reply(
+    `📞 <b>مركز الدعم التقني - منصة عقار الجزائر:</b>\n\n` +
+    `نحن في خدمتك دائماً لأي استفسار تقني أو إداري.`,
+    { parse_mode: 'HTML' }
+  );
+});
+
+bot.hears(['ℹ️ عن المنصة', 'ℹ️ À propos'], async (ctx) => {
+  await ctx.reply(
+    `🏛 <b>عن منصة عقار الجزائر (Aqar System):</b>\n\n` +
+    `نظام رقمي ذكي ومتطور لإدارة المعاملات والعروض العقارية، مطور بأعلى معايير الهندسة البرمجية والذكاء السحابي.`,
+    { parse_mode: 'HTML' }
+  );
+});
+
+// 7. معالج النصوص لخطوات الإدخال المتتالية
+bot.on('text', async (ctx) => {
+  const userId = ctx.from.id;
+  const userText = ctx.message.text.trim();
+
+  if (userText.startsWith('/')) return;
+
+  const state = userState[userId];
+  if (!state) return;
+
+  if (state.step === 'waiting_for_type') {
+    state.data.property_type = userText;
+    state.step = 'waiting_for_state';
+    return ctx.reply(`✅ نوع العقار: <b>${userText}</b>\n\n📍 أدخل <b>الولاية</b> يدوياً:`, { parse_mode: 'HTML' });
+  } else if (state.step === 'waiting_for_state') {
+    state.data.state_name = userText;
+    state.step = 'waiting_for_price';
+    return ctx.reply(`✅ الموقع: <b>${userText}</b>\n\n💰 أدخل <b>السعر المطلوب</b>:`, { parse_mode: 'HTML' });
+  } else if (state.step === 'waiting_for_price') {
+    state.data.price = userText;
+    state.step = 'waiting_for_phone';
+    return ctx.reply(`✅ السعر: <b>${userText}</b>\n\n📞 أدخل <b>رقم الهاتف للتواصل</b>:`, { parse_mode: 'HTML' });
+  } else if (state.step === 'waiting_for_phone') {
+    state.data.phone = userText;
+    state.step = 'waiting_for_description';
+    return ctx.reply(`✅ رقم الهاتف: <b>${userText}</b>\n\n📝 أدخل <b>الوصف التفصيلي للعقار</b>:`, { parse_mode: 'HTML' });
+  } else if (state.step === 'waiting_for_description') {
+    state.data.description = userText;
+    state.step = 'waiting_for_media';
+    return ctx.reply(`✅ تم تسجيل البيانات!\n\n📸 أرسل الآن <b>صورة العقار</b> لإتمام النشر.`, { parse_mode: 'HTML' });
+  }
+});
+
+// 8. معالجة الصور وحفظها نهائياً
+bot.on('photo', async (ctx) => {
+  const userId = ctx.from.id;
+  const state = userState[userId];
+
+  if (state && state.step === 'waiting_for_media') {
+    try {
+      await ctx.reply('⏳ جاري رفع الوسائط وتوثيق البيانات في النظام...');
+
+      const photo = ctx.message.photo[ctx.message.photo.length - 1];
+      const fileLink = await ctx.telegram.getFileLink(photo.file_id);
+      
+      const response = await fetch(fileLink.href);
+      const buffer = Buffer.from(await response.arrayBuffer());
+
+      const fileName = `${Date.now()}_aqar.jpg`;
+
+      const { error: uploadError } = await supabase.storage
+        .from('test_media')
+        .upload(fileName, buffer, { contentType: 'image/jpeg' });
+
+      if (uploadError) throw new Error(uploadError.message);
+
+      const { data: publicURLData } = supabase.storage
+        .from('test_media')
+        .getPublicUrl(fileName);
+
+      const propData = state.data;
+
+      const { error: dbError } = await supabase
+        .from('test_messages')
+        .insert([{ 
+          property_type: propData.property_type,
+          state_name: propData.state_name,
+          price: propData.price,
+          phone: propData.phone,
+          description: propData.description,
+          message: propData.description,
+          image_url: publicURLData.publicUrl, 
+          video_url: 'EMPTY' 
+        }]);
+
+      if (dbError) throw new Error(dbError.message);
+
+      delete userState[userId];
+
+      await ctx.reply(
+        `🎉 <b>تم نشر إعلان العقار بنجاح في المنصة!</b>\n\n` +
+        `🏠 <b>النوع:</b> ${propData.property_type}\n` +
+        `📍 <b>الولاية:</b> ${propData.state_name}\n` +
+        `💰 <b>السعر:</b> ${propData.price}\n` +
+        `📞 <b>الهاتف:</b> ${propData.phone}\n` +
+        `📝 <b>الوصف:</b> ${propData.description}`,
+        { parse_mode: 'HTML', ...getMainMenuKeyboard(userLang[userId] || 'ar') }
+      );
+
+    } catch (err) {
+      console.error('Save Error:', err);
+      await ctx.reply('⚠️ حدث خطأ أثناء معالجة الوسائط، يرجى المحاولة مرة أخرى.');
+      delete userState[userId];
+    }
+  } else {
+    await ctx.reply('📸 أرسلت صورة، يمكنك استخدام القائمة بالأسفل لتصفح الخدمات.');
+  }
 });
 
 const PORT = process.env.PORT || 3000;
@@ -329,11 +422,11 @@ if (WEBHOOK_DOMAIN) {
   bot.telegram.setWebhook(`${WEBHOOK_DOMAIN}/bot${BOT_TOKEN}`);
   
   app.get('/', (req, res) => {
-    res.send('Aqar Algeria Mini App Engine is online 🚀');
+    res.send('Aqar Algeria Bot Engine is online 🚀');
   });
 
   app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT} with Webhook & Mini Apps.`);
+    console.log(`Server is running on port ${PORT} with Webhook.`);
   });
 } else {
   bot.launch();
