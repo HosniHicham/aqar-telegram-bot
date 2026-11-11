@@ -20,7 +20,7 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// 🌐 مسار صفحة الـ Mini App
+// 🌐 1. مسار صفحة إضافة العقار (Mini App - النشر)
 app.get('/miniapp', (req, res) => {
   res.send(`
     <!DOCTYPE html>
@@ -28,7 +28,7 @@ app.get('/miniapp', (req, res) => {
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>عقار الجزائر - Mini App</title>
+        <title>عقار الجزائر - إضافة عقار</title>
         <script src="https://telegram.org/js/telegram-web-app.js"></script>
         <style>
             :root {
@@ -93,10 +93,6 @@ app.get('/miniapp', (req, res) => {
                 font-weight: bold;
                 cursor: pointer;
                 margin-top: 10px;
-                transition: background 0.2s;
-            }
-            button:hover {
-                background: #0F766E;
             }
         </style>
     </head>
@@ -148,18 +144,15 @@ app.get('/miniapp', (req, res) => {
 
             document.getElementById('propertyForm').addEventListener('submit', async function(e) {
                 e.preventDefault();
-                
                 const data = {
                     property_type: document.getElementById('property_type').value,
                     state_name: document.getElementById('state_name').value,
                     price: document.getElementById('price').value,
                     phone: document.getElementById('phone').value,
-                    description: document.getElementById('description').value,
-                    user_id: tg.initDataUnsafe?.user?.id || 123456
+                    description: document.getElementById('description').value
                 };
-
                 const btn = document.getElementById('submitBtn');
-                btn.innerText = '⏳ جاري الحفظ والإرسال...';
+                btn.innerText = '⏳ جاري الحفظ...';
                 btn.disabled = true;
 
                 try {
@@ -168,18 +161,17 @@ app.get('/miniapp', (req, res) => {
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(data)
                     });
-
                     const result = await response.json();
                     if(result.success) {
-                        tg.showAlert('🎉 تم نشر العقار بنجاح عبر النظام المصغر!');
+                        tg.showAlert('🎉 تم نشر العقار بنجاح!');
                         tg.close();
                     } else {
-                        alert('⚠️ حدث خطأ أثناء الحفظ.');
+                        alert('⚠️ حدث خطأ.');
                         btn.innerText = 'نشر الإعلان فوراً 🚀';
                         btn.disabled = false;
                     }
                 } catch (err) {
-                    alert('⚠️ خطأ في الاتصال بالسيرفر.');
+                    alert('⚠️ خطأ في الاتصال.');
                     btn.innerText = 'نشر الإعلان فوراً 🚀';
                     btn.disabled = false;
                 }
@@ -190,37 +182,126 @@ app.get('/miniapp', (req, res) => {
   `);
 });
 
+// 🌐 2. مسار صفحة تصفح العقارات (Mini App - العرض والفلترة)
+app.get('/browse', async (req, res) => {
+  try {
+    const { data: properties, error } = await supabase
+      .from('test_messages')
+      .select('*')
+      .order('id', { ascending: false })
+      .limit(20);
+
+    let cardsHtml = '';
+    if (error || !properties || properties.length === 0) {
+      cardsHtml = '<p style="text-align: center; color: #94A3B8;">📭 لا توجد عقارات مسجلة حالياً.</p>';
+    } else {
+      properties.forEach(item => {
+        cardsHtml += `
+          <div class="card">
+              <h3>🏢 ${item.property_type || 'عقار'}</h3>
+              <p>📍 <b>الولاية:</b> ${item.state_name || 'غير محدد'}</p>
+              <p>💰 <b>السعر:</b> ${item.price || 'حسب الاتفاق'}</p>
+              <p>📞 <b>الهاتف:</b> <code>${item.phone || 'غير مسجل'}</code></p>
+              <p>📝 <b>الوصف:</b> ${item.description || item.message || 'بدون تفاصيل'}</p>
+          </div>
+        `;
+      });
+    }
+
+    res.send(`
+      <!DOCTYPE html>
+      <html lang="ar" dir="rtl">
+      <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>عقار الجزائر - تصفح العقارات</title>
+          <script src="https://telegram.org/js/telegram-web-app.js"></script>
+          <style>
+              :root {
+                  --bg-color: #0F172A;
+                  --card-bg: #1E293B;
+                  --accent-color: #0D9488;
+                  --text-color: #F8FAFC;
+                  --border-color: #334155;
+              }
+              body {
+                  font-family: system-ui, -apple-system, sans-serif;
+                  background-color: var(--bg-color);
+                  color: var(--text-color);
+                  margin: 0;
+                  padding: 15px;
+              }
+              .container {
+                  max-width: 480px;
+                  margin: 0 auto;
+              }
+              h2 {
+                  text-align: center;
+                  color: #38BDF8;
+                  margin-bottom: 20px;
+              }
+              .card {
+                  background: var(--card-bg);
+                  border: 1px solid var(--border-color);
+                  padding: 15px;
+                  border-radius: 12px;
+                  margin-bottom: 15px;
+                  box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+              }
+              .card h3 {
+                  margin-top: 0;
+                  color: #38BDF8;
+                  font-size: 18px;
+              }
+              .card p {
+                  margin: 6px 0;
+                  font-size: 14px;
+                  color: #CBD5E1;
+              }
+              code {
+                  background: #0F172A;
+                  padding: 2px 6px;
+                  border-radius: 4px;
+                  color: #38BDF8;
+              }
+          </style>
+      </head>
+      <body>
+          <div class="container">
+              <h2>🏛 أحدث العروض العقارية</h2>
+              ${cardsHtml}
+          </div>
+          <script>
+              window.Telegram.WebApp.expand();
+          </script>
+      </body>
+      </html>
+    `);
+  } catch (err) {
+    res.status(500).send('Error loading properties');
+  }
+});
+
+// API حفظ العقار
 app.post('/api/submit-property', async (req, res) => {
   try {
     const { property_type, state_name, price, phone, description } = req.body;
-
-    const { error } = await supabase
-      .from('test_messages')
-      .insert([{ 
-        property_type,
-        state_name,
-        price,
-        phone,
-        description,
-        message: description,
-        image_url: 'EMPTY',
-        video_url: 'EMPTY' 
-      }]);
-
+    const { error } = await supabase.from('test_messages').insert([{ 
+      property_type, state_name, price, phone, description, message: description, image_url: 'EMPTY', video_url: 'EMPTY' 
+    }]);
     if (error) throw new Error(error.message);
-
     res.json({ success: true });
   } catch (err) {
-    console.error('API Error:', err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-function getMainMenuKeyboard(lang = 'ar') {
-  const isAr = lang === 'ar';
+// الأزرار الرئيسية للبوت
+function getMainMenuKeyboard() {
   return Markup.keyboard([
-    [isAr ? '🔍 تصفح العقارات' : '🔍 Parcourir', isAr ? '🚀 إضافة عقار (Mini App)' : '🚀 Ajouter (Mini App)'],
-    [isAr ? '📞 الدعم والإدارة' : '📞 Support', isAr ? 'ℹ️ عن المنصة' : 'ℹ️ À propos']
+    [Markup.button.webApp('🔍 تصفح العقارات (Mini App)', `${WEBHOOK_DOMAIN}/browse`)],
+    [Markup.button.webApp('🚀 إضافة عقار (Mini App)', `${WEBHOOK_DOMAIN}/miniapp`)],
+    ['📞 الدعم والإدارة', 'ℹ️ عن المنصة']
   ]).resize();
 }
 
@@ -228,33 +309,17 @@ bot.start((ctx) => {
   const userName = ctx.from.first_name || 'مستخدمنا الكريم';
   ctx.reply(
     `أهلاً بك يا <b>${userName}</b> في <b>منصة عقار الجزائر الذكية</b> 🏠✨\n\n` +
-    `جرب الآن النظام المرئي المتطور عبر زر الـ Mini App أدناه:`,
-    {
-      parse_mode: 'HTML',
-      ...getMainMenuKeyboard('ar')
-    }
+    `استخدم الأزرار أدناه لتجربة النظام المرئي المتطور:`,
+    { parse_mode: 'HTML', ...getMainMenuKeyboard() }
   );
 });
 
-bot.hears(['🚀 إضافة عقار (Mini App)', '🚀 Ajouter (Mini App)'], (ctx) => {
-  if (!WEBHOOK_DOMAIN) {
-    return ctx.reply('⚠️ يجدر ضبط متغير WEBHOOK_DOMAIN في السيرفر ليعمل رابط الـ Mini App.');
-  }
-  ctx.reply('اضغط على الزر أدناه لفتح نافذة النشر الفاخرة:', Markup.inlineKeyboard([
-    [Markup.button.webApp('🌐 فتح نافذة النشر الذكية', `${WEBHOOK_DOMAIN}/miniapp`)]
-  ]));
+bot.hears('📞 الدعم والإدارة', (ctx) => {
+  ctx.reply('مركز الدعم الفني -).', { parse_mode: 'Markdown' });
 });
 
-bot.hears(['📞 الدعم والإدارة', '📞 Support'], (ctx) => {
-  ctx.reply('مركز الدعم الفني - تطوير السيد **هشام حسني** (تكنولوشن).', { parse_mode: 'Markdown' });
-});
-
-bot.hears(['ℹ️ عن المنصة', 'ℹ️ À propos'], (ctx) => {
+bot.hears('ℹ️ عن المنصة', (ctx) => {
   ctx.reply('منصة عقار الجزائر - نظام مؤسسي متطور مدعوم بتقنيات الويب الحديثة والذكاء السحابي.', { parse_mode: 'HTML' });
-});
-
-bot.on('photo', async (ctx) => {
-  await ctx.reply('📸 أرسلت صورة، يمكنك استخدام زر الـ Mini App بالأعلى لنشر العقارات بكفاءة.');
 });
 
 const PORT = process.env.PORT || 3000;
@@ -268,7 +333,7 @@ if (WEBHOOK_DOMAIN) {
   });
 
   app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT} with Webhook & Mini App.`);
+    console.log(`Server is running on port ${PORT} with Webhook & Mini Apps.`);
   });
 } else {
   bot.launch();
