@@ -19,9 +19,11 @@ const app = express();
 
 app.use(express.json());
 
+// ذاكرة تتبع الجلسات واللغة
 const userState = {};
 const userLang = {};
 
+// 🎛 لوحة الأزرار الثابتة بأسفل الشاشة (لا تختفي أبداً)
 function getMainMenuKeyboard(lang = 'ar') {
   const isAr = lang === 'ar';
   return Markup.keyboard([
@@ -31,6 +33,7 @@ function getMainMenuKeyboard(lang = 'ar') {
   ]).resize();
 }
 
+// 1. أمر الترحيب /start
 bot.start((ctx) => {
   const userName = ctx.from.first_name || 'مستخدمنا الكريم';
   const userId = ctx.from.id;
@@ -49,6 +52,7 @@ bot.start((ctx) => {
   );
 });
 
+// 2. تصفح العقارات المسجلة
 bot.hears(['🔍 تصفح العقارات المتاحة', '🔍 Parcourir les biens'], async (ctx) => {
   const userId = ctx.from.id;
   delete userState[userId];
@@ -58,61 +62,36 @@ bot.hears(['🔍 تصفح العقارات المتاحة', '🔍 Parcourir les 
       .from('test_messages')
       .select('*')
       .order('id', { ascending: false })
-      .limit(5);
+      .limit(6);
 
     if (error || !data || data.length === 0) {
       return ctx.reply('📭 عذراً، لا توجد عقارات مسجلة حالياً في النظام.');
     }
 
-    await ctx.reply('🏛 <b>إليك أحدث العروض العقارية الحية في المنصة:</b>', { parse_mode: 'HTML' });
-
-    for (const item of data) {
-      const caption = 
-        `🏠 <b>نوع العقار:</b> ${item.property_type || 'عقار'}\n` +
-        `📍 <b>الولاية:</b> ${item.state_name || 'الجزائر'}\n` +
-        `💰 <b>السعر:</b> ${item.price || 'حسب الاتفاق'}\n` +
-        `📞 <b>الهاتف:</b> <code>${item.phone || 'غير مسجل'}</code>\n` +
-        `📝 <b>الوصف:</b> ${item.description || item.message || 'بدون تفاصيل'}`;
-
+    let responseText = `🏛 <b>أحدث العروض العقارية المنشورة:</b>\n\n`;
+    data.forEach((item, index) => {
+      responseText += `<b>${index + 1}. ${item.property_type || 'عقار'} - ${item.state_name || 'الجزائر'}</b>\n`;
+      responseText += `💰 <b>السعر:</b> ${item.price || 'حسب الاتفاق'}\n`;
+      responseText += `📞 <b>التواصل:</b> ${item.phone || 'متوفر عبر الإدارة'}\n`;
+      responseText += `📝 <b>التفاصيل:</b> ${item.description || item.message || 'بدون تفاصيل إضافية'}\n`;
+      
       if (item.image_url && item.image_url !== 'EMPTY') {
-        try {
-          await ctx.replyWithPhoto(item.image_url, {
-            caption: caption,
-            parse_mode: 'HTML',
-            ...Markup.inlineKeyboard([
-              [Markup.button.callback('📞 طلب التواصل', 'contact_admin'), Markup.button.callback('❤️ حفظ في المفضلة', 'save_fav')]
-            ])
-          });
-        } catch (imgErr) {
-          await ctx.reply(caption, { parse_mode: 'HTML' });
-        }
-      } else if (item.video_url && item.video_url !== 'EMPTY') {
-        try {
-          await ctx.replyWithVideo(item.video_url, {
-            caption: caption,
-            parse_mode: 'HTML',
-            ...Markup.inlineKeyboard([
-              [Markup.button.callback('📞 طلب التواصل', 'contact_admin')]
-            ])
-          });
-        } catch (vidErr) {
-          await ctx.reply(caption, { parse_mode: 'HTML' });
-        }
-      } else {
-        await ctx.reply(caption, {
-          parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([
-            [Markup.button.callback('📞 طلب التواصل', 'contact_admin')]
-          ])
-        });
+        responseText += `🖼 <a href="${item.image_url}">معاينة الصورة المرفقة</a>\n`;
       }
-    }
+      if (item.video_url && item.video_url !== 'EMPTY') {
+        responseText += `🎬 <a href="${item.video_url}">معاينة الفيديو المرفق</a>\n`;
+      }
+      responseText += `-----------------------------------\n`;
+    });
+
+    await ctx.reply(responseText, { parse_mode: 'HTML', disable_web_page_preview: true });
   } catch (err) {
     console.error(err);
     await ctx.reply('⚠️ حدث خطأ أثناء جلب العروض، يرجى إعادة المحاولة.');
   }
 });
 
+// 3. بدء إضافة عقار جديد (الخطوة 1: اختيار النوع بأزرار شبكية)
 bot.hears(['➕ إضافة عقار جديد', '➕ Ajouter un bien'], async (ctx) => {
   const userId = ctx.from.id;
   
@@ -123,7 +102,7 @@ bot.hears(['➕ إضافة عقار جديد', '➕ Ajouter un bien'], async (ct
 
   await ctx.reply(
     `🏢 <b>معالج نشر عقار جديد (الخطوة 1 من 6)</b>\n\n` +
-    `اختر <b>نوع العقار</b> من القائمة أدناه أو أكتبه يدوياً:`,
+    `اختر <b>نوع العقار</b> من القناة أدناه أو أكتبه يدوياً:`,
     {
       parse_mode: 'HTML',
       ...Markup.inlineKeyboard([
@@ -134,6 +113,7 @@ bot.hears(['➕ إضافة عقار جديد', '➕ Ajouter un bien'], async (ct
   );
 });
 
+// استقبال نوع العقار عبر الأزرار السريعة
 bot.action(/type_(.+)/, async (ctx) => {
   await ctx.answerCbQuery();
   const userId = ctx.from.id;
@@ -149,6 +129,7 @@ bot.action(/type_(.+)/, async (ctx) => {
   userState[userId].data.property_type = selectedType;
   userState[userId].step = 'waiting_for_state';
 
+  // 📍 الانتقال للخطوة 2: اختيار الولاية عبر أزرار سريعة لأهم الولايات
   await ctx.editMessageText(
     `✅ تم تحديد النوع: <b>${selectedType}</b>\n\n` +
     `📍 <b>الخطوة (2 من 6):</b> اختر <b>الولاية</b> من القائمة أدناه أو اكتب اسمها يدوياً:`,
@@ -164,6 +145,7 @@ bot.action(/type_(.+)/, async (ctx) => {
   );
 });
 
+// استقبال الولاية عبر الأزرار السريعة الشبكية
 bot.action(/state_(.+)/, async (ctx) => {
   await ctx.answerCbQuery();
   const userId = ctx.from.id;
@@ -184,6 +166,7 @@ bot.action(/state_(.+)/, async (ctx) => {
   userState[userId].data.state_name = selectedState;
   userState[userId].step = 'waiting_for_price';
 
+  // 💰 الانتقال للخطوة 3: السعر
   await ctx.editMessageText(
     `✅ الولاية: <b>${selectedState}</b>\n\n` +
     `💰 <b>الخطوة (3 من 6):</b> أرسل الآن <b>السعر المطلوب</b> (مثال: 1.2 مليار، أو 6 ملايين/شهر):`,
@@ -191,6 +174,7 @@ bot.action(/state_(.+)/, async (ctx) => {
   );
 });
 
+// 4. تغيير اللغة
 bot.hears(['🌐 تغيير اللغة / Langue', '🌐 Langue / اللغة'], async (ctx) => {
   ctx.reply(
     `🌐 <b>اختر لغة النظام / Choisir la langue:</b>`,
@@ -215,6 +199,7 @@ bot.action('set_lang_fr', async (ctx) => {
   await ctx.reply('✅ la langue française a été activée.', getMainMenuKeyboard('fr'));
 });
 
+// 5. الدعم وحول المنصة
 bot.hears(['📞 الدعم والإدارة', '📞 Support & Contact'], async (ctx) => {
   await ctx.reply(
     `📞 <b>مركز التواصل والدعم الفني:</b>\n\n` +
@@ -232,6 +217,7 @@ bot.hears(['ℹ️ عن المنصة', 'ℹ️ À propos'], async (ctx) => {
   );
 });
 
+// 6. محرك معالجة النصوص للخطوات المتتالية
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const userText = ctx.message.text.trim();
@@ -241,10 +227,12 @@ bot.on('text', async (ctx) => {
   const state = userState[userId];
   if (!state) return;
 
+  // خطوة 1: النوع (إذا كتبه يدوياً)
   if (state.step === 'waiting_for_type') {
     state.data.property_type = userText;
     state.step = 'waiting_for_state';
     
+    // إظهار أزرار الولايات عند الإدخال اليدوي للنوع أيضاً لتسهيل الاختيار
     return ctx.reply(
       `✅ نوع العقار: <b>${userText}</b>\n\n` +
       `📍 <b>الخطوة (2 من 6):</b> اختر <b>الولاية</b> من القائمة أدناه أو اكتبها يدوياً:`,
@@ -258,7 +246,10 @@ bot.on('text', async (ctx) => {
         ])
       }
     );
-  } else if (state.step === 'waiting_for_state') {
+  }
+
+  // خطوة 2: الولاية (إذا كتبها يدوياً بدلاً من الضغط على الأزرار)
+  else if (state.step === 'waiting_for_state') {
     state.data.state_name = userText;
     state.step = 'waiting_for_price';
     return ctx.reply(
@@ -266,7 +257,10 @@ bot.on('text', async (ctx) => {
       `💰 <b>الخطوة (3 من 6):</b> أدخل <b>السعر المطلوب</b> (مثال: 1.2 مليار، أو 6 ملايين/شهر):`,
       { parse_mode: 'HTML' }
     );
-  } else if (state.step === 'waiting_for_price') {
+  }
+
+  // خطوة 3: السعر
+  else if (state.step === 'waiting_for_price') {
     state.data.price = userText;
     state.step = 'waiting_for_phone';
     return ctx.reply(
@@ -274,7 +268,10 @@ bot.on('text', async (ctx) => {
       `📞 <b>الخطوة (4 من 6):</b> أدخل <b>رقم الهاتف للتواصل</b>:`,
       { parse_mode: 'HTML' }
     );
-  } else if (state.step === 'waiting_for_phone') {
+  }
+
+  // خطوة 4: الهاتف
+  else if (state.step === 'waiting_for_phone') {
     state.data.phone = userText;
     state.step = 'waiting_for_description';
     return ctx.reply(
@@ -282,7 +279,10 @@ bot.on('text', async (ctx) => {
       `📝 <b>الخطوة (5 من 6):</b> أدخل <b>الوصف التفصيلي للعقار</b> (المساحة، الوثائق، المميزات...):`,
       { parse_mode: 'HTML' }
     );
-  } else if (state.step === 'waiting_for_description') {
+  }
+
+  // خطوة 5: الوصف
+  else if (state.step === 'waiting_for_description') {
     state.data.description = userText;
     state.step = 'waiting_for_media';
     return ctx.reply(
@@ -293,6 +293,7 @@ bot.on('text', async (ctx) => {
   }
 });
 
+// 7. معالجة رفع الصور
 bot.on('photo', async (ctx) => {
   const userId = ctx.from.id;
   const state = userState[userId];
@@ -359,6 +360,7 @@ bot.on('photo', async (ctx) => {
   }
 });
 
+// 8. معالجة رفع الفيديوهات
 bot.on('video', async (ctx) => {
   const userId = ctx.from.id;
   const state = userState[userId];
@@ -422,6 +424,7 @@ bot.on('video', async (ctx) => {
   }
 });
 
+// تشغيل خادم الويب
 const PORT = process.env.PORT || 3000;
 
 if (WEBHOOK_DOMAIN) {
