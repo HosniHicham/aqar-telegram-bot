@@ -22,17 +22,15 @@ app.use(express.json());
 const userState = {};
 const userLang = {};
 
-// 🎛 لوحة الأزرار الثابتة الفاخرة بأسفل الشاشة (أضفنا إليها زر مفضلتي)
 function getMainMenuKeyboard(lang = 'ar') {
   const isAr = lang === 'ar';
   return Markup.keyboard([
     [isAr ? '🔍 تصفح العقارات المتاحة' : '🔍 Parcourir les biens', isAr ? '➕ إضافة عقار جديد' : '➕ Ajouter un bien'],
-    [isAr ? '⭐ مفضلتي' : '⭐ Mes Favoris', isAr ? '📞 الدعم والإدارة' : '📞 Support & Contact'],
-    [isAr ? '🌐 تغيير اللغة / Langue' : '🌐 Langue / اللغة', isAr ? 'ℹ️ عن المنصة' : 'ℹ️ À propos']
+    [isAr ? '📞 الدعم والإدارة' : '📞 Support & Contact', isAr ? '🌐 تغيير اللغة / Langue' : '🌐 Langue / اللغة'],
+    [isAr ? 'ℹ️ عن المنصة' : 'ℹ️ À propos']
   ]).resize();
 }
 
-// 1. شاشة الترحيب الملكية
 bot.start((ctx) => {
   const userName = ctx.from.first_name || 'مستخدمنا الكريم';
   const userId = ctx.from.id;
@@ -41,9 +39,9 @@ bot.start((ctx) => {
   userLang[userId] = userLang[userId] || 'ar';
 
   ctx.reply(
-    `أهلاً بك يا <b>${userName}</b> في <b>منصة عقار الجزائر (Aqar)</b> 🏠✨\n\n` +
-    `النظام الذكي المتطور لإدارة وعروض العقارات بخوارزميات سحابية عالية الأداء.\n\n` +
-    `استخدم الأزرار المثبتة أسفل الشاشة للتنقل بكل مرونة:`,
+    `أهلاً بك يا <b>${userName}</b> في <b>منصة عقار الجزائر الذكية (Aqar)</b> 🏠✨\n\n` +
+    `النظام المستقل والأول من نوعه لإدارة المعاملات والعروض العقارية بسرعة فائقة ومعالجة آمنة للبيانات.\n\n` +
+    `استخدم الأزرار المثبتة أسفل الشاشة للتنقل في أي وقت:`,
     {
       parse_mode: 'HTML',
       ...getMainMenuKeyboard(userLang[userId])
@@ -51,167 +49,70 @@ bot.start((ctx) => {
   );
 });
 
-// 2. نظام التصفية الذكي قبل تصفح العقارات
 bot.hears(['🔍 تصفح العقارات المتاحة', '🔍 Parcourir les biens'], async (ctx) => {
   const userId = ctx.from.id;
-  userState[userId] = { step: 'filtering_state' };
-
-  await ctx.reply(
-    `🔍 <b>نظام التصفية الذكي للعقارات:</b>\n\n` +
-    `اختر الولاية المستهدفة لعرض العقارات المتاحة بدقة، أو اختر "الكل" لعرض أحدث العروض:`,
-    {
-      parse_mode: 'HTML',
-      ...Markup.inlineKeyboard([
-        [Markup.button.callback('الجزائر العاصمة 📍', 'filter_state_الجزائر العاصمة'), Markup.button.callback('وهران 📍', 'filter_state_وهران')],
-        [Markup.button.callback('مستغانم 📍', 'filter_state_مستغانم'), Markup.button.callback('قسنطينة 📍', 'filter_state_قسنطينة')],
-        [Markup.button.callback('عنابة 📍', 'filter_state_عنابة'), Markup.button.callback('بليدة 📍', 'filter_state_البليدة')],
-        [Markup.button.callback('🌐 عرض كافة الولايات (الكل)', 'filter_state_ALL')]
-      ])
-    }
-  );
-});
-
-// معالجة الفلترة وجلب النتائج مع تمرير الـ ID لزر المفضلة
-bot.action(/filter_state_(.+)/, async (ctx) => {
-  await ctx.answerCbQuery();
-  const stateQuery = ctx.match[1];
-  const userId = ctx.from.id;
+  delete userState[userId];
 
   try {
-    let query = supabase.from('test_messages').select('*').order('id', { ascending: false }).limit(10);
-
-    if (stateQuery !== 'ALL') {
-      query = query.eq('state_name', stateQuery);
-    }
-
-    const { data, error } = await query;
+    const { data, error } = await supabase
+      .from('test_messages')
+      .select('*')
+      .order('id', { ascending: false })
+      .limit(5);
 
     if (error || !data || data.length === 0) {
-      return ctx.editMessageText('📭 عذراً، لا توجد عقارات مسجلة حالياً تطابق هذا البحث في النظام.');
+      return ctx.reply('📭 عذراً، لا توجد عقارات مسجلة حالياً في النظام.');
     }
 
-    await ctx.editMessageText(`🏛 <b>نتائج البحث المصفاة (الولاية: ${stateQuery === 'ALL' ? 'الكل' : stateQuery}):</b>`, { parse_mode: 'HTML' });
+    await ctx.reply('🏛 <b>إليك أحدث العروض العقارية الحية في المنصة:</b>', { parse_mode: 'HTML' });
 
     for (const item of data) {
       const caption = 
-        `🏠 <b>العقار:</b> ${item.property_type || 'عقار'}\n` +
-        `📍 <b>الولاية:</b> ${item.state_name || 'غير محدد'}\n` +
+        `🏠 <b>نوع العقار:</b> ${item.property_type || 'عقار'}\n` +
+        `📍 <b>الولاية:</b> ${item.state_name || 'الجزائر'}\n` +
         `💰 <b>السعر:</b> ${item.price || 'حسب الاتفاق'}\n` +
         `📞 <b>الهاتف:</b> <code>${item.phone || 'غير مسجل'}</code>\n` +
         `📝 <b>الوصف:</b> ${item.description || item.message || 'بدون تفاصيل'}`;
 
-      const inlineKeyboard = Markup.inlineKeyboard([
-        [
-          Markup.button.callback('📞 طلب التواصل', 'contact_admin'),
-          Markup.button.callback('❤️ حفظ في المفضلة', `fav_${item.id}`)
-        ]
-      ]);
-
       if (item.image_url && item.image_url !== 'EMPTY') {
         try {
-          await ctx.replyWithPhoto(item.image_url, { caption, parse_mode: 'HTML', ...inlineKeyboard });
+          await ctx.replyWithPhoto(item.image_url, {
+            caption: caption,
+            parse_mode: 'HTML',
+            ...Markup.inlineKeyboard([
+              [Markup.button.callback('📞 طلب التواصل', 'contact_admin'), Markup.button.callback('❤️ حفظ في المفضلة', 'save_fav')]
+            ])
+          });
         } catch (imgErr) {
-          await ctx.reply(caption, { parse_mode: 'HTML', ...inlineKeyboard });
+          await ctx.reply(caption, { parse_mode: 'HTML' });
         }
       } else if (item.video_url && item.video_url !== 'EMPTY') {
         try {
-          await ctx.replyWithVideo(item.video_url, { caption, parse_mode: 'HTML', ...inlineKeyboard });
+          await ctx.replyWithVideo(item.video_url, {
+            caption: caption,
+            parse_mode: 'HTML',
+            ...Markup.inlineKeyboard([
+              [Markup.button.callback('📞 طلب التواصل', 'contact_admin')]
+            ])
+          });
         } catch (vidErr) {
-          await ctx.reply(caption, { parse_mode: 'HTML', ...inlineKeyboard });
+          await ctx.reply(caption, { parse_mode: 'HTML' });
         }
       } else {
-        await ctx.reply(caption, { parse_mode: 'HTML', ...inlineKeyboard });
-      }
-    }
-    delete userState[userId];
-  } catch (err) {
-    console.error(err);
-    await ctx.reply('⚠️ حدث خطأ أثناء تصفية العروض، يرجى إعادة المحاولة.');
-  }
-});
-
-// 3. نظام حفظ العقار في المفضلة
-bot.action(/fav_(.+)/, async (ctx) => {
-  const propertyId = ctx.match[1];
-  const userId = ctx.from.id;
-
-  try {
-    // التحقق هل العقار محفوظ مسبقاً لهذا المستخدم
-    const { data: existing } = await supabase
-      .from('user_favorites')
-      .select('*')
-      .eq('user_id', userId)
-      .eq('property_id', propertyId)
-      .single();
-
-    if (existing) {
-      return ctx.answerCbQuery('⭐ هذا العقار موجود مسبقاً في قائمة مفضلاتك!');
-    }
-
-    // حفظه في الجدول الجديد
-    const { error } = await supabase
-      .from('user_favorites')
-      .insert([{ user_id: userId, property_id: propertyId }]);
-
-    if (error) throw new Error(error.message);
-
-    await ctx.answerCbQuery('❤️ تم حفظ العقار بنجاح في قائمتك المفضلة!');
-  } catch (err) {
-    console.error('Fav Error:', err);
-    await ctx.answerCbQuery('⚠️ حدث خطأ أثناء الحفظ، تأكد من إنشاء جدول user_favorites في قاعدة البيانات.');
-  }
-});
-
-// 4. عرض قائمة المفضلة الخاصة بالمستخدم
-bot.hears(['⭐ مفضلتي', '⭐ Mes Favoris'], async (ctx) => {
-  const userId = ctx.from.id;
-
-  try {
-    // جلب العقارات المفضلة الخاصة بالمستخدم عبر الربط
-    const { data: favs, error: favError } = await supabase
-      .from('user_favorites')
-      .select('property_id')
-      .eq('user_id', userId);
-
-    if (favError || !favs || favs.length === 0) {
-      return ctx.reply('⭐ قائمة مفضلاتك فارغة حالياً. تصفح العقارات واضغط على "حفظ في المفضلة" لإضافتها هنا.');
-    }
-
-    const propertyIds = favs.map(f => f.property_id);
-
-    // جلب تفاصيل هذه العقارات من الجدول الأساسي
-    const { data: properties, error: propError } = await supabase
-      .from('test_messages')
-      .select('*')
-      .in('id', propertyIds);
-
-    if (propError || !properties || properties.length === 0) {
-      return ctx.reply('📭 عذراً، لم يتم العثور على تفاصيل العقارات المفضلة.');
-    }
-
-    await ctx.reply('⭐ <b>عقاراتك المفضلة المحفوظة:</b>', { parse_mode: 'HTML' });
-
-    for (const item of properties) {
-      const caption = 
-        `🏠 <b>العقار:</b> ${item.property_type || 'عقار'}\n` +
-        `📍 <b>الولاية:</b> ${item.state_name || 'غير محدد'}\n` +
-        `💰 <b>السعر:</b> ${item.price || 'حسب الاتفاق'}\n` +
-        `📞 <b>الهاتف:</b> <code>${item.phone || 'غير مسجل'}</code>\n` +
-        `📝 <b>الوصف:</b> ${item.description || item.message || 'بدون تفاصيل'}`;
-
-      if (item.image_url && item.image_url !== 'EMPTY') {
-        await ctx.replyWithPhoto(item.image_url, { caption, parse_mode: 'HTML' });
-      } else {
-        await ctx.reply(caption, { parse_mode: 'HTML' });
+        await ctx.reply(caption, {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback('📞 طلب التواصل', 'contact_admin')]
+          ])
+        });
       }
     }
   } catch (err) {
     console.error(err);
-    await ctx.reply('⚠️ حدث خطأ أثناء استعراض المفضلة.');
+    await ctx.reply('⚠️ حدث خطأ أثناء جلب العروض، يرجى إعادة المحاولة.');
   }
 });
 
-// 5. معالج نشر عقار جديد
 bot.hears(['➕ إضافة عقار جديد', '➕ Ajouter un bien'], async (ctx) => {
   const userId = ctx.from.id;
   
@@ -290,7 +191,6 @@ bot.action(/state_(.+)/, async (ctx) => {
   );
 });
 
-// 6. إعدادات اللغات والدعم
 bot.hears(['🌐 تغيير اللغة / Langue', '🌐 Langue / اللغة'], async (ctx) => {
   ctx.reply(
     `🌐 <b>اختر لغة النظام / Choisir la langue:</b>`,
@@ -317,9 +217,9 @@ bot.action('set_lang_fr', async (ctx) => {
 
 bot.hears(['📞 الدعم والإدارة', '📞 Support & Contact'], async (ctx) => {
   await ctx.reply(
-    `📞 <b>مركز الدعم التقني - شركة تكنولوشن:</b>\n\n` +
-    `المنصة مصممة ومطورة خصيصاً من طرف الخبير التكنولوجي <b>السيد هشام حسني</b> (تكنولوشن).\n` +
-    `نحن في خدمتك دائماً لأي استفسار تقني أو إداري.`,
+    `📞 <b>مركز التواصل والدعم الفني:</b>\n\n` +
+    `فريق تطوير منصة عقار الجزائر في خدمتك لتقديم الاستفسارات أو الدعم المباشر.\n` +
+    `تواصل معنا مباشرة عبر المعرفات الرسمية للاستفسارات الفنية.`,
     { parse_mode: 'HTML' }
   );
 });
@@ -327,12 +227,11 @@ bot.hears(['📞 الدعم والإدارة', '📞 Support & Contact'], async 
 bot.hears(['ℹ️ عن المنصة', 'ℹ️ À propos'], async (ctx) => {
   await ctx.reply(
     `🏛 <b>عن منصة عقار الجزائر (Aqar System):</b>\n\n` +
-    `نظام رقمي ذكي ومتطور لإدارة المعاملات والعروض العقارية، مطور بأعلى معايير الهندسة البرمجية والذكاء السحابي بواسطة الخبير <b>هشام حسني</b> (شركة تكنولوشن).`,
+    `نظام رقمي ذكي مطور بأحدث المعايير البرمجية لتسهيل وتنظيم المعاملات العقارية وإدارة العروض بسرعة فائقة وتخزين سحابي آمن.`,
     { parse_mode: 'HTML' }
   );
 });
 
-// 7. معالج النصوص للخطوات المتتالية
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const userText = ctx.message.text.trim();
@@ -394,7 +293,6 @@ bot.on('text', async (ctx) => {
   }
 });
 
-// 8. معالجة الصور والفيديوهات
 bot.on('photo', async (ctx) => {
   const userId = ctx.from.id;
   const state = userState[userId];
@@ -454,14 +352,75 @@ bot.on('photo', async (ctx) => {
     } catch (err) {
       console.error('Save Error:', err);
       await ctx.reply('⚠️ حدث خطأ أثناء معالجة الوسائط، يرجى المحاولة مرة أخرى.');
-      delete userState[userId].
+      delete userState[userId];
     }
   } else {
     await ctx.reply('📸 أرسلت صورة، يمكنك استخدام قائمة الأزرار بالأسفل لتشغيل خدمات المنصة.');
   }
 });
 
-// 💡 ملاحظة صغيرة: لكي يعمل جدول المفضلة بكفاءة، أنشئ جدولاً في Supabase باسم user_favorites يحتوي على عمودين: user_id (int8) و property_id (int8).
+bot.on('video', async (ctx) => {
+  const userId = ctx.from.id;
+  const state = userState[userId];
+
+  if (state && state.step === 'waiting_for_media') {
+    try {
+      await ctx.reply('⏳ جاري رفع الفيديو وتخزينه في المعالجة السحابية...');
+
+      const video = ctx.message.video;
+      const fileLink = await ctx.telegram.getFileLink(video.file_id);
+      
+      const response = await fetch(fileLink.href);
+      const buffer = Buffer.from(await response.arrayBuffer());
+
+      const fileName = `${Date.now()}_aqar.mp4`;
+
+      const { error: uploadError } = await supabase.storage
+        .from('test_media')
+        .upload(fileName, buffer, { contentType: 'video/mp4' });
+
+      if (uploadError) throw new Error(uploadError.message);
+
+      const { data: publicURLData } = supabase.storage
+        .from('test_media')
+        .getPublicUrl(fileName);
+
+      const propData = state.data;
+
+      const { error: dbError } = await supabase
+        .from('test_messages')
+        .insert([{ 
+          property_type: propData.property_type,
+          state_name: propData.state_name,
+          price: propData.price,
+          phone: propData.phone,
+          description: propData.description,
+          message: propData.description,
+          image_url: 'EMPTY',
+          video_url: publicURLData.publicUrl 
+        }]);
+
+      if (dbError) throw new Error(dbError.message);
+
+      delete userState[userId];
+
+      await ctx.reply(
+        `🎉 <b>تم نشر العقار ومقطع الفيديو بنجاح!</b>\n\n` +
+        `🏠 <b>النوع:</b> ${propData.property_type}\n` +
+        `📍 <b>الولاية:</b> ${propData.state_name}\n` +
+        `💰 <b>السعر:</b> ${propData.price}\n` +
+        `📞 <b>الهاتف:</b> ${propData.phone}\n` +
+        `🎬 <b>الفيديو:</b> تم الربط والتخزين بنجاح.`,
+        { parse_mode: 'HTML', ...getMainMenuKeyboard(userLang[userId] || 'ar') }
+      );
+
+    } catch (err) {
+      console.error('Save Video Error:', err);
+      await ctx.reply('⚠️ حدث خطأ أثناء معالجة مقطع الفيديو.');
+      delete userState[userId];
+    }
+  }
+});
 
 const PORT = process.env.PORT || 3000;
 
@@ -470,7 +429,7 @@ if (WEBHOOK_DOMAIN) {
   bot.telegram.setWebhook(`${WEBHOOK_DOMAIN}/bot${BOT_TOKEN}`);
   
   app.get('/', (req, res) => {
-    res.send('Aqar Algeria Enterprise System with Favorites is online 🚀');
+    res.send('Aqar Algeria Private System is online 🚀');
   });
 
   app.listen(PORT, () => {
