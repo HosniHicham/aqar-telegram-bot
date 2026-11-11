@@ -22,6 +22,7 @@ app.use(express.json());
 const userState = {};
 const userLang = {};
 
+// 🎛 لوحة الأزرار الثابتة الفاخرة بأسفل الشاشة
 function getMainMenuKeyboard(lang = 'ar') {
   const isAr = lang === 'ar';
   return Markup.keyboard([
@@ -31,6 +32,7 @@ function getMainMenuKeyboard(lang = 'ar') {
   ]).resize();
 }
 
+// 1. شاشة الترحيب الملكية
 bot.start((ctx) => {
   const userName = ctx.from.first_name || 'مستخدمنا الكريم';
   const userId = ctx.from.id;
@@ -40,7 +42,7 @@ bot.start((ctx) => {
 
   ctx.reply(
     `أهلاً بك يا <b>${userName}</b> في <b>منصة عقار الجزائر (Aqar)</b> 🏠✨\n\n` +
-    `نظام ذكي متطور لإدارة وعروض العقارات بخوارزميات سحابية عالية الأداء.\n\n` +
+    `النظام الذكي المتطور لإدارة وعروض العقارات بخوارزميات سحابية عالية الأداء.\n\n` +
     `استخدم الأزرار المثبتة أسفل الشاشة للتنقل بكل مرونة:`,
     {
       parse_mode: 'HTML',
@@ -49,6 +51,7 @@ bot.start((ctx) => {
   );
 });
 
+// 2. نظام التصفية الذكي قبل تصفح العقارات (يتعامل مع ملايين الإعلانات بسلاسة)
 bot.hears(['🔍 تصفح العقارات المتاحة', '🔍 Parcourir les biens'], async (ctx) => {
   const userId = ctx.from.id;
   userState[userId] = { step: 'filtering_state' };
@@ -68,6 +71,7 @@ bot.hears(['🔍 تصفح العقارات المتاحة', '🔍 Parcourir les 
   );
 });
 
+// معالجة الفلترة وجلب النتائج المخصصة من القاعدة
 bot.action(/filter_state_(.+)/, async (ctx) => {
   await ctx.answerCbQuery();
   const stateQuery = ctx.match[1];
@@ -136,6 +140,7 @@ bot.action(/filter_state_(.+)/, async (ctx) => {
   }
 });
 
+// 3. معالج نشر عقار جديد
 bot.hears(['➕ إضافة عقار جديد', '➕ Ajouter un bien'], async (ctx) => {
   const userId = ctx.from.id;
   
@@ -214,6 +219,7 @@ bot.action(/state_(.+)/, async (ctx) => {
   );
 });
 
+// 4. إعدادات اللغات
 bot.hears(['🌐 تغيير اللغة / Langue', '🌐 Langue / اللغة'], async (ctx) => {
   ctx.reply(
     `🌐 <b>اختر لغة النظام / Choisir la langue:</b>`,
@@ -238,6 +244,7 @@ bot.action('set_lang_fr', async (ctx) => {
   await ctx.reply('✅ la langue française a été activée.', getMainMenuKeyboard('fr'));
 });
 
+// 5. الدعم والتعريف بالمنصة مع البصمة الخاصة
 bot.hears(['📞 الدعم والإدارة', '📞 Support & Contact'], async (ctx) => {
   await ctx.reply(
     `📞 <b>مركز الدعم التقني - شركة تكنولوشن:</b>\n\n` +
@@ -255,6 +262,7 @@ bot.hears(['ℹ️ عن المنصة', 'ℹ️ À propos'], async (ctx) => {
   );
 });
 
+// 6. معالج النصوص للخطوات المتتالية
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const userText = ctx.message.text.trim();
@@ -316,6 +324,7 @@ bot.on('text', async (ctx) => {
   }
 });
 
+// 7. معالجة الصور ورفعها للسحابة
 bot.on('photo', async (ctx) => {
   const userId = ctx.from.id;
   const state = userState[userId];
@@ -382,6 +391,7 @@ bot.on('photo', async (ctx) => {
   }
 });
 
+// 8. معالجة الفيديوهات ورفعها للسحابة
 bot.on('video', async (ctx) => {
   const userId = ctx.from.id;
   const state = userState[userId];
@@ -452,7 +462,7 @@ if (WEBHOOK_DOMAIN) {
   bot.telegram.setWebhook(`${WEBHOOK_DOMAIN}/bot${BOT_TOKEN}`);
   
   app.get('/', (req, res) => {
-    res.send('Aqar Algeria Private System is online 🚀');
+    res.send('Aqar Algeria Enterprise System is online 🚀');
   });
 
   app.listen(PORT, () => {
