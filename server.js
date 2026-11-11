@@ -19,48 +19,133 @@ const app = express();
 
 app.use(express.json());
 
-// ذاكرة مؤقتة لتتبع خطوات إدخال البيانات لكل مستخدم بدقة تامة
-const userState = {};
+// تخزين لغة المستخدم المؤقتة (افتراضياً العربية)
+const userLang = {};
 
-// 1. الترحيب الرئيسي
+// 1. أمر البداية /start مع اختيار اللغة
 bot.start((ctx) => {
   const userName = ctx.from.first_name || 'مستخدمنا الكريم';
-  delete userState[ctx.from.id];
-  
+  userLang[ctx.from.id] = 'ar'; // اللغة الافتراضية
+
   ctx.reply(
     `مرحباً بك يا <b>${userName}</b> في منصة <b>عقار الجزائر (Aqar)</b> 🏠✨\n\n` +
-    `المنصة الاحترافية لإدارة وعرض العقارات ببيانات منظمة.\n\n` +
-    `اختر إحدى الخدمات أدناه لنبدأ معاً:`,
+    `المنصة الأولى لإدارة وعرض العقارات عبر السحابة.\n` +
+    `الرجاء اختيار لغة التفضيل لنبدأ معاً:`,
     {
       parse_mode: 'HTML',
       ...Markup.inlineKeyboard([
-        [Markup.button.callback('🔍 تصفح العقارات المتاحة', 'list_properties')],
-        [Markup.button.callback('🏠 إضافة عقار جديد (بخطوات منظمة)', 'add_property_start')],
-        [Markup.button.callback('📞 تواصل مع الإدارة', 'contact_admin')]
+        [
+          Markup.button.callback('🇩🇿 العربية', 'lang_ar'),
+          Markup.button.callback('🇫🇷 Français', 'lang_fr')
+        ]
       ])
     }
   );
 });
 
-// 2. بدء عملية إضافة عقار (الخطوة 1: طلب نوع العقار)
-bot.action('add_property_start', async (ctx) => {
+// تغيير اللغة إلى العربية وعرض القائمة الاحترافية الكبرى
+bot.action('lang_ar', async (ctx) => {
   await ctx.answerCbQuery();
-  const userId = ctx.from.id;
-  
-  // تهيئة كائن بيانات العقار لهذا المستخدم وتحديد الخطوة الأولى
-  userState[userId] = {
-    step: 'waiting_for_type',
-    data: {}
-  };
+  userLang[ctx.from.id] = 'ar';
+  showMainMenu(ctx, 'ar');
+});
 
-  await ctx.reply(
-    `🏠 <b>معالج إضافة عقار جديد (1/5)</b>\n\n` +
-    `الرجاء إرسال <b>نوع العقار</b> (مثال: شقة F3، منزل مستقل، قطعة أرض، استوديو...):`,
-    { parse_mode: 'HTML' }
+// تغيير اللغة إلى الفرنسية وعرض القائمة
+bot.action('lang_fr', async (ctx) => {
+  await ctx.answerCbQuery();
+  userLang[ctx.from.id] = 'fr';
+  showMainMenu(ctx, 'fr');
+});
+
+// دالة عرض القائمة الرئيسية بأزرار عديدة واحترافية
+function showMainMenu(ctx, lang) {
+  const isAr = lang === 'ar';
+  
+  const text = isAr 
+    ? `🏠 <b>القائمة الرئيسية - منصة عقار الجزائر</b>\n\nاختر الخدمة المطلوبة أدناه:`
+    : `🏠 <b>Menu Principal - Aqar Algérie</b>\n\nSélectionnez un service ci-dessous:`;
+
+  const keyboard = Markup.inlineKeyboard([
+    [Markup.button.callback(isAr ? '🔍 تصفح العقارات المسجلة' : '🔍 Parcourir les biens', 'list_properties')],
+    [Markup.button.callback(isAr ? '📸 إضافة عقار بصورة/فيديو' : '📸 Ajouter un bien (Médias)', 'info_add')],
+    [Markup.button.callback(isAr ? '🌍 تغيير اللغة / Changer Langue' : '🌍 Changer Langue / تغيير اللغة', 'change_lang')],
+    [Markup.button.callback(isAr ? 'ℹ️ حول المنصة' : 'ℹ️ À propos', 'about_platform'),
+     Markup.button.callback(isAr ? '📞 تواصل مع الإدارة' : '📞 Contact Support', 'contact_admin')]
+  ]);
+
+  // التحقق مما إذا كان الطلب ناتجاً عن ضغطة زر (callback) أو رسالة عادية
+  if (ctx.callbackQuery) {
+    ctx.editMessageText(text, { parse_mode: 'HTML', ...keyboard });
+  } else {
+    ctx.reply(text, { parse_mode: 'HTML', ...keyboard });
+  }
+}
+
+// العودة للقائمة الرئيسية عبر الأزرار
+bot.action('main_menu', async (ctx) => {
+  await ctx.answerCbQuery();
+  const lang = userLang[ctx.from.id] || 'ar';
+  showMainMenu(ctx, lang);
+});
+
+// زر تغيير اللغة
+bot.action('change_lang', async (ctx) => {
+  await ctx.answerCbQuery();
+  ctx.editMessageText(
+    `🌍 <b>اختر لغة العرض / Choisir la langue:</b>`,
+    {
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard([
+        [
+          Markup.button.callback('🇩🇿 العربية', 'lang_ar'),
+          Markup.button.callback('🇫🇷 Français', 'lang_fr')
+        ],
+        [Markup.button.callback('🔙 رجوع للقائمة', 'main_menu')]
+      ])
+    }
   );
 });
 
-// 3. تصفح العقارات وجلب الأعمدة المنظمة من القاعدة
+// معلومات الإضافة
+bot.action('info_add', async (ctx) => {
+  await ctx.answerCbQuery();
+  const lang = userLang[ctx.from.id] || 'ar';
+  const msg = lang === 'ar'
+    ? `📸 <b>طريقة الإضافة المباشرة:</b>\n\nقم ببساطة بإرسال **صورة أو فيديو مع كتابة التفاصيل في تعليق (Caption)**، وسيتم رفع الوسائط وحجز سطر فوري لها في قاعدة بيانات Supabase!`
+    : `📸 <b>Mode d'ajout direct:</b>\n\nEnvoyez simplement une **photo ou vidéo avec une description en légende**, et le système l'enregistrera instantanément dans Supabase!`;
+  
+  await ctx.reply(msg, {
+    parse_mode: 'HTML',
+    ...Markup.inlineKeyboard([[Markup.button.callback(lang === 'ar' ? '🔙 رجوع للقائمة' : '🔙 Retour', 'main_menu')]])
+  });
+});
+
+// حول المنصة
+bot.action('about_platform', async (ctx) => {
+  await ctx.answerCbQuery();
+  await ctx.reply(
+    `🏢 <b>منصة عقار الجزائر (Aqar)</b>\n\n` +
+    `نظام ذكي متكامل مدعوم بقواعد بيانات سحابية (Supabase) وربط فوري للوسائط والبيانات لخدمة الوسطاء والمواطنين بأعلى معايير الأمان والسرعة. 🚀`,
+    {
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard([[Markup.button.callback('🔙 رجوع للقائمة', 'main_menu')]])
+    }
+  );
+});
+
+// تواصل مع الإدارة
+bot.action('contact_admin', async (ctx) => {
+  await ctx.answerCbQuery();
+  await ctx.reply(
+    `📞 للإتصال المباشر بالإدارة:\nالبريد الإلكتروني: support@aqar-algeria.dz\nأو ترقبوا إطلاق الدعم المباشر قريباً.`,
+    {
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard([[Markup.button.callback('🔙 رجوع للقائمة', 'main_menu')]])
+    }
+  );
+});
+
+// 2. تصفح العقارات من Supabase
 bot.action('list_properties', async (ctx) => {
   await ctx.answerCbQuery();
   
@@ -68,171 +153,126 @@ bot.action('list_properties', async (ctx) => {
     const { data, error } = await supabase.from('test_messages').select('*').order('id', { ascending: false }).limit(5);
 
     if (error || !data || data.length === 0) {
-      return ctx.reply('𭭉 عذراً، لا توجد عقارات مسجلة حالياً في قاعدة البيانات.');
+      return ctx.reply('𭭉 عذراً، لا توجد سجلات مسجلة حالياً في قاعدة البيانات.');
     }
 
-    let responseText = `📋 <b>آخر العقارات المسجلة ببياناتها التفصيلية:</b>\n\n`;
+    let responseText = `📋 <b>آخر العقارات والسجلات المسجلة:</b>\n\n`;
     data.forEach((item, index) => {
-      responseText += `<b>${index + 1}. النوع:</b> ${item.property_type || 'عقار'} | <b>الولاية:</b> ${item.state_name || 'غير محدد'}\n`;
-      responseText += `💰 <b>السعر:</b> ${item.price || 'غير محدد'} | 📞 <b>الهاتف:</b> ${item.phone || 'غير مسجل'}\n`;
-      responseText += `📝 <b>الوصف:</b> ${item.description || item.message || 'بدون وصف'}\n`;
+      responseText += `<b>${index + 1}. الوصف:</b> ${item.message || 'بدون وصف'}\n`;
       if (item.image_url && item.image_url !== 'EMPTY') {
-        responseText += `🖼 <a href="${item.image_url}">رابط صورة العقار</a>\n`;
+        responseText += `🖼 <a href="${item.image_url}">رابط الصورة</a>\n`;
+      }
+      if (item.video_url && item.video_url !== 'EMPTY') {
+        responseText += `🎬 <a href="${item.video_url}">رابط الفيديو</a>\n`;
       }
       responseText += `-----------------------------------\n`;
     });
 
-    await ctx.reply(responseText, { parse_mode: 'HTML', disable_web_page_preview: true });
+    await ctx.reply(responseText, {
+      parse_mode: 'HTML',
+      disable_web_page_preview: true,
+      ...Markup.inlineKeyboard([[Markup.button.callback('🔙 رجوع للقائمة', 'main_menu')]])
+    });
   } catch (err) {
     console.error(err);
-    await ctx.reply('⚠️ حدث خطأ أثناء جلب العقارات.');
+    await ctx.reply('⚠️ حدث خطأ أثناء جلب البيانات.');
   }
 });
 
-bot.action('contact_admin', async (ctx) => {
-  await ctx.answerCbQuery();
-  await ctx.reply('📞 يمكنك إرسال استفسارك وسيقوم فريق الدعم بمراجعته في أقرب وقت.');
-});
-
-// 4. معالجة المدخلات النصية خطوة بخطوة (State Machine)
+// 3. معالجة النصوص وحجز سطر
 bot.on('text', async (ctx) => {
-  const userId = ctx.from.id;
-  const userText = ctx.message.text.trim();
-
+  const userText = ctx.message.text;
   if (userText.startsWith('/')) return;
 
-  const state = userState[userId];
-  if (!state) {
-    return ctx.reply('💡 استخدم الأزرار التفاعلية بالأسفل أو اضغط /start للرجوع للقائمة الرئيسية.');
-  }
+  try {
+    const { error } = await supabase
+      .from('test_messages')
+      .insert([{ message: userText, image_url: 'EMPTY', video_url: 'EMPTY' }]);
 
-  // الخطوة 1: استقبال نوع العقار والنتقل لطلب الولاية
-  if (state.step === 'waiting_for_type') {
-    state.data.property_type = userText;
-    state.step = 'waiting_for_state';
-    return ctx.reply(
-      `✅ نوع العقار: <b>${userText}</b>\n\n` +
-      `📍 <b>الخطوة (2/5):</b> أرسل الآن <b>اسم الولاية أو المدينة</b> التي يتواجد بها العقار:`,
-      { parse_mode: 'HTML' }
-    );
-  }
+    if (error) throw new Error(error.message);
 
-  // الخطوة 2: استقبال الولاية والانتقال لطلب السعر
-  else if (state.step === 'waiting_for_state') {
-    state.data.state_name = userText;
-    state.step = 'waiting_for_price';
-    return ctx.reply(
-      `✅ الولاية: <b>${userText}</b>\n\n` +
-      `💰 <b>الخطوة (3/5):</b> أرسل الآن <b>السعر المطلوب</b> (مثال: 950 مليون، أو 8 ملايين سنتيم للكراء):`,
-      { parse_mode: 'HTML' }
-    );
-  }
-
-  // الخطوة 3: استقبال السعر والانتقال لطلب رقم الهاتف
-  else if (state.step === 'waiting_for_price') {
-    state.data.price = userText;
-    state.step = 'waiting_for_phone';
-    return ctx.reply(
-      `✅ السعر: <b>${userText}</b>\n\n` +
-      `📞 <b>الخطوة (4/5):</b> أرسل الآن <b>رقم الهاتف للتواصل</b> مع المالك أو الوسيط:`,
-      { parse_mode: 'HTML' }
-    );
-  }
-
-  // الخطوة 4: استقبال رقم الهاتف والانتقال لطلب الوصف التفصيلي
-  else if (state.step === 'waiting_for_phone') {
-    state.data.phone = userText;
-    state.step = 'waiting_for_description';
-    return ctx.reply(
-      `✅ رقم الهاتف: <b>${userText}</b>\n\n` +
-      `📝 <b>الخطوة (5/5 قبل الأخيرة):</b> أرسل الآن <b>وصفاً تفصيلياً أو ملاحظات إضافية</b> عن العقار:`,
-      { parse_mode: 'HTML' }
-    );
-  }
-
-  // الخطوة 5: استقبال الوصف والانتقال لمرحلة انتظار رفع الصورة
-  else if (state.step === 'waiting_for_description') {
-    state.data.description = userText;
-    state.step = 'waiting_for_image';
-    return ctx.reply(
-      `✅ تم حفظ الوصف بنجاح!\n\n` +
-      `📸 <b>المرحلة الأخيرة:</b> أرسل الآن <b>صورة العقار</b> (مرسلة كصورة Photo في المحادثة) ليتم رفعها وربط كافة البيانات معا في قاعدة البيانات.`,
-      { parse_mode: 'HTML' }
-    );
+    await ctx.reply(`✅ تم حجز سطر جديد في قاعدة البيانات بنجاح للنص:\n"${userText}"`);
+  } catch (err) {
+    console.error('DB Error:', err);
+    await ctx.reply('⚠️ حدث خطأ أثناء الحفظ في قاعدة البيانات.');
   }
 });
 
-// 5. استقبال الصورة، تجميع كافة البيانات المدخلة، وحفظها دفعة واحدة في الأعمدة المخصصة
+// 4. معالجة الصور وحجز سطر مع رفع السحابة
 bot.on('photo', async (ctx) => {
-  const userId = ctx.from.id;
-  const state = userState[userId];
+  try {
+    await ctx.reply('⏳ جاري رفع الصورة وحجز سطر جديد في القاعدة...');
 
-  if (state && state.step === 'waiting_for_image') {
-    try {
-      await ctx.reply('⏳ جاري رفع الصورة ومعالجة البيانات وحفظها في قاعدة البيانات...');
+    const photo = ctx.message.photo[ctx.message.photo.length - 1];
+    const caption = ctx.message.caption || 'صورة بدون وصف';
+    
+    const fileLink = await ctx.telegram.getFileLink(photo.file_id);
+    const response = await fetch(fileLink.href);
+    const buffer = Buffer.from(await response.arrayBuffer());
 
-      const photo = ctx.message.photo[ctx.message.photo.length - 1];
-      const fileLink = await ctx.telegram.getFileLink(photo.file_id);
-      
-      const response = await fetch(fileLink.href);
-      const arrayBuffer = await response.arrayBuffer();
-      const buffer = Buffer.from(arrayBuffer);
+    const fileName = `${Date.now()}_img.jpg`;
 
-      const fileName = `${Date.now()}_aqar_prop.jpg`;
+    const { error: uploadError } = await supabase.storage
+      .from('test_media')
+      .upload(fileName, buffer, { contentType: 'image/jpeg' });
 
-      // رفع الصورة إلى Supabase Storage
-      const { error: uploadError } = await supabase.storage
-        .from('test_media')
-        .upload(fileName, buffer, { contentType: 'image/jpeg' });
+    if (uploadError) throw new Error(uploadError.message);
 
-      if (uploadError) throw new Error(uploadError.message);
+    const { data: publicURLData } = supabase.storage
+      .from('test_media')
+      .getPublicUrl(fileName);
 
-      const { data: publicURLData } = supabase.storage
-        .from('test_media')
-        .getPublicUrl(fileName);
+    const { error: dbError } = await supabase
+      .from('test_messages')
+      .insert([{ message: caption, image_url: publicURLData.publicUrl, video_url: 'EMPTY' }]);
 
-      const mediaUrl = publicURLData.publicUrl;
-      const propData = state.data;
+    if (dbError) throw new Error(dbError.message);
 
-      // إدخال البيانات الاحترافية في الأعمدة المنظمة بجدول Supabase
-      const { error: dbError } = await supabase
-        .from('test_messages')
-        .insert([{ 
-          property_type: propData.property_type,
-          state_name: propData.state_name,
-          price: propData.price,
-          phone: propData.phone,
-          description: propData.description,
-          message: propData.description, // كاحتياط للتوافق مع الجدول القديم
-          image_url: mediaUrl, 
-          video_url: 'EMPTY' 
-        }]);
-
-      if (dbError) throw new Error(dbError.message);
-
-      delete userState[userId];
-
-      await ctx.reply(
-        `🎉 <b>تم نشر العقار بنجاح وتخزين كافة البيانات في أعمدة قاعدة البيانات!</b>\n\n` +
-        `🏠 <b>النوع:</b> ${propData.property_type}\n` +
-        `📍 <b>الولاية:</b> ${propData.state_name}\n` +
-        `💰 <b>السعر:</b> ${propData.price}\n` +
-        `📞 <b>الهاتف:</b> ${propData.phone}\n` +
-        `📝 <b>الوصف:</b> ${propData.description}\n` +
-        `🖼 <b>الصورة:</b> تم ربطها بنجاح عبر السحابة.`,
-        { parse_mode: 'HTML' }
-      );
-
-    } catch (err) {
-      console.error('Error saving structured property:', err);
-      await ctx.reply('⚠️ حدث خطأ أثناء المعالجة أو الحفظ. حاول مرة أخرى.');
-      delete userState[userId];
-    }
-  } else {
-    await ctx.reply('📸 أرسلت صورة، ولكن يرجى الضغط على زر "إضافة عقار جديد" لإدخال التفاصيل أولاً.');
+    await ctx.reply(`🎉 تم رفع الصورة وحجز سطر جديد في قاعدة البيانات بنجاح!\n📝 <b>الوصف:</b> ${caption}`, { parse_mode: 'HTML' });
+  } catch (err) {
+    console.error('Photo Error:', err);
+    await ctx.reply('⚠️ حدث خطأ أثناء رفع الصورة.');
   }
 });
 
+// 5. معالجة الفيديوهات وحجز سطر مع رفع السحابة
+bot.on('video', async (ctx) => {
+  try {
+    await ctx.reply('⏳ جاري رفع الفيديو وحجز سطر جديد في القاعدة...');
+
+    const video = ctx.message.video;
+    const caption = ctx.message.caption || 'فيديو بدون وصف';
+    
+    const fileLink = await ctx.telegram.getFileLink(video.file_id);
+    const response = await fetch(fileLink.href);
+    const buffer = Buffer.from(await response.arrayBuffer());
+
+    const fileName = `${Date.now()}_vid.mp4`;
+
+    const { error: uploadError } = await supabase.storage
+      .from('test_media')
+      .upload(fileName, buffer, { contentType: 'video/mp4' });
+
+    if (uploadError) throw new Error(uploadError.message);
+
+    const { data: publicURLData } = supabase.storage
+      .from('test_media')
+      .getPublicUrl(fileName);
+
+    const { error: dbError } = await supabase
+      .from('test_messages')
+      .insert([{ message: caption, image_url: 'EMPTY', video_url: publicURLData.publicUrl }]);
+
+    if (dbError) throw new Error(dbError.message);
+
+    await ctx.reply(`🎉 تم رفع الفيديو وحجز سطر جديد في قاعدة البيانات بنجاح!\n📝 <b>الوصف:</b> ${caption}`, { parse_mode: 'HTML' });
+  } catch (err) {
+    console.error('Video Error:', err);
+    await ctx.reply('⚠️ حدث خطأ أثناء رفع الفيديو.');
+  }
+});
+
+// تشغيل السيرفر
 const PORT = process.env.PORT || 3000;
 
 if (WEBHOOK_DOMAIN) {
@@ -240,7 +280,7 @@ if (WEBHOOK_DOMAIN) {
   bot.telegram.setWebhook(`${WEBHOOK_DOMAIN}/bot${BOT_TOKEN}`);
   
   app.get('/', (req, res) => {
-    res.send('Aqar Professional Multi-Step Bot is running! 🚀');
+    res.send('Aqar Multi-Language Bot is running! 🚀');
   });
 
   app.listen(PORT, () => {
