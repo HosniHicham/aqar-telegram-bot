@@ -23,57 +23,73 @@ app.use(express.json());
 
 const userState = {};
 
-// الولايات المقترحة للإضافة السريعة مع أيقونات جمالية
 const POPULAR_WILAYAS = [
   'الجزائر العاصمة 🏛️', 'وهران 🌅', 'مستغانم 🌊', 
   'قسنطينة 🌉', 'عنابة ⚓', 'البليدة 🌹', 
   'تلمسان 🏰', 'سطيف ❄️', 'بجاية ⛰️'
 ];
 
-// لوحة المفاتيح الرئيسية الاحترافية
+// القائمة الرئيسية (تظهر فقط للمستخدمين الموثقين)
 function getMainMenuKeyboard() {
   return Markup.keyboard([
     ['🔍 تصفح العقارات المتاحة 🏠', '➕ إضافة عقار جديد 📝'],
-    ['📱 تأكيد رقم الهاتف الشخصي', '📞 الدعم الفني والإدارة 🛠️'],
-    ['ℹ️ عن المنصة الرقمية']
+    ['📞 الدعم الفني والإدارة 🛠️', 'ℹ️ عن المنصة الرقمية']
   ]).resize();
 }
 
-// 🌟 ترحيب احترافي وجذاب عند البدء
+// زر إجباري لتأكيد الرقم للمستخدمين الجدد
+function getAuthKeyboard() {
+  return Markup.keyboard([
+    [Markup.button.contactRequest('📱 اضغط هنا لمشاركة رقم هاتفك والبدء')]
+  ]).resize().oneTime();
+}
+
+// دالة مساعدة للتحقق هل المستخدم مسجل رقمه مسبقاً في قاعدة البيانات
+async function isUserVerified(telegramId) {
+  try {
+    const { data, error } = await supabase
+      .from('test_messages')
+      .select('*')
+      .eq('price', `ID: ${telegramId}`) // استغلينا حقل price مؤقتآ كمثال لتخزين الـ ID أو يمكنك ربطه بجدول مستقل
+      .limit(1);
+
+    if (data && data.length > 0) return true;
+    return false;
+  } catch (err) {
+    return false;
+  }
+}
+
+// 🌟 نقطة البداية (التحقق الأمني الأول)
 bot.start(async (ctx) => {
-  await ctx.sendChatAction('typing'); // تأثير الكتابة الذكي
+  await ctx.sendChatAction('typing');
   const userName = ctx.from.first_name || 'مستخدمنا الكريم';
   const userId = ctx.from.id;
   
   delete userState[userId];
 
-  await ctx.reply(
-    ` أهلاً بك يا <b>${userName}</b> في العصر الرقمي الجديد!\n\n` +
-    `🏢 <b>منصة عقار الجزائر (Aqar System)</b> هي بوابتك الذكية الأولى لعرض وبحث العقارات بكل أمان وسرعة.\n\n` +
-    `✨ <i>اختر ما يناسبك من القائمة أدناه للبدء فوراً:</i>`,
-    {
-      parse_mode: 'HTML',
-      ...getMainMenuKeyboard()
-    }
-  );
+  // فحص هل المستخدم مسجل مسبقاً؟
+  const verified = await isUserVerified(userId);
+
+  if (verified) {
+    // إذا كان مسجلاً مسبقاً، افتح له الباب مباشرة للقائمة الرئيسية
+    await ctx.reply(
+      `أهلاً بعودتك يا <b>${userName}</b> من جديد في <b>منصة عقار الجزائر</b> 🏠✨\n\n` +
+      `<i>حسابك موثق ومفعل مسبقاً. اختر ما يناسبك من القائمة أدناه:</i>`,
+      { parse_mode: 'HTML', ...getMainMenuKeyboard() }
+    );
+  } else {
+    // إذا كان زائراً جديداً، امنعه من الدخول واجبره على تأكيد رقمه أولاً
+    await ctx.reply(
+      `أهلاً بك يا <b>${userName}</b> في <b>منصة عقار الجزائر (Aqar)</b> 🏠✨\n\n` +
+      `⚠️ <b>تنبيه أمني هامة:</b>\n` +
+      `للاستفادة من خدمات المنصة، تصفح العقارات، أو نشر إعلان جديد، يرجى <b>تأكيد رقم هاتفك</b> أولاً عبر الزر أدناه:`,
+      { parse_mode: 'HTML', ...getAuthKeyboard() }
+    );
+  }
 });
 
-// 📱 زر تأكيد رقم الهاتف بلمسة أنيقة
-bot.hears('📱 تأكيد رقم الهاتف الشخصي', async (ctx) => {
-  await ctx.sendChatAction('typing');
-  await ctx.reply(
-    '🔒 <b>نظام الأمان والتوثيق:</b>\n\n' +
-    'لتأكيد هويتك وتفعيل مميزات النشر الكاملة في المنصة، يرجى الضغط على زر المشاركة أدناه:',
-    {
-      parse_mode: 'HTML',
-      ...Markup.keyboard([
-        [Markup.button.contactRequest('📱 اضغط هنا لمشاركة رقم هاتفك بأمان')]
-      ]).resize().oneTime()
-    }
-  );
-});
-
-// استقبال وتخزين بيانات الاتصال بلمسة جذابة
+// استقبال وتوثيق رقم الهاتف أول مرة
 bot.on('contact', async (ctx) => {
   await ctx.sendChatAction('typing');
   const contact = ctx.message.contact;
@@ -86,9 +102,10 @@ bot.on('contact', async (ctx) => {
   const fullName = `${firstName} ${lastName}`.trim();
 
   try {
+    // حفظ التوثيق في قاعدة البيانات
     const { error } = await supabase.from('test_messages').insert([
       {
-        property_type: '⭐ توثيق حساب جديد',
+        property_type: '⭐ توثيق حساب اجباري',
         state_name: fullName,
         price: `ID: ${userId}`,
         phone: phoneNumber,
@@ -102,23 +119,37 @@ bot.on('contact', async (ctx) => {
     if (error) throw error;
 
     await ctx.reply(
-      `🎉 <b>هنيئاً لك! تم توثيق حسابك بنجاح تام.</b>\n\n` +
-      `👤 <b>الاسم المسجل:</b> ${fullName}\n` +
-      `📱 <b>رقم الهاتف:</b> <code>${phoneNumber}</code>\n` +
-      `🆔 <b>المعرّف الرقمي:</b> ${userId}\n\n` +
-      `<i>يمكنك الآن الاستفادة من كافة صلاحيات المنصة بضغطة زر.</i>`,
+      `🎉 <b>تم توثيق حسابك بنجاح تام!</b>\n\n` +
+      `📱 الرقم المعتمد: <code>${phoneNumber}</code>\n\n` +
+      `<i>أصبح بإمكانك الآن استخدام كافة مميزات المنصة بحرية تامة:</i>`,
       { 
         parse_mode: 'HTML', 
-        ...getMainMenuKeyboard() 
+        ...getMainMenuKeyboard() // فتح القائمة الرئيسية الكاملة هنا!
       }
     );
   } catch (err) {
     console.error('Save contact error:', err);
-    await ctx.reply('⚠️ حدث خطأ تقني أثناء التوثيق، يرجى المحاولة لاحقاً.', getMainMenuKeyboard());
+    await ctx.reply('⚠️ حدث خطأ تقني أثناء التوثيق، يرجى الضغط على /start المحاولة لاحقاً.');
   }
 });
 
-// 🔍 تصفح العقارات مع تأثير البحث
+// حماية إضافية لو حاول المستخدم كتابة رسائل عشوائية قبل التوثيق
+bot.use(async (ctx, next) => {
+  if (ctx.message && ctx.message.text && ctx.message.text.startsWith('/')) {
+    return next();
+  }
+  
+  // لوضغط على أزرار القائمة الرئيسية وهو غير موثق
+  if (ctx.from && ctx.message && (ctx.message.text?.includes('تصفح') || ctx.message.text?.includes('إضافة'))) {
+    const verified = await isUserVerified(ctx.from.id);
+    if (!verified) {
+      return ctx.reply('⚠️ عذراً, يجب عليك تأكيد رقم هاتفك أولاً عبر الضغط هنا:', getAuthKeyboard());
+    }
+  }
+  return next();
+});
+
+// 🔍 تصفح العقارات
 bot.hears('🔍 تصفح العقارات المتاحة 🏠', async (ctx) => {
   await ctx.sendChatAction('typing');
   const userId = ctx.from.id;
@@ -131,9 +162,7 @@ bot.hears('🔍 تصفح العقارات المتاحة 🏠', async (ctx) => {
       return ctx.reply('📭 عذراً، لا توجد أي عقارات مسجلة في المنصة حالياً.');
     }
 
-    // تنظيف أسماء الولايات من أي رموز إضافية للتطابق السليم
     const uniqueStates = [...new Set(data.map(item => item.state_name).filter(Boolean))];
-
     if (uniqueStates.length === 0) {
       return ctx.reply('📭 عذراً، لا توجد أي عقارات مسجلة في المنصة حالياً.');
     }
@@ -155,7 +184,7 @@ bot.hears('🔍 تصفح العقارات المتاحة 🏠', async (ctx) => {
     });
   } catch (err) {
     console.error('Fetch states error:', err);
-    ctx.reply('⚠️ حدث خطأ في الاتصال بالسيرفر، يرجى المحاولة مرة أخرى.');
+    ctx.reply('⚠️ حدث خطأ في الاتصال بالسيرفر.');
   }
 });
 
@@ -213,7 +242,7 @@ bot.action(/filter_state_(.+)/, async (ctx) => {
   }
 });
 
-// ➕ إضافة عقار جديد (المعالج السلس)
+// ➕ إضافة عقار جديد
 bot.hears('➕ إضافة عقار جديد 📝', async (ctx) => {
   await ctx.sendChatAction('typing');
   const userId = ctx.from.id;
@@ -273,19 +302,19 @@ bot.action(/sel_state_(.+)/, async (ctx) => {
 
 bot.hears('📞 الدعم الفني والإدارة 🛠️', async (ctx) => {
   await ctx.reply(
-    '📞 <b>مركز الدعم التقني - منصة عقار الجزائر:</b>\n\nنحن في خدمتك دائماً للإجابة على استفساراتكم وتأكيد معاملاتكم.',
+    '📞 <b>مركز الدعم التقني - منصة عقار الجزائر:</b>\n\nنحن في خدمتك دائماً للإجابة على استفساراتكم.',
     { parse_mode: 'HTML', ...getMainMenuKeyboard() }
   );
 });
 
 bot.hears('ℹ️ عن المنصة الرقمية', async (ctx) => {
   await ctx.reply(
-    '🏛 <b>عن منصة عقار الجزائر (Aqar System):</b>\n\nنظام رقمي ذكي متطور مصمم خصيصاً لتسهيل عروض المعاملات العقارية في الجزائر بأعلى معايير الأداء السحابي.',
+    '🏛 <b>عن منصة عقار الجزائر (Aqar System):</b>\n\nنظام رقمي ذكي ومتطور مصمم خصيصاً لتسهيل عروض المعاملات العقارية في الجزائر.',
     { parse_mode: 'HTML', ...getMainMenuKeyboard() }
   );
 });
 
-// معالج الخطوات النصية
+// معالج خطوات النشر النصية
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const userText = ctx.message.text.trim();
@@ -320,15 +349,15 @@ bot.on('text', async (ctx) => {
   } else if (state.step === 'waiting_for_phone') {
     state.data.phone = userText;
     state.step = 'waiting_for_description';
-    return ctx.reply(`✅ رقم الهاتف: <b>${userText}</b>\n\n📝 <b>الخطوة 5:</b> أدخل الوصف التفصيلي للعقار (المميزات، المساحة، الموقع الدقيق):`, { parse_mode: 'HTML' });
+    return ctx.reply(`✅ رقم الهاتف: <b>${userText}</b>\n\n📝 <b>الخطوة 5:</b> أدخل الوصف التفصيلي للعقار:`, { parse_mode: 'HTML' });
   } else if (state.step === 'waiting_for_description') {
     state.data.description = userText;
     state.step = 'waiting_for_media';
-    return ctx.reply('✅ تم حفظ كافة البيانات بنجاح!\n\n📸 <b>الخطوة الأخيرة:</b> أرسل الآن <b>صورة أو فيديو العقار</b> لإتمام النشر السحابي الفوري.', { parse_mode: 'HTML' });
+    return ctx.reply('✅ تم حفظ كافة البيانات!\n\n📸 <b>الخطوة الأخيرة:</b> أرسل الآن <b>صورة أو فيديو العقار</b> لإتمام النشر.', { parse_mode: 'HTML' });
   }
 });
 
-// معالج الميديا (صور وفيديوهات)
+// معالج الميديا (صور وفيديوهات العقار)
 bot.on(['photo', 'video'], async (ctx) => {
   const userId = ctx.from.id;
   const state = userState[userId];
@@ -375,7 +404,7 @@ bot.on(['photo', 'video'], async (ctx) => {
       await ctx.reply('🎉 <b>مبروك! تم نشر إعلان العقار بنجاح في المنصة وأصبح متاحاً للجميع!</b>', { parse_mode: 'HTML', ...getMainMenuKeyboard() });
     } catch (err) {
       console.error(err);
-      delete userState[userId];
+      delete userState[''];
       await ctx.reply('⚠️ حدث خطأ أثناء النشر، يرجى المحاولة مرة أخرى.');
     }
   }
@@ -396,7 +425,7 @@ if (WEBHOOK_DOMAIN) {
   });
 
   bot.telegram.setWebhook(`${WEBHOOK_DOMAIN}/bot${BOT_TOKEN}`);
-  app.get('/', (req, res) => res.send('Aqar Algeria Enhanced UX System is online 🚀'));
+  app.get('/', (req, res) => res.send('Aqar Algeria Mandatory Auth System is online 🚀'));
   app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
 } else {
   bot.launch();
