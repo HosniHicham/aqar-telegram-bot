@@ -24,6 +24,12 @@ app.use(express.json());
 const userState = {};
 const userLang = {};
 
+// قائمة الولايات المقترحة للأزرار المساعدة أثناء الإضافة
+const POPULAR_WILAYAS = [
+  'الجزائر العاصمة', 'وهران', 'مستغانم', 'قسنطينة', 
+  'عنابة', 'البليدة', 'تلمسان', 'سطيف', 'بجاية'
+];
+
 function getMainMenuKeyboard(lang = 'ar') {
   const isAr = lang === 'ar';
   return Markup.keyboard([
@@ -51,7 +57,7 @@ bot.start((ctx) => {
   );
 });
 
-// 🔍 تصفح العقارات الذكي مع تنظيم الأزرار في 3 أعمدة (3 columns)
+// 🔍 تصفح العقارات الديناميكي (أزرار الولايات في 3 أعمدة بناءً على قاعدة البيانات)
 bot.hears(['🔍 تصفح العقارات المتاحة', '🔍 Parcourir les biens'], async (ctx) => {
   const userId = ctx.from.id;
   userState[userId] = { step: 'filtering_state' };
@@ -65,29 +71,26 @@ bot.hears(['🔍 تصفح العقارات المتاحة', '🔍 Parcourir les 
       return ctx.reply('📭 عذراً، لا توجد أي عقارات مسجلة في المنصة حالياً. كن أول من يضيف عقاراً!');
     }
 
-    // استخراج أسماء الولايات الفريدة بدون تكرار
     const uniqueStates = [...new Set(data.map(item => item.state_name).filter(Boolean))];
 
     if (uniqueStates.length === 0) {
       return ctx.reply('📭 لا توجد ولايات مسجلة حالياً.');
     }
 
-    // إنشاء الأزرار الفردية أولاً
     const buttons = uniqueStates.map(state => 
       Markup.button.callback(`📍 ${state}`, `filter_state_${state}`)
     );
 
-    // تقسيم الأزرار إلى صفوف بحيث كل صف يحتوي على 3 أعمدة (3 buttons per row)
+    // تنظيم الأزرار في 3 أعمدة
     const chunkedButtons = [];
     for (let i = 0; i < buttons.length; i += 3) {
       chunkedButtons.push(buttons.slice(i, i + 3));
     }
 
-    // إضافة زر "عرض الكل" في صف لوحده بالأسفل ليأخذ العرض كاملاً
     chunkedButtons.push([Markup.button.callback('🌐 عرض كافة العقارات (الكل)', 'filter_state_ALL')]);
 
     await ctx.reply(
-      `🔍 <b>نظام التصفية الذكي (تم تنظيم الأزرار في 3 أعمدة):</b>\n\n` +
+      `🔍 <b>نظام التصفية الذكي (مصنف في 3 أعمدة):</b>\n\n` +
       `اختر الولاية أدناه لعرض العقارات المتوفرة فيها فعلياً:`,
       {
         parse_mode: 'HTML',
@@ -100,7 +103,6 @@ bot.hears(['🔍 تصفح العقارات المتاحة', '🔍 Parcourir les 
   }
 });
 
-// معالجة اختيار الولاية وعرض العقارات المتاحة بدقة
 bot.action(/filter_state_(.+)/, async (ctx) => {
   await ctx.answerCbQuery();
   const stateQuery = decodeURIComponent(ctx.match[1]);
@@ -157,17 +159,109 @@ bot.action(/filter_state_(.+)/, async (ctx) => {
   }
 });
 
+// ➕ معالج إضافة عقار جديد مع الأزرار المساعدة للنوع والولاية
 bot.hears(['➕ إضافة عقار جديد', '➕ Ajouter un bien'], async (ctx) => {
   const userId = ctx.from.id;
   userState[userId] = { step: 'waiting_for_type', data: {} };
 
   await ctx.reply(
     `🏢 <b>معالج نشر عقار جديد (الخطوة 1 من 5)</b>\n\n` +
-    `أدخل أو اختر <b>نوع العقار</b> (مثال: شقة، فيلا، قطعة أرض...):`,
+    `اختر <b>نوع العقار</b> من الأزرار أدناه أو أكتبه يدوياً:`,
+    {
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback('شقة 🏢', 'type_شقة'), Markup.button.callback('فيلا 🏡', 'type_فيلا')],
+        [Markup.button.callback('منزل 🏠', 'type_منزل'), Markup.button.callback('قطعة أرض 📐', 'type_قطعة أرض')],
+        [Markup.button.callback('محل تجاري 🏪', 'type_محل تجاري')]
+      ])
+    }
+  );
+});
+
+bot.action(/type_(.+)/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const userId = ctx.from.id;
+  const selectedType = ctx.match[1];
+
+  if (!userState[userId]) userState[userId] = { data: {} };
+  userState[userId].data.property_type = selectedType;
+  userState[userId].step = 'waiting_for_state';
+
+  // إنشاء أزرار الولايات المساعدة في 3 أعمدة
+  const wilayaButtons = POPULAR_WILAYAS.map(w => Markup.button.callback(w, `sel_state_${w}`));
+  const chunkedWilayas = [];
+  for (let i = 0; i < wilayaButtons.length; i += 3) {
+    chunkedWilayas.push(wilayaButtons.slice(i, i + 3));
+  }
+
+  await ctx.editMessageText(
+    `✅ تم تحديد النوع: <b>${selectedType}</b>\n\n` +
+    `📍 <b>الخطوة 2:</b> اختر الولاية من الأزرار أو اكتبها يدوياً بالرسالة:`,
+    {
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard(chunkedWilayas)
+    }
+  );
+});
+
+bot.action(/sel_state_(.+)/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const userId = ctx.from.id;
+  const selectedState = ctx.match[1];
+
+  if (!userState[userId]) userState[userId] = { data: {} };
+  userState[userId].data.state_name = selectedState;
+  userState[userId].step = 'waiting_for_price';
+
+  await ctx.editMessageText(
+    `✅ الولاية: <b>${selectedState}</b>\n\n` +
+    `💰 <b>الخطوة 3:</b> أرسل الآن <b>السعر المطلوب</b> (مثال: 1.2 مليار، أو 6 ملايين/شهر):`,
     { parse_mode: 'HTML' }
   );
 });
 
+// دعم واجهة اللغات والدعم وعن المنصة
+bot.hears(['🌐 تغيير اللغة / Langue', '🌐 Langue / اللغة'], async (ctx) => {
+  ctx.reply(
+    `🌐 <b>اختر لغة النظام / Choisir la langue:</b>`,
+    {
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback('🇩🇿 العربية', 'set_lang_ar'), Markup.button.callback('🇫🇷 Français', 'set_lang_fr')]
+      ])
+    }
+  );
+});
+
+bot.action('set_lang_ar', async (ctx) => {
+  await ctx.answerCbQuery();
+  userLang[ctx.from.id] = 'ar';
+  await ctx.reply('✅ تم اعتماد اللغة العربية لنظام البوت.', getMainMenuKeyboard('ar'));
+});
+
+bot.action('set_lang_fr', async (ctx) => {
+  await ctx.answerCbQuery();
+  userLang[ctx.from.id] = 'fr';
+  await ctx.reply('✅ la langue française a été activée.', getMainMenuKeyboard('fr'));
+});
+
+bot.hears(['📞 الدعم والإدارة', '📞 Support & Contact'], async (ctx) => {
+  await ctx.reply(
+    `📞 <b>مركز الدعم التقني - منصة عقار الجزائر:</b>\n\n` +
+    `نحن في خدمتك دائماً لأي استفسار تقني أو إداري. تواصل معنا عبر القنوات الرسمية للمنصة.`,
+    { parse_mode: 'HTML', ...getMainMenuKeyboard(userLang[ctx.from.id] || 'ar') }
+  );
+});
+
+bot.hears(['ℹ️ عن المنصة', 'ℹ️ À propos'], async (ctx) => {
+  await ctx.reply(
+    `🏛 <b>عن منصة عقار الجزائر (Aqar System):</b>\n\n` +
+    `نظام رقمي ذكي ومتطور لإدارة المعاملات والعروض العقارية، مطور بأعلى معايير الهندسة البرمجية والذكاء السحابي لخدمة السوق الجزائري.`,
+    { parse_mode: 'HTML', ...getMainMenuKeyboard(userLang[ctx.from.id] || 'ar') }
+  );
+});
+
+// معالج النصوص اليدوية أثناء معالج النشر
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const userText = ctx.message.text.trim();
@@ -180,7 +274,17 @@ bot.on('text', async (ctx) => {
   if (state.step === 'waiting_for_type') {
     state.data.property_type = userText;
     state.step = 'waiting_for_state';
-    return ctx.reply(`✅ النوع: <b>${userText}</b>\n\n📍 اكتب اسم <b>الولاية</b> الموجود فيها العقار:`, { parse_mode: 'HTML' });
+
+    const wilayaButtons = POPULAR_WILAYAS.map(w => Markup.button.callback(w, `sel_state_${w}`));
+    const chunkedWilayas = [];
+    for (let i = 0; i < wilayaButtons.length; i += 3) {
+      chunkedWilayas.push(wilayaButtons.slice(i, i + 3));
+    }
+
+    return ctx.reply(
+      `✅ النوع: <b>${userText}</b>\n\n📍 اختر الولاية من الأزرار أو اكتبها يدوياً:`,
+      { parse_mode: 'HTML', ...Markup.inlineKeyboard(chunkedWilayas) }
+    );
   } else if (state.step === 'waiting_for_state') {
     state.data.state_name = userText;
     state.step = 'waiting_for_price';
@@ -230,7 +334,7 @@ bot.on('photo', async (ctx) => {
       }]);
 
       delete userState[userId];
-      await ctx.reply('🎉 <b>تم نشر إعلان العقار بنجاح في المنصة!</b> الأزرار ستتحدث تلقائياً لتشمل ولايتك.', { parse_mode: 'HTML', ...getMainMenuKeyboard('ar') });
+      await ctx.reply('🎉 <b>تم نشر إعلان العقار بنجاح في المنصة!</b> الأزرار ستتحدث تلقائياً.', { parse_mode: 'HTML', ...getMainMenuKeyboard('ar') });
     } catch (err) {
       console.error(err);
       delete userState[userId];
@@ -242,6 +346,7 @@ bot.on('photo', async (ctx) => {
 const PORT = process.env.PORT || 3000;
 
 if (WEBHOOK_DOMAIN) {
+  // مسار الـ Webhook المقاوم للنوم على Render
   app.post(`/bot${BOT_TOKEN}`, async (req, res) => {
     res.sendStatus(200);
     try {
@@ -254,7 +359,7 @@ if (WEBHOOK_DOMAIN) {
   });
 
   bot.telegram.setWebhook(`${WEBHOOK_DOMAIN}/bot${BOT_TOKEN}`);
-  app.get('/', (req, res) => res.send('Aqar Algeria Dynamic System is online 🚀'));
+  app.get('/', (req, res) => res.send('Aqar Algeria Perfect System is online 🚀'));
   app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 } else {
   bot.launch();
