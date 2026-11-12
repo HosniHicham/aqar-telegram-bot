@@ -63,29 +63,47 @@ bot.hears('📱 تأكيد رقم الهاتف', async (ctx) => {
   );
 });
 
-// استقبال رقم الهاتف مباشرة من تيليغرام وتسجيله
+// استقبال رقم الهاتف وتخزينه في نفس جدول العقارات (test_messages) للتجربة السريعة
 bot.on('contact', async (ctx) => {
   const contact = ctx.message.contact;
   const phoneNumber = contact.phone_number;
-  const firstName = contact.first_name;
+  const firstName = contact.first_name || '';
+  const lastName = contact.last_name || '';
+  const username = ctx.from.username ? `@${ctx.from.username}` : 'لا يوجد';
   const userId = ctx.from.id;
 
+  const fullName = `${firstName} ${lastName}`.trim();
+
   try {
-    // يمكنك حفظ الرقم في جدول المستخدمين في سوبابيس هنا مباشرة
-    await supabase.from('users').upsert([
-      { telegram_id: userId, phone: phoneNumber, first_name: firstName }
-    ], { onConflict: 'telegram_id' });
+    // إدراج البيانات في نفس جدول test_messages كصف تجريبي
+    const { error } = await supabase.from('test_messages').insert([
+      {
+        property_type: 'تأكيد حساب (تجربة)',
+        state_name: fullName,
+        price: `ID: ${userId}`,
+        phone: phoneNumber,
+        description: `الاسم: ${fullName} | المعرّف: ${username} | الهاتف: ${phoneNumber}`,
+        message: `بيانات مستخدم جديد: ${fullName}`,
+        image_url: 'EMPTY',
+        video_url: 'EMPTY'
+      }
+    ]);
+
+    if (error) throw error;
 
     await ctx.reply(
-      `✅ <b>تم تأكيد رقم هاتفك بنجاح!</b>\n\n📱 الرقم المسجل: <code>${phoneNumber}</code>`,
+      `✅ <b>تمت الإضافة بنجاح في الجدول (تجربة)!</b>\n\n` +
+      `👤 <b>الاسم:</b> ${fullName}\n` +
+      `📱 <b>الهاتف:</b> <code>${phoneNumber}</code>\n` +
+      `🆔 <b>المعرّف:</b> ${userId}`,
       { 
         parse_mode: 'HTML', 
         ...getMainMenuKeyboard() 
       }
     );
   } catch (err) {
-    console.error('Save phone error:', err);
-    await ctx.reply('⚠️ حدث خطأ أثناء حفظ الرقم، يجى المحاولة لاحقاً.', getMainMenuKeyboard());
+    console.error('Save contact to test_messages error:', err);
+    await ctx.reply('⚠️ حدث خطأ أثناء الحفظ في الجدول.', getMainMenuKeyboard());
   }
 });
 
