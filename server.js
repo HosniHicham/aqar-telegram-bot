@@ -49,7 +49,7 @@ const STRINGS = {
     aboutText: '🏛 <b>عن منصة عقار الجزائر (Aqar System):</b>\n\nنظام رقمي ذكي ومتطور لإدارة المعاملات والعروض العقارية.',
     langChanged: '✅ تم اعتماد اللغة العربية لنظام البوت.',
     errorMsg: '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.',
-    contactBtn: '📞 اتصال',
+    contactBtn: '📞 اتصال بالمالك',
     authBtnText: '📱 اضغط هنا لمشاركة رقم هاتفك والبدء'
   },
   fr: {
@@ -69,7 +69,7 @@ const STRINGS = {
     aboutText: '🏛 <b>À propos d\'Aqar Algérie:</b>\n\nSystème numérique intelligent de gestion immobilière.',
     langChanged: '✅ La langue française a été activée.',
     errorMsg: '⚠️ Une erreur est survenue, veuillez réessayer.',
-    contactBtn: '📞 Contact',
+    contactBtn: '📞 Contacter le propriétaire',
     authBtnText: '📱 Partager mon numéro et commencer'
   }
 };
@@ -80,7 +80,7 @@ function t(userId, key, ...args) {
   return typeof val === 'function' ? val(...args) : val;
 }
 
-// لوحة المفاتيح الرئيسية (مع زر الموقع في الأسفل تماماً)
+// لوحة المفاتيح الرئيسية (زر الموقع في الأسفل تماماً)
 function getMainMenuKeyboard(userId) {
   const lang = userLang[userId] || 'ar';
   const isAr = lang === 'ar';
@@ -92,7 +92,6 @@ function getMainMenuKeyboard(userId) {
   ]).resize();
 }
 
-// زر تأكيد الرقم الإجباري (يظهر للمستخدم الجديد فقط)
 function getAuthKeyboard(userId) {
   const lang = userLang[userId] || 'ar';
   return Markup.keyboard([
@@ -100,7 +99,6 @@ function getAuthKeyboard(userId) {
   ]).resize().oneTime();
 }
 
-// دالة التحقق هل المستخدم مسجل مسبقاً في جدول Supabase
 async function isUserVerified(telegramId) {
   try {
     const { data } = await supabase
@@ -115,7 +113,6 @@ async function isUserVerified(telegramId) {
   }
 }
 
-// 🌟 نقطة البدء والتحقق الأمني الإجباري
 bot.start(async (ctx) => {
   await ctx.sendChatAction('typing');
   const userName = ctx.from.first_name || 'مستخدمنا الكريم';
@@ -139,7 +136,6 @@ bot.start(async (ctx) => {
   }
 });
 
-// استقبال وتوثيق رقم الهاتف عند الضغط أول مرة
 bot.on('contact', async (ctx) => {
   await ctx.sendChatAction('typing');
   const contact = ctx.message.contact;
@@ -172,7 +168,6 @@ bot.on('contact', async (ctx) => {
   }
 });
 
-// 🌐 معالج زر الموقع الرسمي (يفتح الرابط في المتصفح الخارجي)
 bot.hears(['🌐 تصفح الموقع الرسمي (البروزر)', '🌐 Site Officiel (Navigateur)'], async (ctx) => {
   await ctx.reply(
     '🌐 <b>رابط منصة عقار الجزائر (ويب):</b>\n\nانقر على الزر أدناه لفتح الموقع وتصفحه في متصفح الهاتف:',
@@ -185,7 +180,6 @@ bot.hears(['🌐 تصفح الموقع الرسمي (البروزر)', '🌐 Sit
   );
 });
 
-// حماية إضافية تمنع غير الموثق من تخطي خطوة تأكيد الرقم
 bot.use(async (ctx, next) => {
   if (ctx.message && ctx.message.text && ctx.message.text.startsWith('/')) {
     return next();
@@ -200,7 +194,7 @@ bot.use(async (ctx, next) => {
   return next();
 });
 
-// 🔍 تصفح العقارات (اختيار الولاية أولاً لبدء نظام الصفحات Pagination)
+// 🔍 تصفح العقارات (اختيار الولاية)
 bot.hears(['🔍 تصفح العقارات المتاحة', '🔍 Parcourir les biens'], async (ctx) => {
   const userId = ctx.from.id;
 
@@ -212,7 +206,6 @@ bot.hears(['🔍 تصفح العقارات المتاحة', '🔍 Parcourir les 
     }
 
     const uniqueStates = [...new Set(data.map(item => item.state_name).filter(Boolean))];
-
     if (uniqueStates.length === 0) {
       return ctx.reply(t(userId, 'noProperties'));
     }
@@ -238,7 +231,7 @@ bot.hears(['🔍 تصفح العقارات المتاحة', '🔍 Parcourir les 
   }
 });
 
-// 📄 دالة عرض العقار الواحد مع أزرار التنقل (Pagination System)
+// 📄 نظام الصفحات (Pagination) - زر الاتصال أصبح في الأعلى فوق أزرار التنقل
 async function renderPropertyPage(ctx, stateQuery, pageIndex, isEdit = true) {
   const userId = ctx.from.id;
   const lang = userLang[userId] || 'ar';
@@ -257,7 +250,6 @@ async function renderPropertyPage(ctx, stateQuery, pageIndex, isEdit = true) {
       return ctx.reply(msg);
     }
 
-    // تصفية إشعارات التوثيق لكي لا تظهر في قائمة العقارات
     const validProperties = data.filter(item => item.property_type !== '⭐ توثيق حساب اجباري');
 
     if (validProperties.length === 0) {
@@ -280,8 +272,11 @@ async function renderPropertyPage(ctx, stateQuery, pageIndex, isEdit = true) {
       `📝 <b>الوصف:</b> ${item.description || item.message || 'بدون تفاصيل'}`;
 
     const navButtons = [];
-    const row = [];
+    
+    // 🌟 زر الاتصال أصبح في الأعلى تماماً قبل أزرار التنقل
+    navButtons.push([Markup.button.callback(t(userId, 'contact_btn') || '📞 اتصال بالمالك', 'contact_admin')]);
 
+    const row = [];
     if (pageIndex > 0) {
       row.push(Markup.button.callback('⬅️ السابق', `browse_state_${stateQuery}_${pageIndex - 1}`));
     }
@@ -294,7 +289,6 @@ async function renderPropertyPage(ctx, stateQuery, pageIndex, isEdit = true) {
 
     navButtons.push(row);
     navButtons.push([Markup.button.callback('📍 تغيير الولاية / Changer Wilaya', 'back_to_states')]);
-    navButtons.push([Markup.button.callback(t(userId, 'contact_btn') || '📞 اتصال', 'contact_admin')]);
 
     const kb = Markup.inlineKeyboard(navButtons);
 
@@ -325,7 +319,6 @@ async function renderPropertyPage(ctx, stateQuery, pageIndex, isEdit = true) {
   }
 }
 
-// معالج أزرار التنقل بين العقارات (صفحة صفحة)
 bot.action(/browse_state_(.+)_(.+)/, async (ctx) => {
   await ctx.answerCbQuery();
   const stateQuery = decodeURIComponent(ctx.match[1]);
@@ -337,7 +330,6 @@ bot.action('noop', async (ctx) => {
   await ctx.answerCbQuery();
 });
 
-// العودة لاختيار الولايات من جديد
 bot.action('back_to_states', async (ctx) => {
   await ctx.answerCbQuery();
   const userId = ctx.from.id;
@@ -392,10 +384,18 @@ bot.action(/type_(.+)/, async (ctx) => {
     chunkedWilayas.push(wilayaButtons.slice(i, i + 3));
   }
 
-  await ctx.editMessageText(t(userId, 'step2State', selectedType), {
-    parse_mode: 'HTML',
-    ...Markup.inlineKeyboard(chunkedWilayas)
-  });
+  // 🌟 تحديث نظيف للرسالة (تجنب التراكم البصري)
+  try {
+    await ctx.editMessageText(t(userId, 'step2State', selectedType), {
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard(chunkedWilayas)
+    });
+  } catch (e) {
+    await ctx.reply(t(userId, 'step2State', selectedType), {
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard(chunkedWilayas)
+    });
+  }
 });
 
 bot.action(/sel_state_(.+)/, async (ctx) => {
@@ -407,7 +407,11 @@ bot.action(/sel_state_(.+)/, async (ctx) => {
   userState[userId].data.state_name = selectedState;
   userState[userId].step = 'waiting_for_price';
 
-  await ctx.editMessageText(t(userId, 'step3Price', selectedState), { parse_mode: 'HTML' });
+  try {
+    await ctx.editMessageText(t(userId, 'step3Price', selectedState), { parse_mode: 'HTML' });
+  } catch (e) {
+    await ctx.reply(t(userId, 'step3Price', selectedState), { parse_mode: 'HTML' });
+  }
 });
 
 // دعم واجهة تغيير اللغة
@@ -423,12 +427,14 @@ bot.hears(['🌐 تغيير اللغة / Langue', '🌐 Langue / اللغة'], a
 bot.action('set_lang_ar', async (ctx) => {
   await ctx.answerCbQuery();
   userLang[ctx.from.id] = 'ar';
+  await ctx.deleteMessage().catch(() => {});
   await ctx.reply(t(ctx.from.id, 'langChanged'), getMainMenuKeyboard(ctx.from.id));
 });
 
 bot.action('set_lang_fr', async (ctx) => {
   await ctx.answerCbQuery();
   userLang[ctx.from.id] = 'fr';
+  await ctx.deleteMessage().catch(() => {});
   await ctx.reply(t(ctx.from.id, 'langChanged'), getMainMenuKeyboard(ctx.from.id));
 });
 
