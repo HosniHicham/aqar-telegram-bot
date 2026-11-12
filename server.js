@@ -51,13 +51,12 @@ bot.start((ctx) => {
   );
 });
 
-// 🔍 تصفح العقارات الذكي (يجلب الولايات المسجلة فعلياً في القاعدة دون عشوائية)
+// 🔍 تصفح العقارات الذكي مع تنظيم الأزرار في 3 أعمدة (3 columns)
 bot.hears(['🔍 تصفح العقارات المتاحة', '🔍 Parcourir les biens'], async (ctx) => {
   const userId = ctx.from.id;
   userState[userId] = { step: 'filtering_state' };
 
   try {
-    // جلب الولايات التي تحتوي على عقارات مسجلة حقيقية فقط من القاعدة
     const { data, error } = await supabase
       .from('test_messages')
       .select('state_name');
@@ -73,20 +72,26 @@ bot.hears(['🔍 تصفح العقارات المتاحة', '🔍 Parcourir les 
       return ctx.reply('📭 لا توجد ولايات مسجلة حالياً.');
     }
 
-    // بناء الأزرار ديناميكياً بناءً على ما هو موجود في قاعدة البيانات فقط
-    const buttons = uniqueStates.map(state => [
+    // إنشاء الأزرار الفردية أولاً
+    const buttons = uniqueStates.map(state => 
       Markup.button.callback(`📍 ${state}`, `filter_state_${state}`)
-    ]);
+    );
 
-    // إضافة زر لعرض الكل
-    buttons.push([Markup.button.callback('🌐 عرض كافة العقارات (الكل)', 'filter_state_ALL')]);
+    // تقسيم الأزرار إلى صفوف بحيث كل صف يحتوي على 3 أعمدة (3 buttons per row)
+    const chunkedButtons = [];
+    for (let i = 0; i < buttons.length; i += 3) {
+      chunkedButtons.push(buttons.slice(i, i + 3));
+    }
+
+    // إضافة زر "عرض الكل" في صف لوحده بالأسفل ليأخذ العرض كاملاً
+    chunkedButtons.push([Markup.button.callback('🌐 عرض كافة العقارات (الكل)', 'filter_state_ALL')]);
 
     await ctx.reply(
-      `🔍 <b>نظام التصفية الذكي (محدث تلقائياً من قاعدة البيانات):</b>\n\n` +
+      `🔍 <b>نظام التصفية الذكي (تم تنظيم الأزرار في 3 أعمدة):</b>\n\n` +
       `اختر الولاية أدناه لعرض العقارات المتوفرة فيها فعلياً:`,
       {
         parse_mode: 'HTML',
-        ...Markup.inlineKeyboard(buttons)
+        ...Markup.inlineKeyboard(chunkedButtons)
       }
     );
   } catch (err) {
@@ -152,7 +157,6 @@ bot.action(/filter_state_(.+)/, async (ctx) => {
   }
 });
 
-// باقي معالج النشر والإضافات كما هو...
 bot.hears(['➕ إضافة عقار جديد', '➕ Ajouter un bien'], async (ctx) => {
   const userId = ctx.from.id;
   userState[userId] = { step: 'waiting_for_type', data: {} };
