@@ -105,9 +105,9 @@ function getBrowsingKeyboard(userId, currentIndex, totalCount) {
   const isAr = lang === 'ar';
   return Markup.keyboard([
     [
-      currentIndex > 0 ? (isAr ? '⬅️ السابق' : '⬅️ Précédent') : '⏹️',
+      currentIndex > 0 ? (isAr ? '⬅️ السابق' : '⬅️ Précédent') : 'السابق',
       `📄 ${currentIndex + 1} / ${totalCount}`,
-      currentIndex < totalCount - 1 ? (isAr ? 'التالي ➡️' : 'Suivant ➡️') : '⏹️'
+      currentIndex < totalCount - 1 ? (isAr ? 'التالي ➡️' : 'Suivant ➡️') : 'التالي'
     ],
     [isAr ? '📍 تغيير الولاية' : '📍 Changer Wilaya', isAr ? '🏠 القائمة الرئيسية' : '🏠 Menu principal']
   ]).resize();
@@ -142,7 +142,17 @@ async function isUserVerified(telegramId) {
   }
 }
 
+// دالة تنظيف رسالة المستخدم لمنع تراكم الشات
+async function safeDeleteUserMessage(ctx) {
+  try {
+    if (ctx.message && ctx.message.message_id) {
+      await ctx.telegram.deleteMessage(ctx.chat.id, ctx.message.message_id).catch(() => {});
+    }
+  } catch (e) {}
+}
+
 bot.start(async (ctx) => {
+  await safeDeleteUserMessage(ctx);
   await ctx.sendChatAction('typing');
   const userName = ctx.from.first_name || 'مستخدمنا الكريم';
   const userId = ctx.from.id;
@@ -167,6 +177,7 @@ bot.start(async (ctx) => {
 });
 
 bot.hears(['❌ إلغاء العملية والعودة', '❌ Annuler et quitter', '🏠 القائمة الرئيسية', '🏠 Menu principal'], async (ctx) => {
+  await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   delete userState[userId];
   delete browsingSession[userId];
@@ -181,6 +192,7 @@ bot.hears(['❌ إلغاء العملية والعودة', '❌ Annuler et quitt
 });
 
 bot.on('contact', async (ctx) => {
+  await safeDeleteUserMessage(ctx);
   await ctx.sendChatAction('typing');
   const contact = ctx.message.contact;
   const phoneNumber = contact.phone_number;
@@ -213,6 +225,7 @@ bot.on('contact', async (ctx) => {
 });
 
 bot.hears(['🌐 تصفح الموقع الرسمي (البروزر)', '🌐 Site Officiel (Navigateur)'], async (ctx) => {
+  await safeDeleteUserMessage(ctx);
   await ctx.reply(
     '🌐 <b>رابط منصة عقار الجزائر (ويب):</b>\n\nانقر على الزر أدناه لفتح الموقع وتصفحه في متصفح الهاتف:',
     {
@@ -240,6 +253,7 @@ bot.use(async (ctx, next) => {
 
 // 🔍 تصفح العقارات
 bot.hears(['🔍 تصفح العقارات المتاحة', '🔍 Parcourir les biens'], async (ctx) => {
+  await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   delete browsingSession[userId];
 
@@ -269,8 +283,9 @@ bot.hears(['🔍 تصفح العقارات المتاحة', '🔍 Parcourir les 
   }
 });
 
-// 🎯 معالج زر الولاية
+// 🎯 معالج زر الولاية (يدعم الإضافة أو التصفح بدقة)
 bot.hears(/^📍 (.+)/, async (ctx) => {
+  await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   const selectedState = ctx.match[1].trim();
   const state = userState[userId];
@@ -293,6 +308,7 @@ bot.hears(/^📍 (.+)/, async (ctx) => {
 });
 
 bot.hears(['🌐 الكل', '🌐 Tous'], async (ctx) => {
+  await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   browsingSession[userId] = { state: 'ALL', page: 0 };
   await renderPropertyPage(ctx, userId, 0);
@@ -315,7 +331,7 @@ async function renderPropertyPage(ctx, userId, pageIndex) {
 
   const stateQuery = session.state;
   session.page = pageIndex;
-  session.selectingPage = false; // إعادة ضبط وضع اختيار الصفحة
+  session.selectingPage = false;
 
   try {
     let query = supabase.from('test_messages').select('*').order('id', { ascending: false });
@@ -377,8 +393,9 @@ async function renderPropertyPage(ctx, userId, pageIndex) {
   }
 }
 
-// 🔢 خاصية القفز السريع: عند الضغط على زر العداد (مثال: 📄 2 / 5)[span_3](start_span)[span_3](end_span)[span_4](start_span)[span_4](end_span)
+// 🔢 زر العداد لعرض الأرقام فقط بدون أيقونات إضافية
 bot.hears(/^📄 (\d+) \/ (\d+)$/, async (ctx) => {
+  await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   const session = browsingSession[userId];
   const lang = userLang[userId] || 'ar';
@@ -392,7 +409,7 @@ bot.hears(/^📄 (\d+) \/ (\d+)$/, async (ctx) => {
   const numberButtons = [];
   let row = [];
   for (let i = 1; i <= totalCount; i++) {
-    row.push(`🔢 ${i}`);
+    row.push(`${i}`); // 👈 الرقم فقط بدون أيقونات
     if (row.length === 5) {
       numberButtons.push(row);
       row = [];
@@ -412,20 +429,21 @@ bot.hears(/^📄 (\d+) \/ (\d+)$/, async (ctx) => {
   );
 });
 
-// الانتقال المباشر للعقار عند الضغط على رقمه أسفل الشاشة
-bot.hears(/^🔢 (\d+)$/, async (ctx) => {
+// الانتقال المباشر عند الضغط على الرقم الصافي
+bot.hears(/^\d+$/, async (ctx) => {
+  await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   const session = browsingSession[userId];
 
   if (session && session.selectingPage) {
-    const selectedNumber = parseInt(ctx.match[1], 10);
+    const selectedNumber = parseInt(ctx.message.text.trim(), 10);
     session.selectingPage = false;
     await renderPropertyPage(ctx, userId, selectedNumber - 1);
   }
 });
 
-// العودة للعقار الحالي من قائمة الأرقام
 bot.hears(['🔙 رجوع للعقار', '🔙 Retour au bien'], async (ctx) => {
+  await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   const session = browsingSession[userId];
 
@@ -435,7 +453,8 @@ bot.hears(['🔙 رجوع للعقار', '🔙 Retour au bien'], async (ctx) => 
   }
 });
 
-bot.hears(['⬅️ السابق', '⬅️ Précédent'], async (ctx) => {
+bot.hears(['⬅️ السابق', '⬅️ Précédent', 'السابق'], async (ctx) => {
+  await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   const session = browsingSession[userId];
   if (session && session.page > 0) {
@@ -445,7 +464,8 @@ bot.hears(['⬅️ السابق', '⬅️ Précédent'], async (ctx) => {
   }
 });
 
-bot.hears(['التالي ➡️', 'Suivant ➡️'], async (ctx) => {
+bot.hears(['التالي ➡️', 'Suivant ➡️', 'التالي'], async (ctx) => {
+  await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   const session = browsingSession[userId];
   if (session) {
@@ -453,7 +473,9 @@ bot.hears(['التالي ➡️', 'Suivant ➡️'], async (ctx) => {
   }
 });
 
-bot.hears(['📍 تغيير الولاية', '📍 Changer Wilaya'], async (ctx) => {
+// 🎯 إصلاح زر "تغيير الولاية" بشكل جذري
+bot.hears(['📍 تغيير الولاية', '📍 Changer Wilaya', 'تغيير الولاية'], async (ctx) => {
+  await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   delete browsingSession[userId];
   
@@ -475,6 +497,7 @@ bot.hears(['📍 تغيير الولاية', '📍 Changer Wilaya'], async (ctx)
 
 // ➕ معالج إضافة عقار جديد
 bot.hears(['➕ إضافة عقار جديد', '➕ Ajouter un bien'], async (ctx) => {
+  await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   userState[userId] = { step: 'waiting_for_type', data: {} };
 
@@ -489,6 +512,7 @@ bot.hears(['➕ إضافة عقار جديد', '➕ Ajouter un bien'], async (ct
 });
 
 bot.hears(PROPERTY_TYPES, async (ctx) => {
+  await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   const state = userState[userId];
 
@@ -510,6 +534,7 @@ bot.hears(PROPERTY_TYPES, async (ctx) => {
 
 // دعم واجهة تغيير اللغة
 bot.hears(['🌐 تغيير اللغة / Langue', '🌐 Langue / اللغة'], async (ctx) => {
+  await safeDeleteUserMessage(ctx);
   ctx.reply(`🌐 <b>اختر لغة النظام / Choisir la langue:</b>`, {
     parse_mode: 'HTML',
     ...Markup.inlineKeyboard([
@@ -532,13 +557,15 @@ bot.action('set_lang_fr', async (ctx) => {
 });
 
 bot.hears(['📞 الدعم والإدارة', '📞 Support & Contact'], async (ctx) => {
+  await safeDeleteUserMessage(ctx);
   await ctx.reply(t(ctx.from.id, 'supportText'), {
     parse_mode: 'HTML',
-    ...getMainMenuKeyboard(userId)
+    ...getMainMenuKeyboard(ctx.from.id)
   });
 });
 
 bot.hears(['ℹ️ عن المنصة', 'ℹ️ À propos'], async (ctx) => {
+  await safeDeleteUserMessage(ctx);
   await ctx.reply(t(ctx.from.id, 'aboutText'), {
     parse_mode: 'HTML',
     ...getMainMenuKeyboard(userId)
@@ -555,6 +582,8 @@ bot.on('text', async (ctx) => {
 
   const state = userState[userId];
   if (!state) return;
+
+  await safeDeleteUserMessage(ctx);
 
   if (state.step === 'waiting_for_price') {
     state.data.price = userText;
@@ -573,6 +602,7 @@ bot.on('text', async (ctx) => {
 
 // 📸 استلام الصور
 bot.on('photo', async (ctx) => {
+  await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   const state = userState[userId];
 
@@ -613,6 +643,7 @@ bot.on('photo', async (ctx) => {
 
 // 🎥 استلام الفيديوهات
 bot.on('video', async (ctx) => {
+  await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   const state = userState[userId];
 
