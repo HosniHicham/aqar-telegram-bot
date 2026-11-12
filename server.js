@@ -81,7 +81,6 @@ function t(userId, key, ...args) {
   return typeof val === 'function' ? val(...args) : val;
 }
 
-// دالة ترتيب الأزرار في 4 أعمدة
 function chunkButtons(buttonsArray, chunkSize = 4) {
   const chunked = [];
   for (let i = 0; i < buttonsArray.length; i += chunkSize) {
@@ -270,7 +269,7 @@ bot.hears(['🔍 تصفح العقارات المتاحة', '🔍 Parcourir les 
   }
 });
 
-// 🎯 معالج تفصيلي لزر الولاية
+// 🎯 معالج زر الولاية (يفصل بذكاء بين الإضافة والتصفح)
 bot.hears(/^📍 (.+)/, async (ctx) => {
   const userId = ctx.from.id;
   const selectedState = ctx.match[1].trim();
@@ -282,21 +281,21 @@ bot.hears(/^📍 (.+)/, async (ctx) => {
 
     return ctx.reply(t(userId, 'step3Price', selectedState), {
       parse_mode: 'HTML',
-      ...getCancelKeyboard(userId)
+      ...getCancelKeyword(userId)
     });
   }
 
   const stateList = await getUniqueStatesList();
   if (stateList.includes(selectedState) || selectedState === 'الكل') {
     browsingSession[userId] = { state: selectedState, page: 0 };
-    await renderPropertyPage(ctx, userId, 0, false);
+    await renderPropertyPage(ctx, userId, 0);
   }
 });
 
 bot.hears(['🌐 الكل', '🌐 Tous'], async (ctx) => {
   const userId = ctx.from.id;
   browsingSession[userId] = { state: 'ALL', page: 0 };
-  await renderPropertyPage(ctx, userId, 0, false);
+  await renderPropertyPage(ctx, userId, 0);
 });
 
 async function getUniqueStatesList() {
@@ -309,8 +308,8 @@ async function getUniqueStatesList() {
   }
 }
 
-// 📄 دالة عرض العقار الواحد (نظيفة وخالية من أي جمل تشتيت)
-async function renderPropertyPage(ctx, userId, pageIndex, isEdit = false) {
+// 📄 دالة عرض العقار الواحد مع التنظيف الاحترافي التلقائي
+async function renderPropertyPage(ctx, userId, pageIndex) {
   const session = browsingSession[userId];
   if (!session) return;
 
@@ -355,23 +354,22 @@ async function renderPropertyPage(ctx, userId, pageIndex, isEdit = false) {
 
     const replyKb = getBrowsingKeyboard(userId, pageIndex, totalCount);
 
+    // 🌟 التنظيف التلقائي: مسح الرسالة القديمة إن وجدت لتجنب التراكم البصري
+    if (session.lastMessageId) {
+      await ctx.telegram.deleteMessage(ctx.chat.id, session.lastMessageId).catch(() => {});
+    }
+
+    let sentMsg;
     if (item.video_url && item.video_url !== 'EMPTY') {
-      if (isEdit) await ctx.deleteMessage().catch(() => {});
-      await ctx.replyWithVideo(item.video_url, { caption, parse_mode: 'HTML', ...inlineKb, ...replyKb });
+      sentMsg = await ctx.replyWithVideo(item.video_url, { caption, parse_mode: 'HTML', ...inlineKb, ...replyKb });
     } else if (item.image_url && item.image_url !== 'EMPTY') {
-      if (isEdit) await ctx.deleteMessage().catch(() => {});
-      await ctx.replyWithPhoto(item.image_url, { caption, parse_mode: 'HTML', ...inlineKb, ...replyKb });
+      sentMsg = await ctx.replyWithPhoto(item.image_url, { caption, parse_mode: 'HTML', ...inlineKb, ...replyKb });
     } else {
-      if (isEdit) {
-        try {
-          await ctx.editMessageText(caption, { parse_mode: 'HTML', ...inlineKb });
-          await ctx.reply('تصفح العقارات:', replyKb);
-        } catch (e) {
-          await ctx.reply(caption, { parse_mode: 'HTML', ...inlineKb, ...replyKb });
-        }
-      } else {
-        await ctx.reply(caption, { parse_mode: 'HTML', ...inlineKb, ...replyKb });
-      }
+      sentMsg = await ctx.reply(caption, { parse_mode: 'HTML', ...inlineKb, ...replyKb });
+    }
+
+    if (sentMsg) {
+      session.lastMessageId = sentMsg.message_id;
     }
   } catch (err) {
     console.error('Pagination error:', err);
@@ -383,7 +381,7 @@ bot.hears(['⬅️ السابق', '⬅️ Précédent'], async (ctx) => {
   const userId = ctx.from.id;
   const session = browsingSession[userId];
   if (session && session.page > 0) {
-    await renderPropertyPage(ctx, userId, session.page - 1, false);
+    await renderPropertyPage(ctx, userId, session.page - 1);
   } else {
     ctx.reply('⚠️ هذا هو العقار الأول.');
   }
@@ -393,7 +391,7 @@ bot.hears(['التالي ➡️', 'Suivant ➡️'], async (ctx) => {
   const userId = ctx.from.id;
   const session = browsingSession[userId];
   if (session) {
-    await renderPropertyPage(ctx, userId, session.page + 1, false);
+    await renderPropertyPage(ctx, userId, session.page + 1);
   }
 });
 
@@ -587,7 +585,8 @@ bot.on('video', async (ctx) => {
 
       delete userState[userId];
       await ctx.reply(t(userId, 'successPublish'), { parse_mode: 'HTML', ...getMainMenuKeyboard(userId) });
-    } catch (err) {
+    }
+    catch (err) {
       console.error(err);
       delete userState[userId];
       await ctx.reply(t(userId, 'errorMsg'), getMainMenuKeyboard(userId));
