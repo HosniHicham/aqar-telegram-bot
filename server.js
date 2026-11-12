@@ -1,3 +1,5 @@
+'use strict';
+
 const { Telegraf, Markup } = require('telegraf');
 const express = require('express');
 const { createClient } = require('@supabase/supabase-js');
@@ -240,8 +242,7 @@ bot.action('set_lang_fr', async (ctx) => {
 
 bot.hears(['📞 الدعم والإدارة', '📞 Support & Contact'], async (ctx) => {
   await ctx.reply(
-    `📞 <b>مركز الدعم التقني -  :</b>\n\n` +
-    `المنصة مصممة ومطورة خصيصاً من طرف خبير تكنولوجي <b>  </b>).\n` +
+    `📞 <b>مركز الدعم التقني - منصة عقار الجزائر:</b>\n\n` +
     `نحن في خدمتك دائماً لأي استفسار تقني أو إداري.`,
     { parse_mode: 'HTML' }
   );
@@ -250,7 +251,7 @@ bot.hears(['📞 الدعم والإدارة', '📞 Support & Contact'], async 
 bot.hears(['ℹ️ عن المنصة', 'ℹ️ À propos'], async (ctx) => {
   await ctx.reply(
     `🏛 <b>عن منصة عقار الجزائر (Aqar System):</b>\n\n` +
-    `نظام رقمي ذكي ومتطور لإدارة المعاملات والعروض العقارية، مطور بأعلى معايير الهندسة البرمجية والذكاء السحابي بواسطة خبير).`,
+    `نظام رقمي ذكي ومتطور لإدارة المعاملات والعروض العقارية، مطور بأعلى معايير الهندسة البرمجية والذكاء السحابي.`,
     { parse_mode: 'HTML' }
   );
 });
@@ -448,7 +449,21 @@ bot.on('video', async (ctx) => {
 const PORT = process.env.PORT || 3000;
 
 if (WEBHOOK_DOMAIN) {
-  app.use(bot.webhookCallback(`/bot${BOT_TOKEN}`));
+  // مسار الـ Webhook الخاطف والمقاوم لنوم Render
+  app.post(`/bot${BOT_TOKEN}`, async (req, res) => {
+    // إرسال استجابة فورية لمنع تليجرام من إعادة إرسال الطلبات أثناء الاستيقاظ
+    res.sendStatus(200);
+
+    try {
+      if (req.body && req.body.update_id) {
+        await bot.handleUpdate(req.body);
+      }
+    } catch (err) {
+      console.error('Webhook processing error:', err);
+    }
+  });
+
+  // تسجيل الـ Webhook مع تليجرام
   bot.telegram.setWebhook(`${WEBHOOK_DOMAIN}/bot${BOT_TOKEN}`);
   
   app.get('/', (req, res) => {
@@ -456,7 +471,7 @@ if (WEBHOOK_DOMAIN) {
   });
 
   app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT} with Webhook.`);
+    console.log(`Server is running on port ${PORT} with Optimized Webhook.`);
   });
 } else {
   bot.launch();
