@@ -80,7 +80,7 @@ function t(userId, key, ...args) {
   return typeof val === 'function' ? val(...args) : val;
 }
 
-// لوحة المفاتيح الرئيسية (زر الموقع في الأسفل تماماً)
+// القائمة الرئيسية الأصلية (مع زر الموقع في الأسفل تماماً)
 function getMainMenuKeyboard(userId) {
   const lang = userLang[userId] || 'ar';
   const isAr = lang === 'ar';
@@ -89,6 +89,14 @@ function getMainMenuKeyboard(userId) {
     [isAr ? '📞 الدعم والإدارة' : '📞 Support & Contact', isAr ? '🌐 تغيير اللغة / Langue' : '🌐 Langue / اللغة'],
     [isAr ? 'ℹ️ عن المنصة' : 'ℹ️ À propos'],
     [isAr ? '🌐 تصفح الموقع الرسمي (البروزر)' : '🌐 Site Officiel (Navigateur)']
+  ]).resize();
+}
+
+// لوحة مفاتيح مؤقتة تظهر أثناء العمليات (مثل الإضافة) لتغيير الكومند أسفل الشاشة
+function getCancelKeyboard(userId) {
+  const lang = userLang[userId] || 'ar';
+  return Markup.keyboard([
+    [lang === 'ar' ? '❌ إلغاء العملية والعودة' : '❌ Annuler et quitter']
   ]).resize();
 }
 
@@ -134,6 +142,20 @@ bot.start(async (ctx) => {
       ...getAuthKeyboard(userId)
     });
   }
+});
+
+// زر الإلغاء والخروج للعودة للقائمة الأصلية
+bot.hears(['❌ إلغاء العملية والعودة', '❌ Annuler et quitter'], async (ctx) => {
+  const userId = ctx.from.id;
+  delete userState[userId];
+
+  await ctx.reply(
+    userLang[userId] === 'fr' ? '✅ Opération annulée. Retour au menu principal :' : '✅ تم إلغاء العملية والعودة للقائمة الرئيسية:',
+    {
+      parse_mode: 'HTML',
+      ...getMainMenuKeyboard(userId)
+    }
+  );
 });
 
 bot.on('contact', async (ctx) => {
@@ -202,12 +224,12 @@ bot.hears(['🔍 تصفح العقارات المتاحة', '🔍 Parcourir les 
     const { data, error } = await supabase.from('test_messages').select('state_name');
 
     if (error || !data || data.length === 0) {
-      return ctx.reply(t(userId, 'noProperties'));
+      return ctx.reply(t(userId, 'noProperties'), getMainMenuKeyboard(userId));
     }
 
     const uniqueStates = [...new Set(data.map(item => item.state_name).filter(Boolean))];
     if (uniqueStates.length === 0) {
-      return ctx.reply(t(userId, 'noProperties'));
+      return ctx.reply(t(userId, 'noProperties'), getMainMenuKeyboard(userId));
     }
 
     const buttons = uniqueStates.map(state => 
@@ -231,7 +253,7 @@ bot.hears(['🔍 تصفح العقارات المتاحة', '🔍 Parcourir les 
   }
 });
 
-// 📄 نظام الصفحات (Pagination) - زر الاتصال أصبح في الأعلى فوق أزرار التنقل
+// 📄 نظام الصفحات (Pagination) - زر الاتصال في الأعلى فوق أزرار التنقل
 async function renderPropertyPage(ctx, stateQuery, pageIndex, isEdit = true) {
   const userId = ctx.from.id;
   const lang = userLang[userId] || 'ar';
@@ -273,7 +295,7 @@ async function renderPropertyPage(ctx, stateQuery, pageIndex, isEdit = true) {
 
     const navButtons = [];
     
-    // 🌟 زر الاتصال أصبح في الأعلى تماماً قبل أزرار التنقل
+    // زر الاتصال في الأعلى تماماً فوق أزرار التنقل
     navButtons.push([Markup.button.callback(t(userId, 'contact_btn') || '📞 اتصال بالمالك', 'contact_admin')]);
 
     const row = [];
@@ -354,13 +376,14 @@ bot.action('back_to_states', async (ctx) => {
   }
 });
 
-// ➕ معالج إضافة عقار جديد
+// ➕ معالج إضافة عقار جديد (تغيير الكومند أسفل الشاشة لزر الإلغاء)
 bot.hears(['➕ إضافة عقار جديد', '➕ Ajouter un bien'], async (ctx) => {
   const userId = ctx.from.id;
   userState[userId] = { step: 'waiting_for_type', data: {} };
 
   await ctx.reply(t(userId, 'step1Type'), {
     parse_mode: 'HTML',
+    ...getCancelKeyboard(userId), // 👈 تغيير الكومند أسفل الشاشة إلى زر إلغاء فقط
     ...Markup.inlineKeyboard([
       [Markup.button.callback('شقة', 'type_شقة'), Markup.button.callback('فيلا', 'type_فيلا')],
       [Markup.button.callback('منزل', 'type_منزل'), Markup.button.callback('قطعة أرض', 'type_قطعة أرض')],
@@ -384,7 +407,6 @@ bot.action(/type_(.+)/, async (ctx) => {
     chunkedWilayas.push(wilayaButtons.slice(i, i + 3));
   }
 
-  // 🌟 تحديث نظيف للرسالة (تجنب التراكم البصري)
   try {
     await ctx.editMessageText(t(userId, 'step2State', selectedType), {
       parse_mode: 'HTML',
@@ -495,7 +517,7 @@ bot.on('text', async (ctx) => {
   }
 });
 
-// 📸 معالج استلام الصور
+// 📸 معالج استلام الصور (مع استرجاع الكومند الأصلية عند الانتهاء)
 bot.on('photo', async (ctx) => {
   const userId = ctx.from.id;
   const state = userState[userId];
@@ -526,16 +548,17 @@ bot.on('photo', async (ctx) => {
       }]);
 
       delete userState[userId];
+      // استرجاع الكومند الأصلية بعد النجاح
       await ctx.reply(t(userId, 'successPublish'), { parse_mode: 'HTML', ...getMainMenuKeyboard(userId) });
     } catch (err) {
       console.error(err);
       delete userState[userId];
-      await ctx.reply(t(userId, 'errorMsg'));
+      await ctx.reply(t(userId, 'errorMsg'), getMainMenuKeyboard(userId));
     }
   }
 });
 
-// 🎥 معالج استلام الفيديوهات
+// 🎥 معالج استلام الفيديوهات (مع استرجاع الكومند الأصلية عند الانتهاء)
 bot.on('video', async (ctx) => {
   const userId = ctx.from.id;
   const state = userState[userId];
@@ -566,11 +589,12 @@ bot.on('video', async (ctx) => {
       }]);
 
       delete userState[userId];
+      // استرجاع الكومند الأصلية بعد النجاح
       await ctx.reply(t(userId, 'successPublish'), { parse_mode: 'HTML', ...getMainMenuKeyboard(userId) });
     } catch (err) {
       console.error(err);
       delete userState[userId];
-      await ctx.reply(t(userId, 'errorMsg'));
+      await ctx.reply(t(userId, 'errorMsg'), getMainMenuKeyboard(userId));
     }
   }
 });
