@@ -80,7 +80,7 @@ function t(userId, key, ...args) {
   return typeof val === 'function' ? val(...args) : val;
 }
 
-// القائمة الرئيسية الأصلية (مع زر الموقع في الأسفل تماماً)
+// 1️⃣ لوحة المفاتيح الرئيسية (تظهر في البداية وفي القائمة الرئيسية)
 function getMainMenuKeyboard(userId) {
   const lang = userLang[userId] || 'ar';
   const isAr = lang === 'ar';
@@ -92,11 +92,21 @@ function getMainMenuKeyboard(userId) {
   ]).resize();
 }
 
-// لوحة مفاتيح مؤقتة تظهر أثناء العمليات (مثل الإضافة) لتغيير الكومند أسفل الشاشة
+// 2️⃣ لوحة مفاتيح ديناميكية أثناء التصفح (تتضمن زر العودة للقائمة الرئيسية)
+function getBrowsingKeyboard(userId) {
+  const lang = userLang[userId] || 'ar';
+  const isAr = lang === 'ar';
+  return Markup.keyboard([
+    [isAr ? '🏠 العودة للقائمة الرئيسية' : '🏠 Retour au menu principal']
+  ]).resize();
+}
+
+// 3️⃣ لوحة مفاتيح ديناميكية أثناء إضافة عقار (تتضمن زر إلغاء العملية وتراجع)
 function getCancelKeyboard(userId) {
   const lang = userLang[userId] || 'ar';
+  const isAr = lang === 'ar';
   return Markup.keyboard([
-    [lang === 'ar' ? '❌ إلغاء العملية والعودة' : '❌ Annuler et quitter']
+    [isAr ? '❌ إلغاء العملية والعودة' : '❌ Annuler et quitter']
   ]).resize();
 }
 
@@ -144,13 +154,13 @@ bot.start(async (ctx) => {
   }
 });
 
-// زر الإلغاء والخروج للعودة للقائمة الأصلية
-bot.hears(['❌ إلغاء العملية والعودة', '❌ Annuler et quitter'], async (ctx) => {
+// زر الإلغاء والخروج (للعودة للقائمة الرئيسية وإلغاء حالة النشر)
+bot.hears(['❌ إلغاء العملية والعودة', '❌ Annuler et quitter', '🏠 العودة للقائمة الرئيسية', '🏠 Retour au menu principal'], async (ctx) => {
   const userId = ctx.from.id;
   delete userState[userId];
 
   await ctx.reply(
-    userLang[userId] === 'fr' ? '✅ Opération annulée. Retour au menu principal :' : '✅ تم إلغاء العملية والعودة للقائمة الرئيسية:',
+    userLang[userId] === 'fr' ? '✅ Retour au menu principal :' : '✅ العودة إلى القائمة الرئيسية:',
     {
       parse_mode: 'HTML',
       ...getMainMenuKeyboard(userId)
@@ -216,7 +226,7 @@ bot.use(async (ctx, next) => {
   return next();
 });
 
-// 🔍 تصفح العقارات (اختيار الولاية)
+// 🔍 تصفح العقارات (تغيير الكومند أسفل الشاشة لتصبح ديناميكية وخاصة بالتصفح)
 bot.hears(['🔍 تصفح العقارات المتاحة', '🔍 Parcourir les biens'], async (ctx) => {
   const userId = ctx.from.id;
 
@@ -243,8 +253,10 @@ bot.hears(['🔍 تصفح العقارات المتاحة', '🔍 Parcourir les 
 
     chunkedButtons.push([Markup.button.callback(t(userId, 'allStates'), 'browse_state_ALL_0')]);
 
+    // تغيير الكومند أسفل الشاشة إلى زر تراجع خاص بالتصفح
     await ctx.reply(t(userId, 'browseTitle'), {
       parse_mode: 'HTML',
+      ...getBrowsingKeyboard(userId),
       ...Markup.inlineKeyboard(chunkedButtons)
     });
   } catch (err) {
@@ -376,14 +388,14 @@ bot.action('back_to_states', async (ctx) => {
   }
 });
 
-// ➕ معالج إضافة عقار جديد (تغيير الكومند أسفل الشاشة لزر الإلغاء)
+// ➕ معالج إضافة عقار جديد (تغيير الكومند أسفل الشاشة لزر الإلغاء والتراجع)
 bot.hears(['➕ إضافة عقار جديد', '➕ Ajouter un bien'], async (ctx) => {
   const userId = ctx.from.id;
   userState[userId] = { step: 'waiting_for_type', data: {} };
 
   await ctx.reply(t(userId, 'step1Type'), {
     parse_mode: 'HTML',
-    ...getCancelKeyboard(userId), // 👈 تغيير الكومند أسفل الشاشة إلى زر إلغاء فقط
+    ...getCancelKeyboard(userId), // 👈 زر إلغاء وتراجع أسفل الشاشة
     ...Markup.inlineKeyboard([
       [Markup.button.callback('شقة', 'type_شقة'), Markup.button.callback('فيلا', 'type_فيلا')],
       [Markup.button.callback('منزل', 'type_منزل'), Markup.button.callback('قطعة أرض', 'type_قطعة أرض')],
@@ -474,7 +486,7 @@ bot.hears(['ℹ️ عن المنصة', 'ℹ️ À propos'], async (ctx) => {
   });
 });
 
-// معالج النصوص اليدوية أثناء خطوات النشر
+// معالج النصوص اليدوية أثناء خطوات النشر (مع الحفاظ على الكومند الخاصة بالإلغاء)
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const userText = ctx.message.text.trim();
@@ -496,28 +508,29 @@ bot.on('text', async (ctx) => {
 
     return ctx.reply(t(userId, 'step2State', userText), {
       parse_mode: 'HTML',
+      ...getCancelKeyboard(userId),
       ...Markup.inlineKeyboard(chunkedWilayas)
     });
   } else if (state.step === 'waiting_for_state') {
     state.data.state_name = userText;
     state.step = 'waiting_for_price';
-    return ctx.reply(t(userId, 'step3Price', userText), { parse_mode: 'HTML' });
+    return ctx.reply(t(userId, 'step3Price', userText), { parse_mode: 'HTML', ...getCancelKeyboard(userId) });
   } else if (state.step === 'waiting_for_price') {
     state.data.price = userText;
     state.step = 'waiting_for_phone';
-    return ctx.reply(t(userId, 'step4Phone', userText), { parse_mode: 'HTML' });
+    return ctx.reply(t(userId, 'step4Phone', userText), { parse_mode: 'HTML', ...getCancelKeyboard(userId) });
   } else if (state.step === 'waiting_for_phone') {
     state.data.phone = userText;
     state.step = 'waiting_for_description';
-    return ctx.reply(t(userId, 'step5Desc', userText), { parse_mode: 'HTML' });
+    return ctx.reply(t(userId, 'step5Desc', userText), { parse_mode: 'HTML', ...getCancelKeyboard(userId) });
   } else if (state.step === 'waiting_for_description') {
     state.data.description = userText;
     state.step = 'waiting_for_media';
-    return ctx.reply(t(userId, 'step6Media'), { parse_mode: 'HTML' });
+    return ctx.reply(t(userId, 'step6Media'), { parse_mode: 'HTML', ...getCancelKeyboard(userId) });
   }
 });
 
-// 📸 معالج استلام الصور (مع استرجاع الكومند الأصلية عند الانتهاء)
+// 📸 معالج استلام الصور (مع استرجاع الكومند الأصلية بعد النجاح)
 bot.on('photo', async (ctx) => {
   const userId = ctx.from.id;
   const state = userState[userId];
@@ -548,7 +561,6 @@ bot.on('photo', async (ctx) => {
       }]);
 
       delete userState[userId];
-      // استرجاع الكومند الأصلية بعد النجاح
       await ctx.reply(t(userId, 'successPublish'), { parse_mode: 'HTML', ...getMainMenuKeyboard(userId) });
     } catch (err) {
       console.error(err);
@@ -558,7 +570,7 @@ bot.on('photo', async (ctx) => {
   }
 });
 
-// 🎥 معالج استلام الفيديوهات (مع استرجاع الكومند الأصلية عند الانتهاء)
+// 🎥 معالج استلام الفيديوهات (مع استرجاع الكومند الأصلية بعد النجاح)
 bot.on('video', async (ctx) => {
   const userId = ctx.from.id;
   const state = userState[userId];
@@ -589,7 +601,6 @@ bot.on('video', async (ctx) => {
       }]);
 
       delete userState[userId];
-      // استرجاع الكومند الأصلية بعد النجاح
       await ctx.reply(t(userId, 'successPublish'), { parse_mode: 'HTML', ...getMainMenuKeyboard(userId) });
     } catch (err) {
       console.error(err);
