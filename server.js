@@ -269,7 +269,7 @@ bot.hears(['🔍 تصفح العقارات المتاحة', '🔍 Parcourir les 
   }
 });
 
-// 🎯 معالج زر الولاية (يفصل بذكاء بين الإضافة والتصفح)
+// 🎯 معالج زر الولاية
 bot.hears(/^📍 (.+)/, async (ctx) => {
   const userId = ctx.from.id;
   const selectedState = ctx.match[1].trim();
@@ -281,7 +281,7 @@ bot.hears(/^📍 (.+)/, async (ctx) => {
 
     return ctx.reply(t(userId, 'step3Price', selectedState), {
       parse_mode: 'HTML',
-      ...getCancelKeyword(userId)
+      ...getCancelKeyboard(userId)
     });
   }
 
@@ -308,13 +308,14 @@ async function getUniqueStatesList() {
   }
 }
 
-// 📄 دالة عرض العقار الواحد مع التنظيف الاحترافي التلقائي
+// 📄 دالة عرض العقار الواحد
 async function renderPropertyPage(ctx, userId, pageIndex) {
   const session = browsingSession[userId];
   if (!session) return;
 
   const stateQuery = session.state;
   session.page = pageIndex;
+  session.selectingPage = false; // إعادة ضبط وضع اختيار الصفحة
 
   try {
     let query = supabase.from('test_messages').select('*').order('id', { ascending: false });
@@ -354,7 +355,6 @@ async function renderPropertyPage(ctx, userId, pageIndex) {
 
     const replyKb = getBrowsingKeyboard(userId, pageIndex, totalCount);
 
-    // 🌟 التنظيف التلقائي: مسح الرسالة القديمة إن وجدت لتجنب التراكم البصري
     if (session.lastMessageId) {
       await ctx.telegram.deleteMessage(ctx.chat.id, session.lastMessageId).catch(() => {});
     }
@@ -376,6 +376,64 @@ async function renderPropertyPage(ctx, userId, pageIndex) {
     await ctx.reply(t(userId, 'errorMsg'));
   }
 }
+
+// 🔢 خاصية القفز السريع: عند الضغط على زر العداد (مثال: 📄 2 / 5)[span_3](start_span)[span_3](end_span)[span_4](start_span)[span_4](end_span)
+bot.hears(/^📄 (\d+) \/ (\d+)$/, async (ctx) => {
+  const userId = ctx.from.id;
+  const session = browsingSession[userId];
+  const lang = userLang[userId] || 'ar';
+  const isAr = lang === 'ar';
+
+  if (!session) return;
+
+  const totalCount = parseInt(ctx.match[2], 10);
+  session.selectingPage = true;
+
+  const numberButtons = [];
+  let row = [];
+  for (let i = 1; i <= totalCount; i++) {
+    row.push(`🔢 ${i}`);
+    if (row.length === 5) {
+      numberButtons.push(row);
+      row = [];
+    }
+  }
+  if (row.length > 0) numberButtons.push(row);
+  numberButtons.push([isAr ? '🔙 رجوع للعقار' : '🔙 Retour au bien']);
+
+  await ctx.reply(
+    isAr
+      ? `🔢 <b>اختر رقم العقار للانتقال إليه مباشرة (من 1 إلى ${totalCount}):</b>`
+      : `🔢 <b>Choisissez le numéro du bien (1 à ${totalCount}) :</b>`,
+    {
+      parse_mode: 'HTML',
+      ...Markup.keyboard(numberButtons).resize()
+    }
+  );
+});
+
+// الانتقال المباشر للعقار عند الضغط على رقمه أسفل الشاشة
+bot.hears(/^🔢 (\d+)$/, async (ctx) => {
+  const userId = ctx.from.id;
+  const session = browsingSession[userId];
+
+  if (session && session.selectingPage) {
+    const selectedNumber = parseInt(ctx.match[1], 10);
+    session.selectingPage = false;
+    await renderPropertyPage(ctx, userId, selectedNumber - 1);
+  }
+});
+
+// العودة للعقار الحالي من قائمة الأرقام
+bot.hears(['🔙 رجوع للعقار', '🔙 Retour au bien'], async (ctx) => {
+  const userId = ctx.from.id;
+  const session = browsingSession[userId];
+
+  if (session) {
+    session.selectingPage = false;
+    await renderPropertyPage(ctx, userId, session.page);
+  }
+});
 
 bot.hears(['⬅️ السابق', '⬅️ Précédent'], async (ctx) => {
   const userId = ctx.from.id;
@@ -585,8 +643,7 @@ bot.on('video', async (ctx) => {
 
       delete userState[userId];
       await ctx.reply(t(userId, 'successPublish'), { parse_mode: 'HTML', ...getMainMenuKeyboard(userId) });
-    }
-    catch (err) {
+    } catch (err) {
       console.error(err);
       delete userState[userId];
       await ctx.reply(t(userId, 'errorMsg'), getMainMenuKeyboard(userId));
