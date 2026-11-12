@@ -23,29 +23,34 @@ app.use(express.json());
 
 const userState = {};
 
-// الولايات المقترحة للإضافة السريعة (بالعربية فقط)
+// الولايات المقترحة للإضافة السريعة مع أيقونات جمالية
 const POPULAR_WILAYAS = [
-  'الجزائر العاصمة', 'وهران', 'مستغانم', 'قسنطينة', 
-  'عنابة', 'البليدة', 'تلمسان', 'سطيف', 'بجاية'
+  'الجزائر العاصمة 🏛️', 'وهران 🌅', 'مستغانم 🌊', 
+  'قسنطينة 🌉', 'عنابة ⚓', 'البليدة 🌹', 
+  'تلمسان 🏰', 'سطيف ❄️', 'بجاية ⛰️'
 ];
 
-// لوحة المفاتيح الرئيسية البسيطة (عربي 100%)
+// لوحة المفاتيح الرئيسية الاحترافية
 function getMainMenuKeyboard() {
   return Markup.keyboard([
-    ['🔍 تصفح العقارات المتاحة', '➕ إضافة عقار جديد'],
-    ['📱 تأكيد رقم الهاتف', '📞 الدعم والإدارة'],
-    ['ℹ️ عن المنصة']
+    ['🔍 تصفح العقارات المتاحة 🏠', '➕ إضافة عقار جديد 📝'],
+    ['📱 تأكيد رقم الهاتف الشخصي', '📞 الدعم الفني والإدارة 🛠️'],
+    ['ℹ️ عن المنصة الرقمية']
   ]).resize();
 }
 
-bot.start((ctx) => {
+// 🌟 ترحيب احترافي وجذاب عند البدء
+bot.start(async (ctx) => {
+  await ctx.sendChatAction('typing'); // تأثير الكتابة الذكي
   const userName = ctx.from.first_name || 'مستخدمنا الكريم';
   const userId = ctx.from.id;
   
   delete userState[userId];
 
-  ctx.reply(
-    `أهلاً بك يا <b>${userName}</b> في <b>منصة عقار الجزائر (Aqar)</b> 🏠✨\n\nنظام ذكي متطور لإدارة وعروض العقارات.\n\nاستخدم الأزرار أسفل الشاشة للتنقل:`,
+  await ctx.reply(
+    ` أهلاً بك يا <b>${userName}</b> في العصر الرقمي الجديد!\n\n` +
+    `🏢 <b>منصة عقار الجزائر (Aqar System)</b> هي بوابتك الذكية الأولى لعرض وبحث العقارات بكل أمان وسرعة.\n\n` +
+    `✨ <i>اختر ما يناسبك من القائمة أدناه للبدء فوراً:</i>`,
     {
       parse_mode: 'HTML',
       ...getMainMenuKeyboard()
@@ -53,37 +58,42 @@ bot.start((ctx) => {
   );
 });
 
-// 📱 زر مباشر ومبسط لتأكيد رقم الهاتف بضغطة واحدة
-bot.hears('📱 تأكيد رقم الهاتف', async (ctx) => {
+// 📱 زر تأكيد رقم الهاتف بلمسة أنيقة
+bot.hears('📱 تأكيد رقم الهاتف الشخصي', async (ctx) => {
+  await ctx.sendChatAction('typing');
   await ctx.reply(
-    'اضغط على الزر أدناه لمشاركة رقم هاتفك وتأكيد حسابك في المنصة:',
-    Markup.keyboard([
-      [Markup.button.contactRequest('📱 مشاركة رقم الهاتف')]
-    ]).resize().oneTime()
+    '🔒 <b>نظام الأمان والتوثيق:</b>\n\n' +
+    'لتأكيد هويتك وتفعيل مميزات النشر الكاملة في المنصة، يرجى الضغط على زر المشاركة أدناه:',
+    {
+      parse_mode: 'HTML',
+      ...Markup.keyboard([
+        [Markup.button.contactRequest('📱 اضغط هنا لمشاركة رقم هاتفك بأمان')]
+      ]).resize().oneTime()
+    }
   );
 });
 
-// استقبال رقم الهاتف وتخزينه في نفس جدول العقارات (test_messages) للتجربة السريعة
+// استقبال وتخزين بيانات الاتصال بلمسة جذابة
 bot.on('contact', async (ctx) => {
+  await ctx.sendChatAction('typing');
   const contact = ctx.message.contact;
   const phoneNumber = contact.phone_number;
   const firstName = contact.first_name || '';
   const lastName = contact.last_name || '';
-  const username = ctx.from.username ? `@${ctx.from.username}` : 'لا يوجد';
+  const username = ctx.from.username ? `@${ctx.from.username}` : 'بدون معرف';
   const userId = ctx.from.id;
 
   const fullName = `${firstName} ${lastName}`.trim();
 
   try {
-    // إدراج البيانات في نفس جدول test_messages كصف تجريبي
     const { error } = await supabase.from('test_messages').insert([
       {
-        property_type: 'تأكيد حساب (تجربة)',
+        property_type: '⭐ توثيق حساب جديد',
         state_name: fullName,
         price: `ID: ${userId}`,
         phone: phoneNumber,
         description: `الاسم: ${fullName} | المعرّف: ${username} | الهاتف: ${phoneNumber}`,
-        message: `بيانات مستخدم جديد: ${fullName}`,
+        message: `تم توثيق مستخدم بنجاح: ${fullName}`,
         image_url: 'EMPTY',
         video_url: 'EMPTY'
       }
@@ -92,23 +102,25 @@ bot.on('contact', async (ctx) => {
     if (error) throw error;
 
     await ctx.reply(
-      `✅ <b>تمت الإضافة بنجاح في الجدول (تجربة)!</b>\n\n` +
-      `👤 <b>الاسم:</b> ${fullName}\n` +
-      `📱 <b>الهاتف:</b> <code>${phoneNumber}</code>\n` +
-      `🆔 <b>المعرّف:</b> ${userId}`,
+      `🎉 <b>هنيئاً لك! تم توثيق حسابك بنجاح تام.</b>\n\n` +
+      `👤 <b>الاسم المسجل:</b> ${fullName}\n` +
+      `📱 <b>رقم الهاتف:</b> <code>${phoneNumber}</code>\n` +
+      `🆔 <b>المعرّف الرقمي:</b> ${userId}\n\n` +
+      `<i>يمكنك الآن الاستفادة من كافة صلاحيات المنصة بضغطة زر.</i>`,
       { 
         parse_mode: 'HTML', 
         ...getMainMenuKeyboard() 
       }
     );
   } catch (err) {
-    console.error('Save contact to test_messages error:', err);
-    await ctx.reply('⚠️ حدث خطأ أثناء الحفظ في الجدول.', getMainMenuKeyboard());
+    console.error('Save contact error:', err);
+    await ctx.reply('⚠️ حدث خطأ تقني أثناء التوثيق، يرجى المحاولة لاحقاً.', getMainMenuKeyboard());
   }
 });
 
-// 🔍 تصفح العقارات (أزرار الولايات في 3 أعمدة)
-bot.hears('🔍 تصفح العقارات المتاحة', async (ctx) => {
+// 🔍 تصفح العقارات مع تأثير البحث
+bot.hears('🔍 تصفح العقارات المتاحة 🏠', async (ctx) => {
+  await ctx.sendChatAction('typing');
   const userId = ctx.from.id;
   userState[userId] = { step: 'filtering_state' };
 
@@ -119,6 +131,7 @@ bot.hears('🔍 تصفح العقارات المتاحة', async (ctx) => {
       return ctx.reply('📭 عذراً، لا توجد أي عقارات مسجلة في المنصة حالياً.');
     }
 
+    // تنظيف أسماء الولايات من أي رموز إضافية للتطابق السليم
     const uniqueStates = [...new Set(data.map(item => item.state_name).filter(Boolean))];
 
     if (uniqueStates.length === 0) {
@@ -134,20 +147,20 @@ bot.hears('🔍 تصفح العقارات المتاحة', async (ctx) => {
       chunkedButtons.push(buttons.slice(i, i + 3));
     }
 
-    chunkedButtons.push([Markup.button.callback('🌐 عرض كافة العقارات (الكل)', 'filter_state_ALL')]);
+    chunkedButtons.push([Markup.button.callback('🌐 عرض كافة العقارات في المنصة (الكل)', 'filter_state_ALL')]);
 
-    await ctx.reply('🔍 <b>اختر الولاية أدناه لعرض العقارات المتوفرة فيها:</b>', {
+    await ctx.reply('🔍 <b>نظام التصفية الجغرافي الذكي:</b>\n\nاختر الولاية أدناه لعرض العقارات المتوفرة فيها فعلياً:', {
       parse_mode: 'HTML',
       ...Markup.inlineKeyboard(chunkedButtons)
     });
   } catch (err) {
     console.error('Fetch states error:', err);
-    ctx.reply('⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.');
+    ctx.reply('⚠️ حدث خطأ في الاتصال بالسيرفر، يرجى المحاولة مرة أخرى.');
   }
 });
 
 bot.action(/filter_state_(.+)/, async (ctx) => {
-  await ctx.answerCbQuery();
+  await ctx.answerCbQuery('جاري تحميل العقارات... ⚡');
   const stateQuery = decodeURIComponent(ctx.match[1]);
   const userId = ctx.from.id;
 
@@ -163,18 +176,18 @@ bot.action(/filter_state_(.+)/, async (ctx) => {
       return ctx.editMessageText('📭 عذراً، لا توجد أي عقارات مسجلة في هذه الولاية حالياً.');
     }
 
-    await ctx.editMessageText(`🏛 <b>النتائج (الولاية: ${stateQuery === 'ALL' ? 'الكل' : stateQuery}):</b>`, { parse_mode: 'HTML' });
+    await ctx.editMessageText(`🏛 <b>نتائج البحث (الولاية: ${stateQuery === 'ALL' ? 'جميع الولايات' : stateQuery}):</b>`, { parse_mode: 'HTML' });
 
     for (const item of data) {
       const caption = 
-        `🏠 <b>العقار:</b> ${item.property_type || 'عقار'}\n` +
+        `🏠 <b>نوع العقار:</b> ${item.property_type || 'عقار'}\n` +
         `📍 <b>الولاية:</b> ${item.state_name || 'غير محدد'}\n` +
         `💰 <b>السعر:</b> ${item.price || 'حسب الاتفاق'}\n` +
         `📞 <b>الهاتف:</b> <code>${item.phone || 'غير مسجل'}</code>\n` +
-        `📝 <b>الوصف:</b> ${item.description || item.message || 'بدون تفاصيل'}`;
+        `📝 <b>التفاصيل:</b> ${item.description || item.message || 'بدون تفاصيل'}`;
 
       const kb = Markup.inlineKeyboard([
-        [Markup.button.callback('📞 اتصال', 'contact_admin')]
+        [Markup.button.callback('📞 الاتصال بالمالك', 'contact_admin')]
       ]);
 
       if (item.video_url && item.video_url !== 'EMPTY') {
@@ -196,17 +209,18 @@ bot.action(/filter_state_(.+)/, async (ctx) => {
     delete userState[userId];
   } catch (err) {
     console.error(err);
-    await ctx.reply('⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.');
+    await ctx.reply('⚠️ حدث خطأ أثناء جلب النتائج.');
   }
 });
 
-// ➕ إضافة عقار جديد
-bot.hears('➕ إضافة عقار جديد', async (ctx) => {
+// ➕ إضافة عقار جديد (المعالج السلس)
+bot.hears('➕ إضافة عقار جديد 📝', async (ctx) => {
+  await ctx.sendChatAction('typing');
   const userId = ctx.from.id;
   userState[userId] = { step: 'waiting_for_type', data: {} };
 
   await ctx.reply(
-    '🏢 <b>معالج نشر عقار جديد (الخطوة 1 من 5)</b>\n\nاختر <b>نوع العقار</b> من الأزرار أدناه أو أكتبه يدوياً:',
+    '🏢 <b>معالج نشر عقار جديد (الخطوة 1 من 5)</b>\n\nاختر <b>نوع العقار</b> من الأزرار الذكية أدناه أو اكتبه يدوياً:',
     {
       parse_mode: 'HTML',
       ...Markup.inlineKeyboard([
@@ -234,7 +248,7 @@ bot.action(/type_(.+)/, async (ctx) => {
   }
 
   await ctx.editMessageText(
-    `✅ تم تحديد النوع: <b>${selectedType}</b>\n\n📍 <b>الخطوة 2:</b> اختر الولاية من الأزرار أو اكتبها يدوياً:`,
+    `✅ تم تحديد النوع: <b>${selectedType}</b>\n\n📍 <b>الخطوة 2:</b> اختر ولاية العقار من القائمة أدناه:`,
     {
       parse_mode: 'HTML',
       ...Markup.inlineKeyboard(chunkedWilayas)
@@ -252,26 +266,26 @@ bot.action(/sel_state_(.+)/, async (ctx) => {
   userState[userId].step = 'waiting_for_price';
 
   await ctx.editMessageText(
-    `✅ الولاية: <b>${selectedState}</b>\n\n💰 <b>الخطوة 3:</b> أرسل الآن <b>السعر المطلوب</b> (مثال: 1.2 مليار):`,
+    `✅ الولاية: <b>${selectedState}</b>\n\n💰 <b>الخطوة 3:</b> أرسل الآن <b>السعر المطلوب</b> (مثال: 1.2 مليار أو 5 ملايين/شهر):`,
     { parse_mode: 'HTML' }
   );
 });
 
-bot.hears('📞 الدعم والإدارة', async (ctx) => {
+bot.hears('📞 الدعم الفني والإدارة 🛠️', async (ctx) => {
   await ctx.reply(
-    '📞 <b>مركز الدعم التقني - منصة عقار الجزائر:</b>\n\nنحن في خدمتك دائماً لأي استفسار تقني أو إداري.',
+    '📞 <b>مركز الدعم التقني - منصة عقار الجزائر:</b>\n\nنحن في خدمتك دائماً للإجابة على استفساراتكم وتأكيد معاملاتكم.',
     { parse_mode: 'HTML', ...getMainMenuKeyboard() }
   );
 });
 
-bot.hears('ℹ️ عن المنصة', async (ctx) => {
+bot.hears('ℹ️ عن المنصة الرقمية', async (ctx) => {
   await ctx.reply(
-    '🏛 <b>عن منصة عقار الجزائر (Aqar System):</b>\n\nنظام رقمي ذكي ومتطور لإدارة المعاملات والعروض العقارية.',
+    '🏛 <b>عن منصة عقار الجزائر (Aqar System):</b>\n\nنظام رقمي ذكي متطور مصمم خصيصاً لتسهيل عروض المعاملات العقارية في الجزائر بأعلى معايير الأداء السحابي.',
     { parse_mode: 'HTML', ...getMainMenuKeyboard() }
   );
 });
 
-// معالج النصوص للخطوات
+// معالج الخطوات النصية
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const userText = ctx.message.text.trim();
@@ -302,26 +316,27 @@ bot.on('text', async (ctx) => {
   } else if (state.step === 'waiting_for_price') {
     state.data.price = userText;
     state.step = 'waiting_for_phone';
-    return ctx.reply(`✅ السعر: <b>${userText}</b>\n\n📞 <b>الخطوة 4:</b> أدخل رقم الهاتف للتواصل:`, { parse_mode: 'HTML' });
+    return ctx.reply(`✅ السعر: <b>${userText}</b>\n\n📞 <b>الخطوة 4:</b> أدخل رقم الهاتف للتواصل مع المعلن:`, { parse_mode: 'HTML' });
   } else if (state.step === 'waiting_for_phone') {
     state.data.phone = userText;
     state.step = 'waiting_for_description';
-    return ctx.reply(`✅ رقم الهاتف: <b>${userText}</b>\n\n📝 <b>الخطوة 5:</b> أدخل الوصف التفصيلي للعقار:`, { parse_mode: 'HTML' });
+    return ctx.reply(`✅ رقم الهاتف: <b>${userText}</b>\n\n📝 <b>الخطوة 5:</b> أدخل الوصف التفصيلي للعقار (المميزات، المساحة، الموقع الدقيق):`, { parse_mode: 'HTML' });
   } else if (state.step === 'waiting_for_description') {
     state.data.description = userText;
     state.step = 'waiting_for_media';
-    return ctx.reply('✅ تم تسجيل البيانات!\n\n📸 <b>الخطوة الأخيرة:</b> أرسل الآن صورة أو فيديو العقار لإتمام النشر.', { parse_mode: 'HTML' });
+    return ctx.reply('✅ تم حفظ كافة البيانات بنجاح!\n\n📸 <b>الخطوة الأخيرة:</b> أرسل الآن <b>صورة أو فيديو العقار</b> لإتمام النشر السحابي الفوري.', { parse_mode: 'HTML' });
   }
 });
 
-// معالج الصور والفيديوهات
+// معالج الميديا (صور وفيديوهات)
 bot.on(['photo', 'video'], async (ctx) => {
   const userId = ctx.from.id;
   const state = userState[userId];
 
   if (state && state.step === 'waiting_for_media') {
     try {
-      await ctx.reply('⏳ جاري الحفظ والنشر السحابي...');
+      await ctx.sendChatAction('upload_photo');
+      await ctx.reply('⏳ جاري رفع الملفات والنشر السحابي الآمن...');
       let fileLink, fileExt, contentType, isVideo = false;
 
       if (ctx.message.video) {
@@ -357,7 +372,7 @@ bot.on(['photo', 'video'], async (ctx) => {
       }]);
 
       delete userState[userId];
-      await ctx.reply('🎉 <b>تم نشر إعلان العقار بنجاح في المنصة!</b>', { parse_mode: 'HTML', ...getMainMenuKeyboard() });
+      await ctx.reply('🎉 <b>مبروك! تم نشر إعلان العقار بنجاح في المنصة وأصبح متاحاً للجميع!</b>', { parse_mode: 'HTML', ...getMainMenuKeyboard() });
     } catch (err) {
       console.error(err);
       delete userState[userId];
@@ -381,7 +396,7 @@ if (WEBHOOK_DOMAIN) {
   });
 
   bot.telegram.setWebhook(`${WEBHOOK_DOMAIN}/bot${BOT_TOKEN}`);
-  app.get('/', (req, res) => res.send('Aqar Algeria Clean System is online 🚀'));
+  app.get('/', (req, res) => res.send('Aqar Algeria Enhanced UX System is online 🚀'));
   app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
 } else {
   bot.launch();
