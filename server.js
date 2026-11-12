@@ -53,8 +53,7 @@ const STRINGS = {
     aboutText: '🏛 <b>عن منصة عقار الجزائر (Aqar System):</b>\n\nنظام رقمي ذكي ومتطور لإدارة المعاملات والعروض العقارية.',
     langChanged: '✅ تم اعتماد اللغة العربية لنظام البوت.',
     errorMsg: '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.',
-    contactBtn: '📞 طلب التواصل',
-    favBtn: '❤️ حفظ في المفضلة'
+    contactBtn: '📞 طلب التواصل'
   },
   fr: {
     welcome: (name) => `Bienvenue <b>${name}</b> sur <b>Aqar Algérie</b> 🏠✨\n\nSystème intelligent de gestion immobilière à haute performance.\n\nUtilisez les boutons ci-dessous pour naviguer :`,
@@ -77,8 +76,7 @@ const STRINGS = {
     aboutText: '🏛 <b>À propos d\'Aqar Algérie:</b>\n\nSystème numérique intelligent de gestion des transactions immobilières.',
     langChanged: '✅ La langue française a été activée.',
     errorMsg: '⚠️ Une erreur est survenue, veuillez réessayer.',
-    contactBtn: '📞 Demander contact',
-    favBtn: '❤️ Ajouter aux favoris'
+    contactBtn: '📞 Demander contact'
   }
 };
 
@@ -371,7 +369,7 @@ bot.on('photo', async (ctx) => {
   }
 });
 
-// 🎥 معالج استلام الفيديوهات الجديد كلياً
+// 🎥 معالج استلام الفيديوهات
 bot.on('video', async (ctx) => {
   const userId = ctx.from.id;
   const state = userState[userId];
@@ -414,6 +412,7 @@ bot.on('video', async (ctx) => {
 const PORT = process.env.PORT || 3000;
 
 if (WEBHOOK_DOMAIN) {
+  // مسار الـ Webhook المقاوم للنوم على Render (مع الاستجابة الفورية 200 لتفادي ضياع الرسائل وقت الاستيقاظ)
   app.post(`/bot${BOT_TOKEN}`, async (req, res) => {
     res.sendStatus(200);
     try {
@@ -421,13 +420,13 @@ if (WEBHOOK_DOMAIN) {
         await bot.handleUpdate(req.body);
       }
     } catch (err) {
-      console.error(err);
+      console.error('Webhook processing error:', err);
     }
   });
 
   bot.telegram.setWebhook(`${WEBHOOK_DOMAIN}/bot${BOT_TOKEN}`);
-  app.get('/', (req, res) => res.send('Aqar Algeria Perfect Multi-Lang System is online 🚀'));
-  app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+  app.get('/', (req, res) => res.send('Aqar Algeria Complete Production System is online 🚀'));
+  app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
 } else {
   bot.launch();
 }
