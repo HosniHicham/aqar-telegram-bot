@@ -24,7 +24,7 @@ app.use(express.json());
 const userState = {};
 const userLang = {};
 
-// الولايات الرسمية والنظيفة بدون أيقونات أو بهلوانيات
+// الولايات الرسمية والنظيفة بدون أيقونات
 const POPULAR_WILAYAS = [
   'الجزائر العاصمة', 'وهران', 'مستغانم', 'قسنطينة', 
   'عنابة', 'البليدة', 'تلمسان', 'سطيف', 'بجاية'
@@ -33,14 +33,8 @@ const POPULAR_WILAYAS = [
 // 🌐 نظام النصوص متعدد اللغات (عربي / فرنسي)
 const STRINGS = {
   ar: {
-    welcome: (name) => `أهلاً بك يا <b>${name}</b> في <b>منصة عقار الجزائر (Aqar)</b> 🏠✨\n\nنظام رقمي احترافي لإدارة وعروض العقارات. اختر من القائمة أدناه:`,
-    authPrompt: (name) => `أهلاً بك يا <b>${name}</b> في <b>منصة عقار الجزائر (Aqar)</b> 🏠✨\n\n⚠️ <b>تنبيه أمني:</b>\nللاستفادة من خدمات المنصة وتصفح العقارات، يرجى <b>تأكيد رقم هاتفك</b> أولاً بضغطة زر واحدة:`,
-    publishBtn: '➕ إضافة عقار جديد',
-    browseBtn: '🔍 تصفح العقارات المتاحة',
-    webBtn: '🌐 تصفح الموقع الرسمي (البروزر)',
-    supportBtn: '📞 الدعم والإدارة',
-    langBtn: '🌐 تغيير اللغة / Langue',
-    aboutBtn: 'ℹ️ عن المنصة',
+    welcome: (name) => `أهلاً بك يا <b>${name}</b> في <b>منصة عقار الجزائر (Aqar)</b> 🏠\n\nنظام رقمي احترافي لإدارة وعروض العقارات. اختر من القائمة أدناه:`,
+    authPrompt: (name) => `أهلاً بك يا <b>${name}</b> في <b>منصة عقار الجزائر (Aqar)</b> 🏠\n\n⚠️ <b>تنبيه أمني:</b>\nللاستفادة من خدمات المنصة وتصفح العقارات، يرجى <b>تأكيد رقم هاتفك</b> أولاً بضغطة زر واحدة:`,
     browseTitle: '🔍 <b>اختر الولاية أدناه لعرض العقارات المتوفرة فيها:</b>',
     noProperties: '📭 عذراً، لا توجد أي عقارات مسجلة في المنصة حالياً.',
     allStates: '🌐 عرض كافة العقارات (الكل)',
@@ -55,18 +49,12 @@ const STRINGS = {
     aboutText: '🏛 <b>عن منصة عقار الجزائر (Aqar System):</b>\n\nنظام رقمي ذكي ومتطور لإدارة المعاملات والعروض العقارية.',
     langChanged: '✅ تم اعتماد اللغة العربية لنظام البوت.',
     errorMsg: '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.',
-    contactBtn: '📞 طلب التواصل',
+    contactBtn: '📞 اتصال',
     authBtnText: '📱 اضغط هنا لمشاركة رقم هاتفك والبدء'
   },
   fr: {
-    welcome: (name) => `Bienvenue <b>${name}</b> sur <b>Aqar Algérie</b> 🏠✨\n\nSystème numérique professionnel de gestion immobilière. Choisissez dans le menu ci-dessous :`,
-    authPrompt: (name) => `Bienvenue <b>${name}</b> sur <b>Aqar Algérie</b> 🏠✨\n\n⚠️ <b>Sécurité:</b>\nVeuillez <b>confirmer votre numéro de téléphone</b> pour accéder aux services :`,
-    publishBtn: '➕ Ajouter un bien',
-    browseBtn: '🔍 Parcourir les biens',
-    webBtn: '🌐 Site Officiel (Navigateur)',
-    supportBtn: '📞 Support & Contact',
-    langBtn: '🌐 Langue / اللغة',
-    aboutBtn: 'ℹ️ À propos',
+    welcome: (name) => `Bienvenue <b>${name}</b> sur <b>Aqar Algérie</b> 🏠\n\nSystème numérique professionnel de gestion immobilière. Choisissez dans le menu :`,
+    authPrompt: (name) => `Bienvenue <b>${name}</b> sur <b>Aqar Algérie</b> 🏠\n\n⚠️ <b>Sécurité:</b>\nVeuillez <b>confirmer votre numéro de téléphone</b> pour accéder aux services :`,
     browseTitle: '🔍 <b>Choisissez la wilaya pour voir les biens disponibles :</b>',
     noProperties: '📭 Désolé, aucun bien enregistré pour le moment.',
     allStates: '🌐 Afficher tous les biens (Tous)',
@@ -81,7 +69,7 @@ const STRINGS = {
     aboutText: '🏛 <b>À propos d\'Aqar Algérie:</b>\n\nSystème numérique intelligent de gestion immobilière.',
     langChanged: '✅ La langue française a été activée.',
     errorMsg: '⚠️ Une erreur est survenue, veuillez réessayer.',
-    contactBtn: '📞 Demander contact',
+    contactBtn: '📞 Contact',
     authBtnText: '📱 Partager mon numéro et commencer'
   }
 };
@@ -92,7 +80,7 @@ function t(userId, key, ...args) {
   return typeof val === 'function' ? val(...args) : val;
 }
 
-// لوحة المفاتيح الرئيسية الاحترافية (مع زر الموقع الرسمي في الأسفل تماماً)
+// لوحة المفاتيح الرئيسية (مع زر الموقع في الأسفل تماماً)
 function getMainMenuKeyboard(userId) {
   const lang = userLang[userId] || 'ar';
   const isAr = lang === 'ar';
@@ -104,7 +92,7 @@ function getMainMenuKeyboard(userId) {
   ]).resize();
 }
 
-// زر تأكيد الرقم الإجباري
+// زر تأكيد الرقم الإجباري (يظهر للمستخدم الجديد فقط)
 function getAuthKeyboard(userId) {
   const lang = userLang[userId] || 'ar';
   return Markup.keyboard([
@@ -112,7 +100,7 @@ function getAuthKeyboard(userId) {
   ]).resize().oneTime();
 }
 
-// دالة التحقق هل المستخدم مسجل رقمه مسبقاً في قاعدة البيانات
+// دالة التحقق هل المستخدم مسجل مسبقاً في جدول Supabase
 async function isUserVerified(telegramId) {
   try {
     const { data } = await supabase
@@ -127,7 +115,7 @@ async function isUserVerified(telegramId) {
   }
 }
 
-// 🌟 نقطة البدء والتحقق الأمني
+// 🌟 نقطة البدء والتحقق الأمني الإجباري
 bot.start(async (ctx) => {
   await ctx.sendChatAction('typing');
   const userName = ctx.from.first_name || 'مستخدمنا الكريم';
@@ -197,7 +185,7 @@ bot.hears(['🌐 تصفح الموقع الرسمي (البروزر)', '🌐 Sit
   );
 });
 
-// حماية إضافية تمنع المستخدم غير الموثق من تخطي الخطوة
+// حماية إضافية تمنع غير الموثق من تخطي خطوة تأكيد الرقم
 bot.use(async (ctx, next) => {
   if (ctx.message && ctx.message.text && ctx.message.text.startsWith('/')) {
     return next();
@@ -303,7 +291,7 @@ bot.action(/filter_state_(.+)/, async (ctx) => {
     delete userState[userId];
   } catch (err) {
     console.error(err);
-    await ctx.reply(t(userId, 'errorMsg'));
+    ctx.reply(t(userId, 'errorMsg'));
   }
 });
 
@@ -517,7 +505,6 @@ bot.on('video', async (ctx) => {
 const PORT = process.env.PORT || 3000;
 
 if (WEBHOOK_DOMAIN) {
-  // مسار الـ Webhook المقاوم للنوم على Render (مع الاستجابة الفورية 200)
   app.post(`/bot${BOT_TOKEN}`, async (req, res) => {
     res.sendStatus(200);
     try {
