@@ -22,30 +22,97 @@ const app = express();
 app.use(express.json());
 
 const userState = {};
+const userLang = {};
 
+// الولايات الرسمية والنظيفة بدون أيقونات أو بهلوانيات
 const POPULAR_WILAYAS = [
-  'الجزائر العاصمة 🏛️', 'وهران 🌅', 'مستغانم 🌊', 
-  'قسنطينة 🌉', 'عنابة ⚓', 'البليدة 🌹', 
-  'تلمسان 🏰', 'سطيف ❄️', 'بجاية ⛰️'
+  'الجزائر العاصمة', 'وهران', 'مستغانم', 'قسنطينة', 
+  'عنابة', 'البليدة', 'تلمسان', 'سطيف', 'بجاية'
 ];
 
-// 📱 لوحة المفاتيح الرئيسية: زر الموقع في الأسفل تماماً وبشكل مباشر ومريح
-function getMainMenuKeyboard() {
+// 🌐 نظام النصوص متعدد اللغات (عربي / فرنسي)
+const STRINGS = {
+  ar: {
+    welcome: (name) => `أهلاً بك يا <b>${name}</b> في <b>منصة عقار الجزائر (Aqar)</b> 🏠✨\n\nنظام رقمي احترافي لإدارة وعروض العقارات. اختر من القائمة أدناه:`,
+    authPrompt: (name) => `أهلاً بك يا <b>${name}</b> في <b>منصة عقار الجزائر (Aqar)</b> 🏠✨\n\n⚠️ <b>تنبيه أمني:</b>\nللاستفادة من خدمات المنصة وتصفح العقارات، يرجى <b>تأكيد رقم هاتفك</b> أولاً بضغطة زر واحدة:`,
+    publishBtn: '➕ إضافة عقار جديد',
+    browseBtn: '🔍 تصفح العقارات المتاحة',
+    webBtn: '🌐 تصفح الموقع الرسمي (البروزر)',
+    supportBtn: '📞 الدعم والإدارة',
+    langBtn: '🌐 تغيير اللغة / Langue',
+    aboutBtn: 'ℹ️ عن المنصة',
+    browseTitle: '🔍 <b>اختر الولاية أدناه لعرض العقارات المتوفرة فيها:</b>',
+    noProperties: '📭 عذراً، لا توجد أي عقارات مسجلة في المنصة حالياً.',
+    allStates: '🌐 عرض كافة العقارات (الكل)',
+    step1Type: '🏢 <b>معالج نشر عقار جديد (الخطوة 1 من 5)</b>\n\nاختر <b>نوع العقار</b> من الأزرار أدناه أو أكتبه يدوياً:',
+    step2State: (type) => `✅ تم تحديد النوع: <b>${type}</b>\n\n📍 <b>الخطوة 2:</b> اختر الولاية أو اكتبها يدوياً:`,
+    step3Price: (state) => `✅ الولاية: <b>${state}</b>\n\n💰 <b>الخطوة 3:</b> أرسل الآن <b>السعر المطلوب</b>:`,
+    step4Phone: (price) => `✅ السعر: <b>${price}</b>\n\n📞 <b>الخطوة 4:</b> أدخل <b>رقم الهاتف للتواصل</b>:`,
+    step5Desc: (phone) => `✅ رقم الهاتف: <b>${phone}</b>\n\n📝 <b>الخطوة 5:</b> أدخل <b>الوصف التفصيلي</b> للعقار:`,
+    step6Media: '✅ تم تسجيل كافة البيانات بنجاح!\n\n📸 <b>الخطوة الأخيرة:</b> أرسل الآن <b>صورة أو فيديو العقار</b> لإتمام النشر.',
+    successPublish: '🎉 <b>تم نشر إعلان العقار بنجاح في المنصة!</b>',
+    supportText: '📞 <b>مركز الدعم التقني - منصة عقار الجزائر:</b>\n\nنحن في خدمتك دائماً لأي استفسار تقني أو إداري.',
+    aboutText: '🏛 <b>عن منصة عقار الجزائر (Aqar System):</b>\n\nنظام رقمي ذكي ومتطور لإدارة المعاملات والعروض العقارية.',
+    langChanged: '✅ تم اعتماد اللغة العربية لنظام البوت.',
+    errorMsg: '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.',
+    contactBtn: '📞 طلب التواصل',
+    authBtnText: '📱 اضغط هنا لمشاركة رقم هاتفك والبدء'
+  },
+  fr: {
+    welcome: (name) => `Bienvenue <b>${name}</b> sur <b>Aqar Algérie</b> 🏠✨\n\nSystème numérique professionnel de gestion immobilière. Choisissez dans le menu ci-dessous :`,
+    authPrompt: (name) => `Bienvenue <b>${name}</b> sur <b>Aqar Algérie</b> 🏠✨\n\n⚠️ <b>Sécurité:</b>\nVeuillez <b>confirmer votre numéro de téléphone</b> pour accéder aux services :`,
+    publishBtn: '➕ Ajouter un bien',
+    browseBtn: '🔍 Parcourir les biens',
+    webBtn: '🌐 Site Officiel (Navigateur)',
+    supportBtn: '📞 Support & Contact',
+    langBtn: '🌐 Langue / اللغة',
+    aboutBtn: 'ℹ️ À propos',
+    browseTitle: '🔍 <b>Choisissez la wilaya pour voir les biens disponibles :</b>',
+    noProperties: '📭 Désolé, aucun bien enregistré pour le moment.',
+    allStates: '🌐 Afficher tous les biens (Tous)',
+    step1Type: '🏢 <b>Assistant de publication (Étape 1 sur 5)</b>\n\nChoisissez le <b>type de bien</b> ou écrivez-le :',
+    step2State: (type) => `✅ Type sélectionné: <b>${type}</b>\n\n📍 <b>Étape 2:</b> Choisissez la wilaya :`,
+    step3Price: (state) => `✅ Wilaya: <b>${state}</b>\n\n💰 <b>Étape 3:</b> Envoyez le <b>prix demandé</b> :`,
+    step4Phone: (price) => `✅ Prix: <b>${price}</b>\n\n📞 <b>Étape 4:</b> Entrez votre <b>numéro de téléphone</b> :`,
+    step5Desc: (phone) => `✅ Téléphone: <b>${phone}</b>\n\n📝 <b>Étape 5:</b> Entrez la <b>description détaillée</b> :`,
+    step6Media: '✅ Données enregistrées !\n\n📸 <b>Dernière étape:</b> Envoyez une <b>photo ou vidéo</b> du bien.',
+    successPublish: '🎉 <b>Le bien a été publié avec succès sur la plateforme !</b>',
+    supportText: '📞 <b>Support Technique - Aqar Algérie:</b>\n\nNous sommes à votre service.',
+    aboutText: '🏛 <b>À propos d\'Aqar Algérie:</b>\n\nSystème numérique intelligent de gestion immobilière.',
+    langChanged: '✅ La langue française a été activée.',
+    errorMsg: '⚠️ Une erreur est survenue, veuillez réessayer.',
+    contactBtn: '📞 Demander contact',
+    authBtnText: '📱 Partager mon numéro et commencer'
+  }
+};
+
+function t(userId, key, ...args) {
+  const lang = userLang[userId] || 'ar';
+  const val = STRINGS[lang][key] || STRINGS['ar'][key];
+  return typeof val === 'function' ? val(...args) : val;
+}
+
+// لوحة المفاتيح الرئيسية الاحترافية (مع زر الموقع الرسمي في الأسفل تماماً)
+function getMainMenuKeyboard(userId) {
+  const lang = userLang[userId] || 'ar';
+  const isAr = lang === 'ar';
   return Markup.keyboard([
-    ['🔍 تصفح العقارات المتاحة 🏠', '➕ إضافة عقار جديد 📝'],
-    ['📞 الدعم الفني والإدارة 🛠️', 'ℹ️ عن المنصة الرقمية'],
-    ['🌐 تصفح الموقع الرسمي (البروزر)'] // الزر في الأسفل تماماً كما طلبت
+    [isAr ? '🔍 تصفح العقارات المتاحة' : '🔍 Parcourir les biens', isAr ? '➕ إضافة عقار جديد' : '➕ Ajouter un bien'],
+    [isAr ? '📞 الدعم والإدارة' : '📞 Support & Contact', isAr ? '🌐 تغيير اللغة / Langue' : '🌐 Langue / اللغة'],
+    [isAr ? 'ℹ️ عن المنصة' : 'ℹ️ À propos'],
+    [isAr ? '🌐 تصفح الموقع الرسمي (البروزر)' : '🌐 Site Officiel (Navigateur)'] // في الأسفل تماماً
   ]).resize();
 }
 
-// زر إجباري لتأكيد الرقم للمستخدمين الجدد
-function getAuthKeyboard() {
+// زر تأكيد الرقم الإجباري
+function getAuthKeyboard(userId) {
+  const lang = userLang[userId] || 'ar';
   return Markup.keyboard([
-    [Markup.button.contactRequest('📱 اضغط هنا لمشاركة رقم هاتفك والبدء')]
+    [Markup.button.contactRequest(STRINGS[lang]['authBtnText'])]
   ]).resize().oneTime();
 }
 
-// دالة التحقق من توثيق المستخدم مسبقاً
+// دالة التحقق هل المستخدم مسجل رقمه مسبقاً في قاعدة البيانات
 async function isUserVerified(telegramId) {
   try {
     const { data } = await supabase
@@ -60,37 +127,38 @@ async function isUserVerified(telegramId) {
   }
 }
 
-// 🌟 نقطة البداية
+// 🌟 نقطة البدء والتحقق الأمني
 bot.start(async (ctx) => {
   await ctx.sendChatAction('typing');
   const userName = ctx.from.first_name || 'مستخدمنا الكريم';
   const userId = ctx.from.id;
   
   delete userState[userId];
+  userLang[userId] = userLang[userId] || 'ar';
 
   const verified = await isUserVerified(userId);
 
   if (verified) {
-    await ctx.reply(
-      `أهلاً بعودتك يا <b>${userName}</b> في <b>منصة عقار الجزائر</b> 🏠✨`,
-      { parse_mode: 'HTML', ...getMainMenuKeyboard() }
-    );
+    ctx.reply(t(userId, 'welcome', userName), {
+      parse_mode: 'HTML',
+      ...getMainMenuKeyboard(userId)
+    });
   } else {
-    await ctx.reply(
-      `أهلاً بك يا <b>${userName}</b> في <b>منصة عقار الجزائر</b> 🏠✨\n\n` +
-      `للبدء والاستفادة من خدمات المنصة، يرجى <b>تأكيد رقم هاتفك</b> أولاً بضغطة زر واحدة:`,
-      { parse_mode: 'HTML', ...getAuthKeyboard() }
-    );
+    ctx.reply(t(userId, 'authPrompt', userName), {
+      parse_mode: 'HTML',
+      ...getAuthKeyboard(userId)
+    });
   }
 });
 
-// استقبال وتوثيق رقم الهاتف
+// استقبال وتوثيق رقم الهاتف عند الضغط أول مرة
 bot.on('contact', async (ctx) => {
   await ctx.sendChatAction('typing');
   const contact = ctx.message.contact;
   const phoneNumber = contact.phone_number;
   const firstName = ctx.from.first_name || '';
   const userId = ctx.from.id;
+  const lang = userLang[userId] || 'ar';
 
   try {
     await supabase.from('test_messages').insert([
@@ -107,19 +175,19 @@ bot.on('contact', async (ctx) => {
     ]);
 
     await ctx.reply(
-      `🎉 <b>تم توثيق حسابك بنجاح!</b>\n\nأصبح بإامكك استخدام المنصة بكامل ميزاتها الآن:`,
-      { parse_mode: 'HTML', ...getMainMenuKeyboard() }
+      lang === 'ar' ? '🎉 <b>تم توثيق حسابك بنجاح!</b>\n\nأصبح بإمكانك استخدام المنصة بكامل ميزاتها:' : '🎉 <b>Compte vérifié avec succès !</b>',
+      { parse_mode: 'HTML', ...getMainMenuKeyboard(userId) }
     );
   } catch (err) {
     console.error(err);
-    await ctx.reply('⚠️ حدث خطأ أثناء التوثيق، يرجى المحاولة لاحقاً.');
+    await ctx.reply(t(userId, 'errorMsg'));
   }
 });
 
-// 🌐 زر الموقع الرسمي في الأسفل (يفتح الرابط في البروزر بضغطة زر واحدة مباشرة بدون تعقيد)
-bot.hears('🌐 تصفح الموقع الرسمي (البروزر)', async (ctx) => {
+// 🌐 معالج زر الموقع الرسمي (يفتح الرابط في المتصفح الخارجي)
+bot.hears(['🌐 تصفح الموقع الرسمي (البروزر)', '🌐 Site Officiel (Navigateur)'], async (ctx) => {
   await ctx.reply(
-    '🌐 <b>اضغط على الزر أدناه لفتح المنصة في متصفح الهاتف (Browser):</b>',
+    '🌐 <b>رابط منصة عقار الجزائر (ويب):</b>\n\nانقر على الزر أدناه لفتح الموقع وتصفحه في متصفح الهاتف:',
     {
       parse_mode: 'HTML',
       ...Markup.inlineKeyboard([
@@ -129,212 +197,341 @@ bot.hears('🌐 تصفح الموقع الرسمي (البروزر)', async (ctx
   );
 });
 
-// حماية التحقق من التوثيق
+// حماية إضافية تمنع المستخدم غير الموثق من تخطي الخطوة
 bot.use(async (ctx, next) => {
   if (ctx.message && ctx.message.text && ctx.message.text.startsWith('/')) {
     return next();
   }
   
-  if (ctx.from && ctx.message && (ctx.message.text?.includes('تصفح') || ctx.message.text?.includes('إضافة'))) {
+  if (ctx.from && ctx.message && (ctx.message.text?.includes('تصفح') || ctx.message.text?.includes('إضافة') || ctx.message.text?.includes('Parcourir') || ctx.message.text?.includes('Ajouter'))) {
     const verified = await isUserVerified(ctx.from.id);
     if (!verified) {
-      return ctx.reply('⚠️ عذراً، يجب عليك تأكيد رقم هاتفك أولاً عبر الزر أدناه:', getAuthKeyboard());
+      return ctx.reply('⚠️ عذراً، يجب عليك تأكيد رقم هاتفك أولاً عبر الزر أدناه:', getAuthKeyboard(ctx.from.id));
     }
   }
   return next();
 });
 
-// 🔍 تصفح العقارات
-bot.hears('🔍 تصفح العقارات المتاحة 🏠', async (ctx) => {
-  await ctx.sendChatAction('typing');
+// 🔍 تصفح العقارات الديناميكي مع دعم الصور والفيديوهات
+bot.hears(['🔍 تصفح العقارات المتاحة', '🔍 Parcourir les biens'], async (ctx) => {
   const userId = ctx.from.id;
   userState[userId] = { step: 'filtering_state' };
 
   try {
-    const { data } = await supabase.from('test_messages').select('state_name');
-    if (!data || data.length === 0) {
-      return ctx.reply('📭 لا توجد أي عقارات مسجلة حالياً.');
+    const { data, error } = await supabase.from('test_messages').select('state_name');
+
+    if (error || !data || data.length === 0) {
+      return ctx.reply(t(userId, 'noProperties'));
     }
 
     const uniqueStates = [...new Set(data.map(item => item.state_name).filter(Boolean))];
-    const buttons = uniqueStates.map(state => Markup.button.callback(`📍 ${state}`, `filter_state_${state}`));
-    
+
+    if (uniqueStates.length === 0) {
+      return ctx.reply(t(userId, 'noProperties'));
+    }
+
+    const buttons = uniqueStates.map(state => 
+      Markup.button.callback(`📍 ${state}`, `filter_state_${state}`)
+    );
+
     const chunkedButtons = [];
     for (let i = 0; i < buttons.length; i += 3) {
       chunkedButtons.push(buttons.slice(i, i + 3));
     }
-    chunkedButtons.push([Markup.button.callback('🌐 عرض كافة العقارات (الكل)', 'filter_state_ALL')]);
 
-    await ctx.reply('🔍 <b>اختر الولاية لعرض العقارات:</b>', {
+    chunkedButtons.push([Markup.button.callback(t(userId, 'allStates'), 'filter_state_ALL')]);
+
+    await ctx.reply(t(userId, 'browseTitle'), {
       parse_mode: 'HTML',
       ...Markup.inlineKeyboard(chunkedButtons)
     });
   } catch (err) {
-    console.error(err);
-    ctx.reply('⚠️ حدث خطأ في الاتصال.');
+    console.error('Fetch states error:', err);
+    ctx.reply(t(userId, 'errorMsg'));
   }
 });
 
 bot.action(/filter_state_(.+)/, async (ctx) => {
-  await ctx.answerCbQuery('جاري التحميل... ⚡');
+  await ctx.answerCbQuery();
   const stateQuery = decodeURIComponent(ctx.match[1]);
+  const userId = ctx.from.id;
 
   try {
     let query = supabase.from('test_messages').select('*').order('id', { ascending: false }).limit(10);
-    if (stateQuery !== 'ALL') query = query.eq('state_name', stateQuery);
-
-    const { data } = await query;
-    if (!data || data.length === 0) {
-      return ctx.editMessageText('📭 لا توجد عقارات في هذه الولاية حالياً.');
+    if (stateQuery !== 'ALL') {
+      query = query.eq('state_name', stateQuery);
     }
 
-    await ctx.editMessageText(`🏛 <b>النتائج (${stateQuery === 'ALL' ? 'الكل' : stateQuery}):</b>`, { parse_mode: 'HTML' });
+    const { data, error } = await query;
+
+    if (error || !data || data.length === 0) {
+      return ctx.editMessageText(t(userId, 'noProperties'));
+    }
+
+    await ctx.editMessageText(`🏛 <b>النتائج (الولاية: ${stateQuery === 'ALL' ? 'الكل' : stateQuery}):</b>`, { parse_mode: 'HTML' });
 
     for (const item of data) {
-      if (item.property_type === '⭐ توثيق حساب اجباري') continue; // تخطي رسائل التوثيق في العرض
+      if (item.property_type === '⭐ توثيق حساب اجباري') continue;
 
       const caption = 
-        `🏠 <b>العقار:</b> ${item.property_type}\n` +
-        `📍 <b>الولاية:</b> ${item.state_name}\n` +
-        `💰 <b>السعر:</b> ${item.price}\n` +
-        `📞 <b>الهاتف:</b> <code>${item.phone}</code>\n` +
-        `📝 <b>التفاصيل:</b> ${item.description}`;
+        `🏠 <b>العقار:</b> ${item.property_type || 'عقار'}\n` +
+        `📍 <b>الولاية:</b> ${item.state_name || 'غير محدد'}\n` +
+        `💰 <b>السعر:</b> ${item.price || 'حسب الاتفاق'}\n` +
+        `📞 <b>الهاتف:</b> <code>${item.phone || 'غير مسجل'}</code>\n` +
+        `📝 <b>الوصف:</b> ${item.description || item.message || 'بدون تفاصيل'}`;
 
-      await ctx.reply(caption, { parse_mode: 'HTML' });
+      const kb = Markup.inlineKeyboard([
+        [Markup.button.callback(t(userId, 'contact_btn') || '📞 اتصال', 'contact_admin')]
+      ]);
+
+      if (item.video_url && item.video_url !== 'EMPTY') {
+        try {
+          await ctx.replyWithVideo(item.video_url, { caption, parse_mode: 'HTML', ...kb });
+        } catch (vErr) {
+          await ctx.reply(caption, { parse_mode: 'HTML', ...kb });
+        }
+      } else if (item.image_url && item.image_url !== 'EMPTY') {
+        try {
+          await ctx.replyWithPhoto(item.image_url, { caption, parse_mode: 'HTML', ...kb });
+        } catch (imgErr) {
+          await ctx.reply(caption, { parse_mode: 'HTML', ...kb });
+        }
+      } else {
+        await ctx.reply(caption, { parse_mode: 'HTML', ...kb });
+      }
     }
+    delete userState[userId];
   } catch (err) {
     console.error(err);
-    ctx.reply('⚠️ حدث خطأ أثناء جلب النتائج.');
+    await ctx.reply(t(userId, 'errorMsg'));
   }
 });
 
-// ➕ إضافة عقار جديد
-bot.hears('➕ إضافة عقار جديد 📝', async (ctx) => {
-  await ctx.sendChatAction('typing');
+// ➕ معالج إضافة عقار جديد
+bot.hears(['➕ إضافة عقار جديد', '➕ Ajouter un bien'], async (ctx) => {
   const userId = ctx.from.id;
   userState[userId] = { step: 'waiting_for_type', data: {} };
 
-  await ctx.reply(
-    '🏢 <b>معالج نشر عقار (الخطوة 1):</b>\nاختر نوع العقار:',
-    {
-      parse_mode: 'HTML',
-      ...Markup.inlineKeyboard([
-        [Markup.button.callback('شقة 🏢', 'type_شقة'), Markup.button.callback('فيلا 🏡', 'type_فيلا')],
-        [Markup.button.callback('منزل 🏠', 'type_منزل'), Markup.button.callback('قطعة أرض 📐', 'type_قطعة أرض')]
-      ])
-    }
-  );
+  await ctx.reply(t(userId, 'step1Type'), {
+    parse_mode: 'HTML',
+    ...Markup.inlineKeyboard([
+      [Markup.button.callback('شقة', 'type_شقة'), Markup.button.callback('فيلا', 'type_فيلا')],
+      [Markup.button.callback('منزل', 'type_منزل'), Markup.button.callback('قطعة أرض', 'type_قطعة أرض')],
+      [Markup.button.callback('محل تجاري', 'type_محل تجاري')]
+    ])
+  });
 });
 
 bot.action(/type_(.+)/, async (ctx) => {
   await ctx.answerCbQuery();
   const userId = ctx.from.id;
-  userState[userId].data.property_type = ctx.match[1];
+  const selectedType = ctx.match[1];
+
+  if (!userState[userId]) userState[userId] = { data: {} };
+  userState[userId].data.property_type = selectedType;
   userState[userId].step = 'waiting_for_state';
 
   const wilayaButtons = POPULAR_WILAYAS.map(w => Markup.button.callback(w, `sel_state_${w}`));
-  const chunked = [];
-  for (let i = 0; i < wilayaButtons.length; i += 3) chunked.push(wilayaButtons.slice(i, i + 3));
+  const chunkedWilayas = [];
+  for (let i = 0; i < wilayaButtons.length; i += 3) {
+    chunkedWilayas.push(wilayaButtons.slice(i, i + 3));
+  }
 
-  await ctx.editMessageText('📍 <b>الخطوة 2:</b> اختر الولاية:', {
+  await ctx.editMessageText(t(userId, 'step2State', selectedType), {
     parse_mode: 'HTML',
-    ...Markup.inlineKeyboard(chunked)
+    ...Markup.inlineKeyboard(chunkedWilayas)
   });
 });
 
 bot.action(/sel_state_(.+)/, async (ctx) => {
   await ctx.answerCbQuery();
   const userId = ctx.from.id;
-  userState[userId].data.state_name = ctx.match[1];
+  const selectedState = ctx.match[1];
+
+  if (!userState[userId]) userState[userId] = { data: {} };
+  userState[userId].data.state_name = selectedState;
   userState[userId].step = 'waiting_for_price';
 
-  await ctx.editMessageText('💰 <b>الخطوة 3:</b> أرسل الآن السعر المطلوب:', { parse_mode: 'HTML' });
+  await ctx.editMessageText(t(userId, 'step3Price', selectedState), { parse_mode: 'HTML' });
 });
 
-bot.hears('📞 الدعم الفني والإدارة 🛠️', async (ctx) => {
-  await ctx.reply('📞 مركز الدعم التقني في خدمتكم دائماً.', { ...getMainMenuKeyboard() });
+// دعم واجهة تغيير اللغة
+bot.hears(['🌐 تغيير اللغة / Langue', '🌐 Langue / اللغة'], async (ctx) => {
+  ctx.reply(`🌐 <b>اختر لغة النظام / Choisir la langue:</b>`, {
+    parse_mode: 'HTML',
+    ...Markup.inlineKeyboard([
+      [Markup.button.callback('🇩🇿 العربية', 'set_lang_ar'), Markup.button.callback('🇫🇷 Français', 'set_lang_fr')]
+    ])
+  });
 });
 
-bot.hears('ℹ️ عن المنصة الرقمية', async (ctx) => {
-  await ctx.reply('🏛 منصة عقار الجزائر لإدارة العروض العقارية بكل احترافية.', { ...getMainMenuKeyboard() });
+bot.action('set_lang_ar', async (ctx) => {
+  await ctx.answerCbQuery();
+  userLang[ctx.from.id] = 'ar';
+  await ctx.reply(t(ctx.from.id, 'langChanged'), getMainMenuKeyboard(ctx.from.id));
 });
 
-// معالج النصوص للخطوات
+bot.action('set_lang_fr', async (ctx) => {
+  await ctx.answerCbQuery();
+  userLang[ctx.from.id] = 'fr';
+  await ctx.reply(t(ctx.from.id, 'langChanged'), getMainMenuKeyboard(ctx.from.id));
+});
+
+bot.hears(['📞 الدعم والإدارة', '📞 Support & Contact'], async (ctx) => {
+  await ctx.reply(t(ctx.from.id, 'supportText'), {
+    parse_mode: 'HTML',
+    ...getMainMenuKeyboard(ctx.from.id)
+  });
+});
+
+bot.hears(['ℹ️ عن المنصة', 'ℹ️ À propos'], async (ctx) => {
+  await ctx.reply(t(ctx.from.id, 'aboutText'), {
+    parse_mode: 'HTML',
+    ...getMainMenuKeyboard(ctx.from.id)
+  });
+});
+
+// معالج النصوص اليدوية أثناء خطوات النشر
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
-  const text = ctx.message.text.trim();
-  if (text.startsWith('/')) return;
+  const userText = ctx.message.text.trim();
+
+  if (userText.startsWith('/')) return;
 
   const state = userState[userId];
   if (!state) return;
 
-  if (state.step === 'waiting_for_state') {
-    state.data.state_name = text;
+  if (state.step === 'waiting_for_type') {
+    state.data.property_type = userText;
+    state.step = 'waiting_for_state';
+
+    const wilayaButtons = POPULAR_WILAYAS.map(w => Markup.button.callback(w, `sel_state_${w}`));
+    const chunkedWilayas = [];
+    for (let i = 0; i < wilayaButtons.length; i += 3) {
+      chunkedWilayas.push(wilayaButtons.slice(i, i + 3));
+    }
+
+    return ctx.reply(t(userId, 'step2State', userText), {
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard(chunkedWilayas)
+    });
+  } else if (state.step === 'waiting_for_state') {
+    state.data.state_name = userText;
     state.step = 'waiting_for_price';
-    return ctx.reply('💰 أرسل السعر المطلوب:');
+    return ctx.reply(t(userId, 'step3Price', userText), { parse_mode: 'HTML' });
   } else if (state.step === 'waiting_for_price') {
-    state.data.price = text;
+    state.data.price = userText;
     state.step = 'waiting_for_phone';
-    return ctx.reply('📞 أدخل رقم الهاتف للتواصل:');
+    return ctx.reply(t(userId, 'step4Phone', userText), { parse_mode: 'HTML' });
   } else if (state.step === 'waiting_for_phone') {
-    state.data.phone = text;
+    state.data.phone = userText;
     state.step = 'waiting_for_description';
-    return ctx.reply('📝 أدخل الوصف التفصيلي للعقار:');
+    return ctx.reply(t(userId, 'step5Desc', userText), { parse_mode: 'HTML' });
   } else if (state.step === 'waiting_for_description') {
-    state.data.description = text;
+    state.data.description = userText;
     state.step = 'waiting_for_media';
-    return ctx.reply('📸 أرسل صورة أو فيديو العقار لإتمام النشر النهائي.');
+    return ctx.reply(t(userId, 'step6Media'), { parse_mode: 'HTML' });
   }
 });
 
-// معالج الميديا والنشر
-bot.on(['photo', 'video'], async (ctx) => {
+// 📸 معالج استلام الصور
+bot.on('photo', async (ctx) => {
   const userId = ctx.from.id;
   const state = userState[userId];
 
   if (state && state.step === 'waiting_for_media') {
     try {
-      await ctx.reply('⏳ جاري النشر...');
-      const file = ctx.message.video || ctx.message.photo[ctx.message.photo.length - 1];
-      const link = await ctx.telegram.getFileLink(file.file_id);
-      const res = await fetch(link.href);
-      const buf = Buffer.from(await res.arrayBuffer());
-      const name = `${Date.now()}_aqar.${ctx.message.video ? 'mp4' : 'jpg'}`;
+      await ctx.reply('⏳ جاري الحفظ والنشر السحابي...');
+      const photo = ctx.message.photo[ctx.message.photo.length - 1];
+      const fileLink = await ctx.telegram.getFileLink(photo.file_id);
+      
+      const response = await fetch(fileLink.href);
+      const buffer = Buffer.from(await response.arrayBuffer());
+      const fileName = `${Date.now()}_aqar.jpg`;
 
-      await supabase.storage.from('test_media').upload(name, buf);
-      const { data: urlData } = supabase.storage.from('test_media').getPublicUrl(name);
+      await supabase.storage.from('test_media').upload(fileName, buffer, { contentType: 'image/jpeg' });
+      const { data: publicURLData } = supabase.storage.from('test_media').getPublicUrl(fileName);
 
       const p = state.data;
-      await supabase.from('test_messages').insert([{
+      await supabase.from('test_messages').insert([{ 
         property_type: p.property_type,
         state_name: p.state_name,
         price: p.price,
         phone: p.phone,
         description: p.description,
         message: p.description,
-        image_url: ctx.message.video ? 'EMPTY' : urlData.publicUrl,
-        video_url: ctx.message.video ? urlData.publicUrl : 'EMPTY'
+        image_url: publicURLData.publicUrl, 
+        video_url: 'EMPTY' 
       }]);
 
       delete userState[userId];
-      await ctx.reply('🎉 <b>تم نشر الإعلان بنجاح!</b>', { parse_mode: 'HTML', ...getMainMenuKeyboard() });
-    } catch (e) {
-      console.error(e);
+      await ctx.reply(t(userId, 'successPublish'), { parse_mode: 'HTML', ...getMainMenuKeyboard(userId) });
+    } catch (err) {
+      console.error(err);
       delete userState[userId];
-      await ctx.reply('⚠️ حدث خطأ أثناء النشر.');
+      await ctx.reply(t(userId, 'errorMsg'));
+    }
+  }
+});
+
+// 🎥 معالج استلام الفيديوهات
+bot.on('video', async (ctx) => {
+  const userId = ctx.from.id;
+  const state = userState[userId];
+
+  if (state && state.step === 'waiting_for_media') {
+    try {
+      await ctx.reply('⏳ جاري رفع الفيديو والنشر السحابي...');
+      const video = ctx.message.video;
+      const fileLink = await ctx.telegram.getFileLink(video.file_id);
+      
+      const response = await fetch(fileLink.href);
+      const buffer = Buffer.from(await response.arrayBuffer());
+      const fileName = `${Date.now()}_aqar.mp4`;
+
+      await supabase.storage.from('test_media').upload(fileName, buffer, { contentType: 'video/mp4' });
+      const { data: publicURLData } = supabase.storage.from('test_media').getPublicUrl(fileName);
+
+      const p = state.data;
+      await supabase.from('test_messages').insert([{ 
+        property_type: p.property_type,
+        state_name: p.state_name,
+        price: p.price,
+        phone: p.phone,
+        description: p.description,
+        message: p.description,
+        image_url: 'EMPTY', 
+        video_url: publicURLData.publicUrl 
+      }]);
+
+      delete userState[userId];
+      await ctx.reply(t(userId, 'successPublish'), { parse_mode: 'HTML', ...getMainMenuKeyboard(userId) });
+    } catch (err) {
+      console.error(err);
+      delete userState[userId];
+      await ctx.reply(t(userId, 'errorMsg'));
     }
   }
 });
 
 const PORT = process.env.PORT || 3000;
+
 if (WEBHOOK_DOMAIN) {
+  // مسار الـ Webhook المقاوم للنوم على Render (مع الاستجابة الفورية 200)
   app.post(`/bot${BOT_TOKEN}`, async (req, res) => {
     res.sendStatus(200);
-    if (req.body?.update_id) bot.handleUpdate(req.body);
+    try {
+      if (req.body && req.body.update_id) {
+        await bot.handleUpdate(req.body);
+      }
+    } catch (err) {
+      console.error('Webhook processing error:', err);
+    }
   });
+
   bot.telegram.setWebhook(`${WEBHOOK_DOMAIN}/bot${BOT_TOKEN}`);
-  app.get('/', (req, res) => res.send('Aqar Bot is running 🚀'));
-  app.listen(PORT, '0.0.0.0', () => console.log(`Server on port ${PORT}`));
+  app.get('/', (req, res) => res.send('Aqar Algeria Professional Production System is online 🚀'));
+  app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
 } else {
   bot.launch();
 }
