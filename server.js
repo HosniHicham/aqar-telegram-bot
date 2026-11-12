@@ -88,7 +88,7 @@ function getMainMenuKeyboard(userId) {
     [isAr ? '🔍 تصفح العقارات المتاحة' : '🔍 Parcourir les biens', isAr ? '➕ إضافة عقار جديد' : '➕ Ajouter un bien'],
     [isAr ? '📞 الدعم والإدارة' : '📞 Support & Contact', isAr ? '🌐 تغيير اللغة / Langue' : '🌐 Langue / اللغة'],
     [isAr ? 'ℹ️ عن المنصة' : 'ℹ️ À propos'],
-    [isAr ? '🌐 تصفح الموقع الرسمي (البروزر)' : '🌐 Site Officiel (Navigateur)'] // في الأسفل تماماً
+    [isAr ? '🌐 تصفح الموقع الرسمي (البروزر)' : '🌐 Site Officiel (Navigateur)']
   ]).resize();
 }
 
@@ -200,10 +200,9 @@ bot.use(async (ctx, next) => {
   return next();
 });
 
-// 🔍 تصفح العقارات الديناميكي مع دعم الصور والفيديوهات
+// 🔍 تصفح العقارات (اختيار الولاية أولاً لبدء نظام الصفحات Pagination)
 bot.hears(['🔍 تصفح العقارات المتاحة', '🔍 Parcourir les biens'], async (ctx) => {
   const userId = ctx.from.id;
-  userState[userId] = { step: 'filtering_state' };
 
   try {
     const { data, error } = await supabase.from('test_messages').select('state_name');
@@ -219,7 +218,7 @@ bot.hears(['🔍 تصفح العقارات المتاحة', '🔍 Parcourir les 
     }
 
     const buttons = uniqueStates.map(state => 
-      Markup.button.callback(`📍 ${state}`, `filter_state_${state}`)
+      Markup.button.callback(`📍 ${state}`, `browse_state_${state}_0`)
     );
 
     const chunkedButtons = [];
@@ -227,7 +226,7 @@ bot.hears(['🔍 تصفح العقارات المتاحة', '🔍 Parcourir les 
       chunkedButtons.push(buttons.slice(i, i + 3));
     }
 
-    chunkedButtons.push([Markup.button.callback(t(userId, 'allStates'), 'filter_state_ALL')]);
+    chunkedButtons.push([Markup.button.callback(t(userId, 'allStates'), 'browse_state_ALL_0')]);
 
     await ctx.reply(t(userId, 'browseTitle'), {
       parse_mode: 'HTML',
@@ -239,13 +238,13 @@ bot.hears(['🔍 تصفح العقارات المتاحة', '🔍 Parcourir les 
   }
 });
 
-bot.action(/filter_state_(.+)/, async (ctx) => {
-  await ctx.answerCbQuery();
-  const stateQuery = decodeURIComponent(ctx.match[1]);
+// 📄 دالة عرض العقار الواحد مع أزرار التنقل (Pagination System)
+async function renderPropertyPage(ctx, stateQuery, pageIndex, isEdit = true) {
   const userId = ctx.from.id;
+  const lang = userLang[userId] || 'ar';
 
   try {
-    let query = supabase.from('test_messages').select('*').order('id', { ascending: false }).limit(10);
+    let query = supabase.from('test_messages').select('*').order('id', { ascending: false });
     if (stateQuery !== 'ALL') {
       query = query.eq('state_name', stateQuery);
     }
@@ -253,45 +252,113 @@ bot.action(/filter_state_(.+)/, async (ctx) => {
     const { data, error } = await query;
 
     if (error || !data || data.length === 0) {
-      return ctx.editMessageText(t(userId, 'noProperties'));
+      const msg = lang === 'ar' ? '📭 عذراً، لا توجد أي عقارات مسجلة.' : '📭 Aucun bien trouvé.';
+      if (isEdit) return ctx.editMessageText(msg);
+      return ctx.reply(msg);
     }
 
-    await ctx.editMessageText(`🏛 <b>النتائج (الولاية: ${stateQuery === 'ALL' ? 'الكل' : stateQuery}):</b>`, { parse_mode: 'HTML' });
+    // تصفية إشعارات التوثيق لكي لا تظهر في قائمة العقارات
+    const validProperties = data.filter(item => item.property_type !== '⭐ توثيق حساب اجباري');
 
-    for (const item of data) {
-      if (item.property_type === '⭐ توثيق حساب اجباري') continue;
+    if (validProperties.length === 0) {
+      const msg = lang === 'ar' ? '📭 عذراً، لا توجد أي عقارات مسجلة.' : '📭 Aucun bien trouvé.';
+      if (isEdit) return ctx.editMessageText(msg);
+      return ctx.reply(msg);
+    }
 
-      const caption = 
-        `🏠 <b>العقار:</b> ${item.property_type || 'عقار'}\n` +
-        `📍 <b>الولاية:</b> ${item.state_name || 'غير محدد'}\n` +
-        `💰 <b>السعر:</b> ${item.price || 'حسب الاتفاق'}\n` +
-        `📞 <b>الهاتف:</b> <code>${item.phone || 'غير مسجل'}</code>\n` +
-        `📝 <b>الوصف:</b> ${item.description || item.message || 'بدون تفاصيل'}`;
+    if (pageIndex < 0) pageIndex = 0;
+    if (pageIndex >= validProperties.length) pageIndex = validProperties.length - 1;
 
-      const kb = Markup.inlineKeyboard([
-        [Markup.button.callback(t(userId, 'contact_btn') || '📞 اتصال', 'contact_admin')]
-      ]);
+    const item = validProperties[pageIndex];
+    const totalCount = validProperties.length;
 
-      if (item.video_url && item.video_url !== 'EMPTY') {
-        try {
-          await ctx.replyWithVideo(item.video_url, { caption, parse_mode: 'HTML', ...kb });
-        } catch (vErr) {
-          await ctx.reply(caption, { parse_mode: 'HTML', ...kb });
-        }
-      } else if (item.image_url && item.image_url !== 'EMPTY') {
-        try {
-          await ctx.replyWithPhoto(item.image_url, { caption, parse_mode: 'HTML', ...kb });
-        } catch (imgErr) {
-          await ctx.reply(caption, { parse_mode: 'HTML', ...kb });
-        }
+    const caption = 
+      `🏛 <b>الولاية:</b> ${item.state_name || 'غير محدد'} (${pageIndex + 1}/${totalCount})\n\n` +
+      `🏠 <b>العقار:</b> ${item.property_type || 'عقار'}\n` +
+      `💰 <b>السعر:</b> ${item.price || 'حسب الاتفاق'}\n` +
+      `📞 <b>الهاتف:</b> <code>${item.phone || 'غير مسجل'}</code>\n` +
+      `📝 <b>الوصف:</b> ${item.description || item.message || 'بدون تفاصيل'}`;
+
+    const navButtons = [];
+    const row = [];
+
+    if (pageIndex > 0) {
+      row.push(Markup.button.callback('⬅️ السابق', `browse_state_${stateQuery}_${pageIndex - 1}`));
+    }
+    
+    row.push(Markup.button.callback(`📄 ${pageIndex + 1} / ${totalCount}`, 'noop'));
+
+    if (pageIndex < totalCount - 1) {
+      row.push(Markup.button.callback('التالي ➡️', `browse_state_${stateQuery}_${pageIndex + 1}`));
+    }
+
+    navButtons.push(row);
+    navButtons.push([Markup.button.callback('📍 تغيير الولاية / Changer Wilaya', 'back_to_states')]);
+    navButtons.push([Markup.button.callback(t(userId, 'contact_btn') || '📞 اتصال', 'contact_admin')]);
+
+    const kb = Markup.inlineKeyboard(navButtons);
+
+    if (item.video_url && item.video_url !== 'EMPTY') {
+      if (isEdit) {
+        await ctx.deleteMessage().catch(() => {});
+        await ctx.replyWithVideo(item.video_url, { caption, parse_mode: 'HTML', ...kb });
+      } else {
+        await ctx.replyWithVideo(item.video_url, { caption, parse_mode: 'HTML', ...kb });
+      }
+    } else if (item.image_url && item.image_url !== 'EMPTY') {
+      if (isEdit) {
+        await ctx.deleteMessage().catch(() => {});
+        await ctx.replyWithPhoto(item.image_url, { caption, parse_mode: 'HTML', ...kb });
+      } else {
+        await ctx.replyWithPhoto(item.image_url, { caption, parse_mode: 'HTML', ...kb });
+      }
+    } else {
+      if (isEdit) {
+        await ctx.editMessageText(caption, { parse_mode: 'HTML', ...kb });
       } else {
         await ctx.reply(caption, { parse_mode: 'HTML', ...kb });
       }
     }
-    delete userState[userId];
   } catch (err) {
-    console.error(err);
-    ctx.reply(t(userId, 'errorMsg'));
+    console.error('Pagination error:', err);
+    await ctx.reply(t(userId, 'errorMsg'));
+  }
+}
+
+// معالج أزرار التنقل بين العقارات (صفحة صفحة)
+bot.action(/browse_state_(.+)_(.+)/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const stateQuery = decodeURIComponent(ctx.match[1]);
+  const pageIndex = parseInt(ctx.match[2], 10);
+  await renderPropertyPage(ctx, stateQuery, pageIndex, true);
+});
+
+bot.action('noop', async (ctx) => {
+  await ctx.answerCbQuery();
+});
+
+// العودة لاختيار الولايات من جديد
+bot.action('back_to_states', async (ctx) => {
+  await ctx.answerCbQuery();
+  const userId = ctx.from.id;
+  try {
+    const { data } = await supabase.from('test_messages').select('state_name');
+    const uniqueStates = [...new Set(data.map(item => item.state_name).filter(Boolean))];
+    const buttons = uniqueStates.map(state => Markup.button.callback(`📍 ${state}`, `browse_state_${state}_0`));
+    
+    const chunkedButtons = [];
+    for (let i = 0; i < buttons.length; i += 3) {
+      chunkedButtons.push(buttons.slice(i, i + 3));
+    }
+    chunkedButtons.push([Markup.button.callback(t(userId, 'allStates'), 'browse_state_ALL_0')]);
+
+    await ctx.deleteMessage().catch(() => {});
+    await ctx.reply(t(userId, 'browseTitle'), {
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard(chunkedButtons)
+    });
+  } catch (e) {
+    await ctx.reply('⚠️ حدث خطأ، يرجى إعادة المحاولة.');
   }
 });
 
