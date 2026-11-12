@@ -23,6 +23,7 @@ app.use(express.json());
 
 const userState = {};
 const userLang = {};
+const browsingSession = {}; // لتتبع حالة التصفح الحالية لكل مستخدم (الولاية ورقم الصفحة)
 
 // الولايات الرسمية والنظيفة بدون أيقونات
 const POPULAR_WILAYAS = [
@@ -35,40 +36,38 @@ const STRINGS = {
   ar: {
     welcome: (name) => `أهلاً بك يا <b>${name}</b> في <b>منصة عقار الجزائر (Aqar)</b> 🏠\n\nنظام رقمي احترافي لإدارة وعروض العقارات. اختر من القائمة أدناه:`,
     authPrompt: (name) => `أهلاً بك يا <b>${name}</b> في <b>منصة عقار الجزائر (Aqar)</b> 🏠\n\n⚠️ <b>تنبيه أمني:</b>\nللاستفادة من خدمات المنصة وتصفح العقارات، يرجى <b>تأكيد رقم هاتفك</b> أولاً بضغطة زر واحدة:`,
-    browseTitle: '🔍 <b>اختر الولاية أدناه لعرض العقارات المتوفرة فيها:</b>',
+    browseTitle: '🔍 <b>اختر الولاية المطلوبة لعرض العقارات:</b>',
     noProperties: '📭 عذراً، لا توجد أي عقارات مسجلة في المنصة حالياً.',
-    allStates: '🌐 عرض كافة العقارات (الكل)',
-    step1Type: '🏢 <b>معالج نشر عقار جديد (الخطوة 1 من 5)</b>\n\nاختر <b>نوع العقار</b> من الأزرار أدناه أو أكتبه يدوياً:',
-    step2State: (type) => `✅ تم تحديد النوع: <b>${type}</b>\n\n📍 <b>الخطوة 2:</b> اختر الولاية أو اكتبها يدوياً:`,
+    step1Type: '🏢 <b>معالج نشر عقار جديد (الخطوة 1 من 5)</b>\n\nاختر <b>نوع العقار</b>:',
+    step2State: (type) => `✅ تم تحديد النوع: <b>${type}</b>\n\n📍 <b>الخطوة 2:</b> اختر الولاية:`,
     step3Price: (state) => `✅ الولاية: <b>${state}</b>\n\n💰 <b>الخطوة 3:</b> أرسل الآن <b>السعر المطلوب</b>:`,
     step4Phone: (price) => `✅ السعر: <b>${price}</b>\n\n📞 <b>الخطوة 4:</b> أدخل <b>رقم الهاتف للتواصل</b>:`,
     step5Desc: (phone) => `✅ رقم الهاتف: <b>${phone}</b>\n\n📝 <b>الخطوة 5:</b> أدخل <b>الوصف التفصيلي</b> للعقار:`,
-    step6Media: '✅ تم تسجيل كافة البيانات بنجاح!\n\n📸 <b>الخطوة الأخيرة:</b> أرسل الآن <b>صورة أو فيديو العقار</b> لإتمام النشر.',
+    step6Media: '✅ تم تسجيل كافة البيانات!\n\n📸 <b>الخطوة الأخيرة:</b> أرسل الآن <b>صورة أو فيديو العقار</b> لإتمام النشر.',
     successPublish: '🎉 <b>تم نشر إعلان العقار بنجاح في المنصة!</b>',
-    supportText: '📞 <b>مركز الدعم التقني - منصة عقار الجزائر:</b>\n\nنحن في خدمتك دائماً لأي استفسار تقني أو إداري.',
-    aboutText: '🏛 <b>عن منصة عقار الجزائر (Aqar System):</b>\n\nنظام رقمي ذكي ومتطور لإدارة المعاملات والعروض العقارية.',
-    langChanged: '✅ تم اعتماد اللغة العربية لنظام البوت.',
+    supportText: '📞 <b>مركز الدعم التقني - منصة عقار الجزائر:</b>\n\nنحن في خدمتك دائماً.',
+    aboutText: '🏛 <b>عن منصة عقار الجزائر (Aqar System):</b>\n\nنظام رقمي ذكي ومتطور لإدارة المعاملات العقارية.',
+    langChanged: '✅ تم اعتماد اللغة العربية.',
     errorMsg: '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.',
     contactBtn: '📞 اتصال بالمالك',
     authBtnText: '📱 اضغط هنا لمشاركة رقم هاتفك والبدء'
   },
   fr: {
-    welcome: (name) => `Bienvenue <b>${name}</b> sur <b>Aqar Algérie</b> 🏠\n\nSystème numérique professionnel de gestion immobilière. Choisissez dans le menu :`,
-    authPrompt: (name) => `Bienvenue <b>${name}</b> sur <b>Aqar Algérie</b> 🏠\n\n⚠️ <b>Sécurité:</b>\nVeuillez <b>confirmer votre numéro de téléphone</b> pour accéder aux services :`,
-    browseTitle: '🔍 <b>Choisissez la wilaya pour voir les biens disponibles :</b>',
-    noProperties: '📭 Désolé, aucun bien enregistré pour le moment.',
-    allStates: '🌐 Afficher tous les biens (Tous)',
-    step1Type: '🏢 <b>Assistant de publication (Étape 1 sur 5)</b>\n\nChoisissez le <b>type de bien</b> ou écrivez-le :',
+    welcome: (name) => `Bienvenue <b>${name}</b> sur <b>Aqar Algérie</b> 🏠\n\nSystème numérique professionnel de gestion immobilière. Choisissez :`,
+    authPrompt: (name) => `Bienvenue <b>${name}</b> sur <b>Aqar Algérie</b> 🏠\n\n⚠️ <b>Sécurité:</b>\nVeuillez <b>confirmer votre numéro de téléphone</b> :`,
+    browseTitle: '🔍 <b>Choisissez la wilaya :</b>',
+    noProperties: '📭 Désolé, aucun bien enregistré.',
+    step1Type: '🏢 <b>Assistant de publication (Étape 1 sur 5)</b>\n\nChoisissez le <b>type de bien</b> :',
     step2State: (type) => `✅ Type sélectionné: <b>${type}</b>\n\n📍 <b>Étape 2:</b> Choisissez la wilaya :`,
     step3Price: (state) => `✅ Wilaya: <b>${state}</b>\n\n💰 <b>Étape 3:</b> Envoyez le <b>prix demandé</b> :`,
     step4Phone: (price) => `✅ Prix: <b>${price}</b>\n\n📞 <b>Étape 4:</b> Entrez votre <b>numéro de téléphone</b> :`,
-    step5Desc: (phone) => `✅ Téléphone: <b>${phone}</b>\n\n📝 <b>Étape 5:</b> Entrez la <b>description détaillée</b> :`,
-    step6Media: '✅ Données enregistrées !\n\n📸 <b>Dernière étape:</b> Envoyez une <b>photo ou vidéo</b> du bien.',
-    successPublish: '🎉 <b>Le bien a été publié avec succès sur la plateforme !</b>',
+    step5Desc: (phone) => `📞 Téléphone: <b>${phone}</b>\n\n📝 <b>Étape 5:</b> Entrez la <b>description détaillée</b> :`,
+    step6Media: '✅ Données enregistrées !\n\n📸 <b>Dernière étape:</b> Envoyez une <b>photo ou vidéo</b>.',
+    successPublish: '🎉 <b>Le bien a été publié avec succès !</b>',
     supportText: '📞 <b>Support Technique - Aqar Algérie:</b>\n\nNous sommes à votre service.',
-    aboutText: '🏛 <b>À propos d\'Aqar Algérie:</b>\n\nSystème numérique intelligent de gestion immobilière.',
+    aboutText: '🏛 <b>À propos d\'Aqar Algérie:</b>\n\nSystème numérique intelligent.',
     langChanged: '✅ La langue française a été activée.',
-    errorMsg: '⚠️ Une erreur est survenue, veuillez réessayer.',
+    errorMsg: '⚠️ Une erreur est survenue.',
     contactBtn: '📞 Contacter le propriétaire',
     authBtnText: '📱 Partager mon numéro et commencer'
   }
@@ -80,7 +79,7 @@ function t(userId, key, ...args) {
   return typeof val === 'function' ? val(...args) : val;
 }
 
-// 1️⃣ لوحة المفاتيح الرئيسية (تظهر في البداية وفي القائمة الرئيسية)
+// 1️⃣ لوحة التحكم الرئيسية أسفل الشاشة
 function getMainMenuKeyboard(userId) {
   const lang = userLang[userId] || 'ar';
   const isAr = lang === 'ar';
@@ -92,16 +91,21 @@ function getMainMenuKeyboard(userId) {
   ]).resize();
 }
 
-// 2️⃣ لوحة مفاتيح ديناميكية أثناء التصفح (تتضمن زر العودة للقائمة الرئيسية)
-function getBrowsingKeyboard(userId) {
+// 2️⃣ لوحة تحكم التصفح أسفل الشاشة (أزرار التنقل هبطت كلها هنا)
+function getBrowsingKeyboard(userId, currentIndex, totalCount) {
   const lang = userLang[userId] || 'ar';
   const isAr = lang === 'ar';
   return Markup.keyboard([
-    [isAr ? '🏠 العودة للقائمة الرئيسية' : '🏠 Retour au menu principal']
+    [
+      currentIndex > 0 ? (isAr ? '⬅️ السابق' : '⬅️ Précédent') : '⏹️',
+      `📄 ${currentIndex + 1} / ${totalCount}`,
+      currentIndex < totalCount - 1 ? (isAr ? 'التالي ➡️' : 'Suivant ➡️') : '⏹️'
+    ],
+    [isAr ? '📍 تغيير الولاية' : '📍 Changer Wilaya', isAr ? '🏠 القائمة الرئيسية' : '🏠 Menu principal']
   ]).resize();
 }
 
-// 3️⃣ لوحة مفاتيح ديناميكية أثناء إضافة عقار (تتضمن زر إلغاء العملية وتراجع)
+// 3️⃣ لوحة التحكم أثناء النشر (إلغاء العملية)
 function getCancelKeyboard(userId) {
   const lang = userLang[userId] || 'ar';
   const isAr = lang === 'ar';
@@ -137,6 +141,7 @@ bot.start(async (ctx) => {
   const userId = ctx.from.id;
   
   delete userState[userId];
+  delete browsingSession[userId];
   userLang[userId] = userLang[userId] || 'ar';
 
   const verified = await isUserVerified(userId);
@@ -154,10 +159,11 @@ bot.start(async (ctx) => {
   }
 });
 
-// زر الإلغاء والخروج (للعودة للقائمة الرئيسية وإلغاء حالة النشر)
-bot.hears(['❌ إلغاء العملية والعودة', '❌ Annuler et quitter', '🏠 العودة للقائمة الرئيسية', '🏠 Retour au menu principal'], async (ctx) => {
+// العودة للقائمة الرئيسية من أي مكان
+bot.hears(['❌ إلغاء العملية والعودة', '❌ Annuler et quitter', '🏠 القائمة الرئيسية', '🏠 Menu principal'], async (ctx) => {
   const userId = ctx.from.id;
   delete userState[userId];
+  delete browsingSession[userId];
 
   await ctx.reply(
     userLang[userId] === 'fr' ? '✅ Retour au menu principal :' : '✅ العودة إلى القائمة الرئيسية:',
@@ -226,9 +232,10 @@ bot.use(async (ctx, next) => {
   return next();
 });
 
-// 🔍 تصفح العقارات (تغيير الكومند أسفل الشاشة لتصبح ديناميكية وخاصة بالتصفح)
+// 🔍 تصفح العقارات (اختيار الولاية)
 bot.hears(['🔍 تصفح العقارات المتاحة', '🔍 Parcourir les biens'], async (ctx) => {
   const userId = ctx.from.id;
+  delete browsingSession[userId];
 
   try {
     const { data, error } = await supabase.from('test_messages').select('state_name');
@@ -243,20 +250,18 @@ bot.hears(['🔍 تصفح العقارات المتاحة', '🔍 Parcourir les 
     }
 
     const buttons = uniqueStates.map(state => 
-      Markup.button.callback(`📍 ${state}`, `browse_state_${state}_0`)
+      Markup.button.callback(`📍 ${state}`, `pick_state_${state}`)
     );
 
     const chunkedButtons = [];
     for (let i = 0; i < buttons.length; i += 3) {
       chunkedButtons.push(buttons.slice(i, i + 3));
     }
+    chunkedButtons.push([Markup.button.callback(t(userId, 'allStates') || '🌐 الكل', 'pick_state_ALL')]);
 
-    chunkedButtons.push([Markup.button.callback(t(userId, 'allStates'), 'browse_state_ALL_0')]);
-
-    // تغيير الكومند أسفل الشاشة إلى زر تراجع خاص بالتصفح
     await ctx.reply(t(userId, 'browseTitle'), {
       parse_mode: 'HTML',
-      ...getBrowsingKeyboard(userId),
+      ...getCancelKeyboard(userId),
       ...Markup.inlineKeyboard(chunkedButtons)
     });
   } catch (err) {
@@ -265,10 +270,23 @@ bot.hears(['🔍 تصفح العقارات المتاحة', '🔍 Parcourir les 
   }
 });
 
-// 📄 نظام الصفحات (Pagination) - زر الاتصال في الأعلى فوق أزرار التنقل
-async function renderPropertyPage(ctx, stateQuery, pageIndex, isEdit = true) {
+// عند اختيار الولاية من الأزرار الشفافة، نبدأ جلسة التصفح ونظهر أزرار التنقل أسفل الشاشة
+bot.action(/pick_state_(.+)/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const stateQuery = decodeURIComponent(ctx.match[1]);
   const userId = ctx.from.id;
-  const lang = userLang[userId] || 'ar';
+
+  browsingSession[userId] = { state: stateQuery, page: 0 };
+  await renderPropertyPage(ctx, userId, 0, true);
+});
+
+// 📄 دالة عرض العقار الواحد - الأزرار الشفافة تحتوي على زر الاتصال بالمالك فقط!
+async function renderPropertyPage(ctx, userId, pageIndex, isEdit = false) {
+  const session = browsingSession[userId];
+  if (!session) return;
+
+  const stateQuery = session.state;
+  session.page = pageIndex;
 
   try {
     let query = supabase.from('test_messages').select('*').order('id', { ascending: false });
@@ -279,21 +297,18 @@ async function renderPropertyPage(ctx, stateQuery, pageIndex, isEdit = true) {
     const { data, error } = await query;
 
     if (error || !data || data.length === 0) {
-      const msg = lang === 'ar' ? '📭 عذراً، لا توجد أي عقارات مسجلة.' : '📭 Aucun bien trouvé.';
-      if (isEdit) return ctx.editMessageText(msg);
-      return ctx.reply(msg);
+      return ctx.reply('📭 عذراً، لا توجد أي عقارات مسجلة.', getMainMenuKeyboard(userId));
     }
 
     const validProperties = data.filter(item => item.property_type !== '⭐ توثيق حساب اجباري');
 
     if (validProperties.length === 0) {
-      const msg = lang === 'ar' ? '📭 عذراً، لا توجد أي عقارات مسجلة.' : '📭 Aucun bien trouvé.';
-      if (isEdit) return ctx.editMessageText(msg);
-      return ctx.reply(msg);
+      return ctx.reply('📭 عذراً، لا توجد أي عقارات مسجلة.', getMainMenuKeyboard(userId));
     }
 
     if (pageIndex < 0) pageIndex = 0;
     if (pageIndex >= validProperties.length) pageIndex = validProperties.length - 1;
+    session.page = pageIndex;
 
     const item = validProperties[pageIndex];
     const totalCount = validProperties.length;
@@ -305,46 +320,34 @@ async function renderPropertyPage(ctx, stateQuery, pageIndex, isEdit = true) {
       `📞 <b>الهاتف:</b> <code>${item.phone || 'غير مسجل'}</code>\n` +
       `📝 <b>الوصف:</b> ${item.description || item.message || 'بدون تفاصيل'}`;
 
-    const navButtons = [];
-    
-    // زر الاتصال في الأعلى تماماً فوق أزرار التنقل
-    navButtons.push([Markup.button.callback(t(userId, 'contact_btn') || '📞 اتصال بالمالك', 'contact_admin')]);
+    // 🌟 الأزرار الشفافة تحتوي على زر الاتصال بالمالك حصرياً
+    const inlineKb = Markup.inlineKeyboard([
+      [Markup.button.callback(t(userId, 'contact_btn') || '📞 اتصال بالمالك', 'contact_admin')]
+    ]);
 
-    const row = [];
-    if (pageIndex > 0) {
-      row.push(Markup.button.callback('⬅️ السابق', `browse_state_${stateQuery}_${pageIndex - 1}`));
-    }
-    
-    row.push(Markup.button.callback(`📄 ${pageIndex + 1} / ${totalCount}`, 'noop'));
-
-    if (pageIndex < totalCount - 1) {
-      row.push(Markup.button.callback('التالي ➡️', `browse_state_${stateQuery}_${pageIndex + 1}`));
-    }
-
-    navButtons.push(row);
-    navButtons.push([Markup.button.callback('📍 تغيير الولاية / Changer Wilaya', 'back_to_states')]);
-
-    const kb = Markup.inlineKeyboard(navButtons);
+    // 🌟 أزرار الكومند أسفل الشاشة تضم أزرار التقليب والتحكم الكاملة
+    const replyKb = getBrowsingKeyboard(userId, pageIndex, totalCount);
 
     if (item.video_url && item.video_url !== 'EMPTY') {
-      if (isEdit) {
-        await ctx.deleteMessage().catch(() => {});
-        await ctx.replyWithVideo(item.video_url, { caption, parse_mode: 'HTML', ...kb });
-      } else {
-        await ctx.replyWithVideo(item.video_url, { caption, parse_mode: 'HTML', ...kb });
-      }
+      if (isEdit) await ctx.deleteMessage().catch(() => {});
+      await ctx.replyWithVideo(item.video_url, { caption, parse_mode: 'HTML', ...inlineKb });
+      await ctx.reply('👇 استخدم أزرار التنقل أسفل الشاشة:', replyKb);
     } else if (item.image_url && item.image_url !== 'EMPTY') {
-      if (isEdit) {
-        await ctx.deleteMessage().catch(() => {});
-        await ctx.replyWithPhoto(item.image_url, { caption, parse_mode: 'HTML', ...kb });
-      } else {
-        await ctx.replyWithPhoto(item.image_url, { caption, parse_mode: 'HTML', ...kb });
-      }
+      if (isEdit) await ctx.deleteMessage().catch(() => {});
+      await ctx.replyWithPhoto(item.image_url, { caption, parse_mode: 'HTML', ...inlineKb });
+      await ctx.reply('👇 استخدم أزرار التنقل أسفل الشاشة:', replyKb);
     } else {
       if (isEdit) {
-        await ctx.editMessageText(caption, { parse_mode: 'HTML', ...kb });
+        try {
+          await ctx.editMessageText(caption, { parse_mode: 'HTML', ...inlineKb });
+          await ctx.reply('👇 استخدم أزرار التنقل أسفل الشاشة:', replyKb);
+        } catch (e) {
+          await ctx.reply(caption, { parse_mode: 'HTML', ...inlineKb });
+          await ctx.reply('👇 استخدم أزرار التنقل أسفل الشاشة:', replyKb);
+        }
       } else {
-        await ctx.reply(caption, { parse_mode: 'HTML', ...kb });
+        await ctx.reply(caption, { parse_mode: 'HTML', ...inlineKb });
+        await ctx.reply('👇 استخدم أزرار التنقل أسفل الشاشة:', replyKb);
       }
     }
   } catch (err) {
@@ -353,49 +356,58 @@ async function renderPropertyPage(ctx, stateQuery, pageIndex, isEdit = true) {
   }
 }
 
-bot.action(/browse_state_(.+)_(.+)/, async (ctx) => {
-  await ctx.answerCbQuery();
-  const stateQuery = decodeURIComponent(ctx.match[1]);
-  const pageIndex = parseInt(ctx.match[2], 10);
-  await renderPropertyPage(ctx, stateQuery, pageIndex, true);
-});
-
-bot.action('noop', async (ctx) => {
-  await ctx.answerCbQuery();
-});
-
-bot.action('back_to_states', async (ctx) => {
-  await ctx.answerCbQuery();
+// الاستجابة لأزرار التنقل أسفل الشاشة (Reply Keyboard) أثناء التصفح
+bot.hears(['⬅️ السابق', '⬅️ Précédent'], async (ctx) => {
   const userId = ctx.from.id;
+  const session = browsingSession[userId];
+  if (session && session.page > 0) {
+    await renderPropertyPage(ctx, userId, session.page - 1, false);
+  } else {
+    ctx.reply('⚠️ هذا هو العقار الأول.');
+  }
+});
+
+bot.hears(['التالي ➡️', 'Suivant ➡️'], async (ctx) => {
+  const userId = ctx.from.id;
+  const session = browsingSession[userId];
+  if (session) {
+    await renderPropertyPage(ctx, userId, session.page + 1, false);
+  }
+});
+
+bot.hears(['📍 تغيير الولاية', '📍 Changer Wilaya'], async (ctx) => {
+  const userId = ctx.from.id;
+  delete browsingSession[userId];
+  
+  // إعادة عرض قائمة الولايات
   try {
     const { data } = await supabase.from('test_messages').select('state_name');
     const uniqueStates = [...new Set(data.map(item => item.state_name).filter(Boolean))];
-    const buttons = uniqueStates.map(state => Markup.button.callback(`📍 ${state}`, `browse_state_${state}_0`));
+    const buttons = uniqueStates.map(state => Markup.button.callback(`📍 ${state}`, `pick_state_${state}`));
     
     const chunkedButtons = [];
     for (let i = 0; i < buttons.length; i += 3) {
       chunkedButtons.push(buttons.slice(i, i + 3));
     }
-    chunkedButtons.push([Markup.button.callback(t(userId, 'allStates'), 'browse_state_ALL_0')]);
+    chunkedButtons.push([Markup.button.callback('🌐 الكل', 'pick_state_ALL')]);
 
-    await ctx.deleteMessage().catch(() => {});
-    await ctx.reply(t(userId, 'browseTitle'), {
+    await ctx.reply('🔍 <b>اختر الولاية المطلوبة لعرض العقارات:</b>', {
       parse_mode: 'HTML',
       ...Markup.inlineKeyboard(chunkedButtons)
     });
   } catch (e) {
-    await ctx.reply('⚠️ حدث خطأ، يرجى إعادة المحاولة.');
+    await ctx.reply('⚠️ حدث خطأ.', getMainMenuKeyboard(userId));
   }
 });
 
-// ➕ معالج إضافة عقار جديد (تغيير الكومند أسفل الشاشة لزر الإلغاء والتراجع)
+// ➕ معالج إضافة عقار جديد
 bot.hears(['➕ إضافة عقار جديد', '➕ Ajouter un bien'], async (ctx) => {
   const userId = ctx.from.id;
   userState[userId] = { step: 'waiting_for_type', data: {} };
 
   await ctx.reply(t(userId, 'step1Type'), {
     parse_mode: 'HTML',
-    ...getCancelKeyboard(userId), // 👈 زر إلغاء وتراجع أسفل الشاشة
+    ...getCancelKeyboard(userId),
     ...Markup.inlineKeyboard([
       [Markup.button.callback('شقة', 'type_شقة'), Markup.button.callback('فيلا', 'type_فيلا')],
       [Markup.button.callback('منزل', 'type_منزل'), Markup.button.callback('قطعة أرض', 'type_قطعة أرض')],
@@ -468,7 +480,6 @@ bot.action('set_lang_ar', async (ctx) => {
 bot.action('set_lang_fr', async (ctx) => {
   await ctx.answerCbQuery();
   userLang[ctx.from.id] = 'fr';
-  await ctx.deleteMessage().catch(() => {});
   await ctx.reply(t(ctx.from.id, 'langChanged'), getMainMenuKeyboard(ctx.from.id));
 });
 
@@ -486,7 +497,7 @@ bot.hears(['ℹ️ عن المنصة', 'ℹ️ À propos'], async (ctx) => {
   });
 });
 
-// معالج النصوص اليدوية أثناء خطوات النشر (مع الحفاظ على الكومند الخاصة بالإلغاء)
+// معالج النصوص أثناء النشر
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const userText = ctx.message.text.trim();
@@ -530,7 +541,7 @@ bot.on('text', async (ctx) => {
   }
 });
 
-// 📸 معالج استلام الصور (مع استرجاع الكومند الأصلية بعد النجاح)
+// 📸 استلام الصور
 bot.on('photo', async (ctx) => {
   const userId = ctx.from.id;
   const state = userState[userId];
@@ -570,7 +581,7 @@ bot.on('photo', async (ctx) => {
   }
 });
 
-// 🎥 معالج استلام الفيديوهات (مع استرجاع الكومند الأصلية بعد النجاح)
+// 🎥 استلام الفيديوهات
 bot.on('video', async (ctx) => {
   const userId = ctx.from.id;
   const state = userState[userId];
