@@ -53,7 +53,8 @@ const STRINGS = {
     aboutText: '🏛 <b>عن منصة عقار الجزائر (Aqar System):</b>\n\nنظام رقمي ذكي ومتطور لإدارة المعاملات والعروض العقارية.',
     langChanged: '✅ تم اعتماد اللغة العربية لنظام البوت.',
     errorMsg: '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.',
-    contactBtn: '📞 طلب التواصل'
+    contactBtn: '📞 طلب التواصل',
+    testPhoneBtn: '📞 عرض رقم الهاتف (تجربة)'
   },
   fr: {
     welcome: (name) => `Bienvenue <b>${name}</b> sur <b>Aqar Algérie</b> 🏠✨\n\nSystème intelligent de gestion immobilière à haute performance.\n\nUtilisez les boutons ci-dessous pour naviguer :`,
@@ -76,7 +77,8 @@ const STRINGS = {
     aboutText: '🏛 <b>À propos d\'Aqar Algérie:</b>\n\nSystème numérique intelligent de gestion des transactions immobilières.',
     langChanged: '✅ La langue française a été activée.',
     errorMsg: '⚠️ Une erreur est survenue, veuillez réessayer.',
-    contactBtn: '📞 Demander contact'
+    contactBtn: '📞 Demander contact',
+    testPhoneBtn: '📞 Partager mon numéro (Test)'
   }
 };
 
@@ -91,6 +93,7 @@ function getMainMenuKeyboard(userId) {
   const isAr = lang === 'ar';
   return Markup.keyboard([
     [isAr ? '🔍 تصفح العقارات المتاحة' : '🔍 Parcourir les biens', isAr ? '➕ إضافة عقار جديد' : '➕ Ajouter un bien'],
+    [isAr ? '📞 عرض رقم الهاتف (تجربة)' : '📞 Partager mon numéro (Test)'], // زر التجربة المضاف
     [isAr ? '📞 الدعم والإدارة' : '📞 Support & Contact', isAr ? '🌐 تغيير اللغة / Langue' : '🌐 Langue / اللغة'],
     [isAr ? 'ℹ️ عن المنصة' : 'ℹ️ À propos']
   ]).resize();
@@ -248,6 +251,34 @@ bot.action(/sel_state_(.+)/, async (ctx) => {
   userState[userId].step = 'waiting_for_price';
 
   await ctx.editMessageText(t(userId, 'step3Price', selectedState), { parse_mode: 'HTML' });
+});
+
+// 🧪 معالج زر تجربة مشاركة رقم الهاتف
+bot.hears(['📞 عرض رقم الهاتف (تجربة)', '📞 Partager mon numéro (Test)'], async (ctx) => {
+  await ctx.reply(
+    'اضغط على الزر أدناه في لوحة المفاتيح لمشاركة رقم هاتفك الحقيقي مع البوت للتجربة:',
+    Markup.keyboard([
+      [Markup.button.contactRequest('📱 مشاركة رقم الهاتف الآن')]
+    ]).resize().oneTime()
+  );
+});
+
+// 📱 معالج استقبال رقم الهاتف المرسل من تليغرام (تجربة)
+bot.on('contact', async (ctx) => {
+  const contact = ctx.message.contact;
+  const phoneNumber = contact.phone_number;
+  const firstName = contact.first_name;
+  const userId = ctx.from.id;
+
+  console.log(`[TEST] تم استلام رقم الهاتف بنجاح: ${phoneNumber} للمستخدم ID: ${userId}`);
+
+  await ctx.reply(
+    `✅ <b>تم استلام رقم هاتفك بنجاح (تجربة ناجحة)!</b>\n\n📱 الرقم: <code>${phoneNumber}</code>\n👤 الاسم: ${firstName}\n🆔 المعرّف: ${userId}`,
+    { 
+      parse_mode: 'HTML', 
+      ...getMainMenuKeyboard(userId) 
+    }
+  );
 });
 
 // دعم واجهة تغيير اللغة
@@ -425,7 +456,7 @@ if (WEBHOOK_DOMAIN) {
   });
 
   bot.telegram.setWebhook(`${WEBHOOK_DOMAIN}/bot${BOT_TOKEN}`);
-  app.get('/', (req, res) => res.send('Aqar Algeria Complete Production System is online 🚀'));
+  app.get('/', (req, res) => res.send('Aqar Algeria Complete Production System with Phone Test is online 🚀'));
   app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
 } else {
   bot.launch();
