@@ -98,7 +98,6 @@ function getMainMenuKeyboard(userId) {
   ]).resize();
 }
 
-// 🎛️ أزرار التصفح الذكية: السابق، العداد، التالي + زر تغيير الولاية الفعال أثناء التصفح
 function getBrowsingKeyboard(userId, currentIndex, totalCount) {
   const lang = userLang[userId] || 'ar';
   const isAr = lang === 'ar';
@@ -118,7 +117,7 @@ function getBrowsingKeyboard(userId, currentIndex, totalCount) {
 
   return Markup.keyboard([
     navRow,
-    [changeWilayaBtn] // 👈 زر تغيير الولاية الفعال أثناء التصفح
+    [changeWilayaBtn]
   ]).resize();
 }
 
@@ -269,6 +268,7 @@ bot.use(async (ctx, next) => {
   return next();
 });
 
+// دالة عرض قائمة الولايات ديناميكياً من قاعدة البيانات للتصفح
 async function showStatesMenu(ctx) {
   const userId = ctx.from.id;
   try {
@@ -302,6 +302,14 @@ bot.hears(['🔍 تصفح العقارات المتاحة', '🔍 Parcourir les 
   const userId = ctx.from.id;
   delete browsingSession[userId];
   await showStatesMenu(ctx);
+});
+
+// 🎯 معالج زر تغيير الولاية أثناء التصفح (يعيد فتح قائمة الولايات مباشرة)
+bot.hears(['📍 تغيير الولاية', '📍 Changer Wilaya', 'تغيير الولاية'], async (ctx) => {
+  await safeDeleteUserMessage(ctx);
+  const userId = ctx.from.id;
+  delete browsingSession[userId]; // مسح الجلسة الحالية للتصفح
+  await showStatesMenu(ctx);    // إعادة عرض قائمة الولايات من قاعدة البيانات
 });
 
 bot.hears(/^📍 (.+)/, async (ctx) => {
@@ -487,14 +495,6 @@ bot.hears(['التالي ➡️', 'Suivant ➡️'], async (ctx) => {
   }
 });
 
-// 📍 زر تغيير الولاية المفعل أثناء التصفح
-bot.hears(['📍 تغيير الولاية', '📍 Changer Wilaya', 'تغيير الولاية'], async (ctx) => {
-  await safeDeleteUserMessage(ctx);
-  const userId = ctx.from.id;
-  delete browsingSession[userId];
-  await showStatesMenu(ctx);
-});
-
 bot.hears(['➕ إضافة عقار جديد', '➕ Ajouter un bien'], async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
@@ -551,6 +551,7 @@ bot.action('set_lang_ar', async (ctx) => {
 bot.action('set_lang_fr', async (ctx) => {
   await ctx.answerCbQuery();
   userLang[ctx.from.id] = 'fr';
+  await ctx.deleteMessage().catch(() => {});
   await ctx.reply(t(ctx.from.id, 'langChanged'), getMainMenuKeyboard(ctx.from.id));
 });
 
@@ -693,7 +694,7 @@ if (WEBHOOK_DOMAIN) {
   });
 
   bot.telegram.setWebhook(`${WEBHOOK_DOMAIN}/bot${BOT_TOKEN}`);
-  app.get('/', (req, res) => res.send('Aqar Algeria Active Wilaya System is online 🚀'));
+  app.get('/', (req, res) => res.send('Aqar Algeria Perfect System is online 🚀'));
   app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
 } else {
   bot.launch();
