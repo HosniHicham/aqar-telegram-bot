@@ -390,7 +390,7 @@ async function renderPropertyPage(ctx, userId, pageIndex) {
   }
 }
 
-// 🔢 معالج زر العداد المتغير (مثال: 📄 2 / 5) لفتح الفهرس
+// 🔢 معالج زر العداد المتغير لفتح الفهرس
 bot.hears(/^📄 \d+ \/ \d+$/, async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
@@ -400,7 +400,6 @@ bot.hears(/^📄 \d+ \/ \d+$/, async (ctx) => {
 
   if (!session) return;
 
-  // جلب العدد الكلي للعقارات في الجلسة الحالية
   let query = supabase.from('test_messages').select('*').order('id', { ascending: false });
   if (session.state !== 'ALL') {
     query = query.eq('state_name', session.state);
@@ -416,7 +415,7 @@ bot.hears(/^📄 \d+ \/ \d+$/, async (ctx) => {
   const numberButtons = [];
   let row = [];
   for (let i = 1; i <= totalCount; i++) {
-    row.push(`${i}`); // أرقام صافية بدون أيقونات
+    row.push(`${i}`);
     if (row.length === 5) {
       numberButtons.push(row);
       row = [];
@@ -436,7 +435,6 @@ bot.hears(/^📄 \d+ \/ \d+$/, async (ctx) => {
   );
 });
 
-// اختيار الرقم الصافي من الفهرس
 bot.hears(/^\d+$/, async (ctx) => {
   const userId = ctx.from.id;
   const session = browsingSession[userId];
@@ -480,7 +478,6 @@ bot.hears(['التالي ➡️', 'Suivant ➡️'], async (ctx) => {
   }
 });
 
-// 🎯 زر تغيير الولاية
 bot.hears(['📍 تغيير الولاية', '📍 Changer Wilaya'], async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
@@ -502,7 +499,6 @@ bot.hears(['📍 تغيير الولاية', '📍 Changer Wilaya'], async (ctx)
   }
 });
 
-// ➕ معالج إضافة عقار جديد
 bot.hears(['➕ إضافة عقار جديد', '➕ Ajouter un bien'], async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
@@ -559,6 +555,7 @@ bot.action('set_lang_ar', async (ctx) => {
 bot.action('set_lang_fr', async (ctx) => {
   await ctx.answerCbQuery();
   userLang[ctx.from.id] = 'fr';
+  await ctx.deleteMessage().catch(() => {});
   await ctx.reply(t(ctx.from.id, 'langChanged'), getMainMenuKeyboard(ctx.from.id));
 });
 
@@ -572,13 +569,13 @@ bot.hears(['📞 الدعم والإدارة', '📞 Support & Contact'], async 
 
 bot.hears(['ℹ️ عن المنصة', 'ℹ️ À propos'], async (ctx) => {
   await safeDeleteUserMessage(ctx);
-  await ctx.reply(t(ctx.from.id, 'aboutText'), {
+  const userId = ctx.from.id; // إصلاح المشكلة هنا لتجنب خطأ التعريف
+  await ctx.reply(t(userId, 'aboutText'), {
     parse_mode: 'HTML',
     ...getMainMenuKeyboard(userId)
   });
 });
 
-// معالج النصوص أثناء خطوات النشر
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const userText = ctx.message.text.trim();
@@ -606,7 +603,6 @@ bot.on('text', async (ctx) => {
   }
 });
 
-// 📸 استلام الصور
 bot.on('photo', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
@@ -647,7 +643,6 @@ bot.on('photo', async (ctx) => {
   }
 });
 
-// 🎥 استلام الفيديوهات
 bot.on('video', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
