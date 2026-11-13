@@ -39,8 +39,8 @@ const STRINGS = {
     browseTitle: '🔍 <b>اختر الولاية المطلوبة لعرض العقارات من الأزرار أسفل الشاشة:</b>',
     noProperties: '📭 عذراً، لا توجد أي عقارات مسجلة في المنصة حالياً.',
     step1Type: '🏢 <b>معالج نشر عقار جديد (الخطوة 1 من 5)</b>\n\nاختر <b>نوع العقار</b> من الأزرار أسفل الشاشة:',
-    step2State: (type) => `✅ تم تحديد النوع: <b>${type}</b>\n\n📍 <b>الخطوة 2:</b> اختر الولاية من الأزرار أسفل الشاشة:`,
-    step3Price: (state) => `✅ الولاية: <b>${state}</b>\n\n💰 <b>الخطوة 3:</b> أرسل الآن <b>السعر المطلوب</b>:`,
+    step2State: (type) => `✅ تم تحديد النوع: <b>${type}</b>\n\n📍 <b>الخطوة 2:</b> اختر الولاية من الأزرار أو اكتبها يدوياً بالرسالة:`,
+    step3Price: (state) => `✅ الولاية: <b>${state}</b>\n\n💰 <b>الخطوة 3:</b> أرسل الآن <b>السعر المطلوب</b> (مثال: 1.2 مليار):`,
     step4Phone: (price) => `✅ السعر: <b>${price}</b>\n\n📞 <b>الخطوة 4:</b> أدخل <b>رقم الهاتف للتواصل</b>:`,
     step5Desc: (phone) => `✅ رقم الهاتف: <b>${phone}</b>\n\n📝 <b>الخطوة 5:</b> أدخل <b>الوصف التفصيلي</b> للعقار:`,
     step6Media: '✅ تم تسجيل كافة البيانات!\n\n📸 <b>الخطوة الأخيرة:</b> أرسل الآن <b>صورة أو فيديو العقار</b> لإتمام النشر.',
@@ -244,6 +244,7 @@ bot.hears(['🌐 تصفح الموقع الرسمي (البروزر)', '🌐 Sit
   );
 });
 
+// Middleware للتحقق من التوثيق
 bot.use(async (ctx, next) => {
   if (ctx.message && ctx.message.text && ctx.message.text.startsWith('/')) {
     return next();
@@ -290,13 +291,14 @@ bot.hears(['🔍 تصفح العقارات المتاحة', '🔍 Parcourir les 
   }
 });
 
-// 🎯 معالج زر الولاية
+// 🎯 معالج زر الولاية (أثناء التصفح أو أثناء اختيار الولاية في النشر)
 bot.hears(/^📍 (.+)/, async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   const selectedState = ctx.match[1].trim();
   const state = userState[userId];
 
+  // إذا كان المستخدم في معالج نشر العقار ويختار الولاية
   if (state && state.step === 'waiting_for_state') {
     state.data.state_name = selectedState;
     state.step = 'waiting_for_price';
@@ -307,11 +309,9 @@ bot.hears(/^📍 (.+)/, async (ctx) => {
     });
   }
 
-  const stateList = await getUniqueStatesList();
-  if (stateList.includes(selectedState)) {
-    browsingSession[userId] = { state: selectedState, page: 0 };
-    await renderPropertyPage(ctx, userId, 0);
-  }
+  // خلاف ذلك، فهو يختار الولاية بغرض التصفح
+  browsingSession[userId] = { state: selectedState, page: 0 };
+  await renderPropertyPage(ctx, userId, 0);
 });
 
 bot.hears(['🌐 الكل', '🌐 Tous'], async (ctx) => {
@@ -478,6 +478,7 @@ bot.hears(['التالي ➡️', 'Suivant ➡️'], async (ctx) => {
   }
 });
 
+// 📍 زر تغيير الولاية
 bot.hears(['📍 تغيير الولاية', '📍 Changer Wilaya'], async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
@@ -499,6 +500,7 @@ bot.hears(['📍 تغيير الولاية', '📍 Changer Wilaya'], async (ctx)
   }
 });
 
+// ➕ معالج إضافة عقار جديد
 bot.hears(['➕ إضافة عقار جديد', '➕ Ajouter un bien'], async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
@@ -569,13 +571,14 @@ bot.hears(['📞 الدعم والإدارة', '📞 Support & Contact'], async 
 
 bot.hears(['ℹ️ عن المنصة', 'ℹ️ À propos'], async (ctx) => {
   await safeDeleteUserMessage(ctx);
-  const userId = ctx.from.id; // إصلاح المشكلة هنا لتجنب خطأ التعريف
+  const userId = ctx.from.id;
   await ctx.reply(t(userId, 'aboutText'), {
     parse_mode: 'HTML',
     ...getMainMenuKeyboard(userId)
   });
 });
 
+// معالج النصوص أثناء خطوات النشر (تم ضبطه ليعالج السعر، الهاتف، والوصف بدون أي تداخل)
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const userText = ctx.message.text.trim();
@@ -603,6 +606,7 @@ bot.on('text', async (ctx) => {
   }
 });
 
+// 📸 استلام الصور
 bot.on('photo', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
@@ -643,6 +647,7 @@ bot.on('photo', async (ctx) => {
   }
 });
 
+// 🎥 استلام الفيديوهات
 bot.on('video', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
@@ -698,7 +703,7 @@ if (WEBHOOK_DOMAIN) {
   });
 
   bot.telegram.setWebhook(`${WEBHOOK_DOMAIN}/bot${BOT_TOKEN}`);
-  app.get('/', (req, res) => res.send('Aqar Algeria Professional Production System is online 🚀'));
+  app.get('/', (req, res) => res.send('Aqar Algeria Fixed Professional System is online 🚀'));
   app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
 } else {
   bot.launch();
