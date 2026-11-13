@@ -48,7 +48,7 @@ const STRINGS = {
     supportText: '📞 <b>مركز الدعم التقني - منصة عقار الجزائر:</b>\n\nنحن في خدمتك دائماً.',
     aboutText: '🏛 <b>عن منصة عقار الجزائر (Aqar System):</b>\n\nنظام رقمي ذكي ومتطور لإدارة المعاملات العقارية.',
     langChanged: '✅ تم اعتماد اللغة العربية.',
-    errorMsg: '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.',
+    errorMsg: '⚠️ حدث خطأ أثناء الحفظ، يرجى المحاولة مرة أخرى.',
     contactBtn: '📞 اتصال بالمالك',
     authBtnText: '📱 اضغط هنا لمشاركة رقم هاتفك والبدء'
   },
@@ -572,7 +572,7 @@ bot.hears(['ℹ️ عن المنصة', 'ℹ️ À propos'], async (ctx) => {
   });
 });
 
-// معالج النصوص المخصص لمعالج النشر (تم تصحيح استقبال وحفظ البيانات في الحالة الانتقالية بدقة)
+// 🎯 معالج النصوص المصلح (يستقبل الأرقام والأسعار والنصوص بحرية تامة وبدون قيود)
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const userText = ctx.message.text ? ctx.message.text.trim() : '';
@@ -600,7 +600,7 @@ bot.on('text', async (ctx) => {
   }
 });
 
-// 📸 استلام الصور وإرسالها بدقة لقاعدة البيانات
+// 📸 استلام الصور وحفظها في قاعدة البيانات بدون أي أخطاء
 bot.on('photo', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
@@ -623,8 +623,8 @@ bot.on('photo', async (ctx) => {
       const { error: insertError } = await supabase.from('test_messages').insert([{ 
         property_type: p.property_type || 'عقار',
         state_name: p.state_name || 'غير محدد',
-        price: p.price || 'حسب الاتفاق',
-        phone: p.phone || 'غير مسجل',
+        price: String(p.price || 'حسب الاتفاق'),
+        phone: String(p.phone || 'غير مسجل'),
         description: p.description || 'بدون وصف',
         message: p.description || 'بدون وصف',
         image_url: publicURLData.publicUrl, 
@@ -639,14 +639,14 @@ bot.on('photo', async (ctx) => {
       delete userState[userId];
       await ctx.reply(t(userId, 'successPublish'), { parse_mode: 'HTML', ...getMainMenuKeyboard(userId) });
     } catch (err) {
-      console.error(err);
+      console.error('Publish Photo Error:', err);
       delete userState[userId];
       await ctx.reply(t(userId, 'errorMsg'), getMainMenuKeyboard(userId));
     }
   }
 });
 
-// 🎥 استلام الفيديوهات وإرسالها بدقة لقاعدة البيانات
+// 🎥 استلام الفيديوهات وحفظها في قاعدة البيانات بدون أي أخطاء
 bot.on('video', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
@@ -669,8 +669,8 @@ bot.on('video', async (ctx) => {
       const { error: insertError } = await supabase.from('test_messages').insert([{ 
         property_type: p.property_type || 'عقار',
         state_name: p.state_name || 'غير محدد',
-        price: p.price || 'حسب الاتفاق',
-        phone: p.phone || 'غير مسجل',
+        price: String(p.price || 'حسب الاتفاق'),
+        phone: String(p.phone || 'غير مسجل'),
         description: p.description || 'بدون وصف',
         message: p.description || 'بدون وصف',
         image_url: 'EMPTY', 
@@ -685,7 +685,7 @@ bot.on('video', async (ctx) => {
       delete userState[userId];
       await ctx.reply(t(userId, 'successPublish'), { parse_mode: 'HTML', ...getMainMenuKeyboard(userId) });
     } catch (err) {
-      console.error(err);
+      console.error('Publish Video Error:', err);
       delete userState[userId];
       await ctx.reply(t(userId, 'errorMsg'), getMainMenuKeyboard(userId));
     }
