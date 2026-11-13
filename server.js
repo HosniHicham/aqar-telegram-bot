@@ -98,7 +98,7 @@ function getMainMenuKeyboard(userId) {
   ]).resize();
 }
 
-// 🎛️ أزرار التصفح: السابق، العداد، التالي + زر تغيير الولاية وزر القائمة الرئيسية جنباً إلى جنب
+// أزرار التصفح مع توفير زر تغيير الولاية وقرين العودة للقائمة الرئيسية
 function getBrowsingKeyboard(userId, currentIndex, totalCount) {
   const lang = userLang[userId] || 'ar';
   const isAr = lang === 'ar';
@@ -119,14 +119,16 @@ function getBrowsingKeyboard(userId, currentIndex, totalCount) {
 
   return Markup.keyboard([
     navRow,
-    [changeWilayaBtn, homeBtn] // 👈 إضافة زر القائمة الرئيسية بجانب زر تغيير الولاية
+    [changeWilayaBtn, homeBtn]
   ]).resize();
 }
 
+// أزرار الإلغاء والعودة أثناء معالج النشر
 function getCancelKeyboard(userId) {
   const lang = userLang[userId] || 'ar';
   const isAr = lang === 'ar';
   return Markup.keyboard([
+    [isAr ? '🏠 القائمة الرئيسية' : '🏠 Menu principal'],
     [isAr ? '❌ إلغاء العملية والعودة' : '❌ Annuler et quitter']
   ]).resize();
 }
@@ -287,6 +289,7 @@ async function showStatesMenu(ctx) {
     const stateButtons = uniqueStates.map(state => `📍 ${state}`);
     const chunkedStates = chunkButtons(stateButtons, 4);
     chunkedStates.push(['🌐 الكل']);
+    chunkedStates.push(['🏠 القائمة الرئيسية']); // زر القائمة الرئيسية في قائمة الولايات
 
     await ctx.reply(t(userId, 'browseTitle'), {
       parse_mode: 'HTML',
@@ -502,7 +505,7 @@ bot.hears(['➕ إضافة عقار جديد', '➕ Ajouter un bien'], async (ct
 
   const typeButtons = PROPERTY_TYPES.map(type => `${type}`);
   const chunkedTypes = chunkButtons(typeButtons, 3);
-  chunkedTypes.push(['❌ إلغاء العملية والعودة']);
+  chunkedTypes.push(['🏠 القائمة الرئيسية']); // زر القائمة الرئيسية في اختيار النوع
 
   await ctx.reply(t(userId, 'step1Type'), {
     parse_mode: 'HTML',
@@ -522,7 +525,7 @@ bot.hears(PROPERTY_TYPES, async (ctx) => {
 
     const stateButtons = POPULAR_WILAYAS.map(w => `📍 ${w}`);
     const chunkedStates = chunkButtons(stateButtons, 4);
-    chunkedStates.push(['❌ إلغاء العملية والعودة']);
+    chunkedStates.push(['🏠 القائمة الرئيسية']); // زر القائمة الرئيسية في اختيار الولاية أثناء النشر
 
     await ctx.reply(t(userId, 'step2State', selectedType), {
       parse_mode: 'HTML',
