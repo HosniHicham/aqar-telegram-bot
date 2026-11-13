@@ -98,7 +98,6 @@ function getMainMenuKeyboard(userId) {
   ]).resize();
 }
 
-// أزرار التصفح مع توفير زر تغيير الولاية وقرين العودة للقائمة الرئيسية
 function getBrowsingKeyboard(userId, currentIndex, totalCount) {
   const lang = userLang[userId] || 'ar';
   const isAr = lang === 'ar';
@@ -123,7 +122,6 @@ function getBrowsingKeyboard(userId, currentIndex, totalCount) {
   ]).resize();
 }
 
-// أزرار الإلغاء والعودة أثناء معالج النشر
 function getCancelKeyboard(userId) {
   const lang = userLang[userId] || 'ar';
   const isAr = lang === 'ar';
@@ -289,7 +287,7 @@ async function showStatesMenu(ctx) {
     const stateButtons = uniqueStates.map(state => `📍 ${state}`);
     const chunkedStates = chunkButtons(stateButtons, 4);
     chunkedStates.push(['🌐 الكل']);
-    chunkedStates.push(['🏠 القائمة الرئيسية']); // زر القائمة الرئيسية في قائمة الولايات
+    chunkedStates.push(['🏠 القائمة الرئيسية']);
 
     await ctx.reply(t(userId, 'browseTitle'), {
       parse_mode: 'HTML',
@@ -505,7 +503,7 @@ bot.hears(['➕ إضافة عقار جديد', '➕ Ajouter un bien'], async (ct
 
   const typeButtons = PROPERTY_TYPES.map(type => `${type}`);
   const chunkedTypes = chunkButtons(typeButtons, 3);
-  chunkedTypes.push(['🏠 القائمة الرئيسية']); // زر القائمة الرئيسية في اختيار النوع
+  chunkedTypes.push(['🏠 القائمة الرئيسية']);
 
   await ctx.reply(t(userId, 'step1Type'), {
     parse_mode: 'HTML',
@@ -525,7 +523,7 @@ bot.hears(PROPERTY_TYPES, async (ctx) => {
 
     const stateButtons = POPULAR_WILAYAS.map(w => `📍 ${w}`);
     const chunkedStates = chunkButtons(stateButtons, 4);
-    chunkedStates.push(['🏠 القائمة الرئيسية']); // زر القائمة الرئيسية في اختيار الولاية أثناء النشر
+    chunkedStates.push(['🏠 القائمة الرئيسية']);
 
     await ctx.reply(t(userId, 'step2State', selectedType), {
       parse_mode: 'HTML',
@@ -574,12 +572,13 @@ bot.hears(['ℹ️ عن المنصة', 'ℹ️ À propos'], async (ctx) => {
   });
 });
 
+// معالج النصوص المخصص لمعالج النشر (تم تصحيح استقبال وحفظ البيانات في الحالة الانتقالية بدقة)
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
-  const userText = ctx.message.text.trim();
+  const userText = ctx.message.text ? ctx.message.text.trim() : '';
 
   if (userText.startsWith('/')) return;
-  if (userText.startsWith('📍') || userText === '🌐 الكل' || PROPERTY_TYPES.includes(userText) || /^\d+$/.test(userText)) return;
+  if (userText.startsWith('📍') || userText === '🌐 الكل' || PROPERTY_TYPES.includes(userText)) return;
 
   const state = userState[userId];
   if (!state) return;
@@ -601,6 +600,7 @@ bot.on('text', async (ctx) => {
   }
 });
 
+// 📸 استلام الصور وإرسالها بدقة لقاعدة البيانات
 bot.on('photo', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
@@ -620,16 +620,21 @@ bot.on('photo', async (ctx) => {
       const { data: publicURLData } = supabase.storage.from('test_media').getPublicUrl(fileName);
 
       const p = state.data;
-      await supabase.from('test_messages').insert([{ 
-        property_type: p.property_type,
-        state_name: p.state_name,
-        price: p.price,
-        phone: p.phone,
-        description: p.description,
-        message: p.description,
+      const { error: insertError } = await supabase.from('test_messages').insert([{ 
+        property_type: p.property_type || 'عقار',
+        state_name: p.state_name || 'غير محدد',
+        price: p.price || 'حسب الاتفاق',
+        phone: p.phone || 'غير مسجل',
+        description: p.description || 'بدون وصف',
+        message: p.description || 'بدون وصف',
         image_url: publicURLData.publicUrl, 
         video_url: 'EMPTY' 
       }]);
+
+      if (insertError) {
+        console.error('Supabase Insert Error:', insertError);
+        throw insertError;
+      }
 
       delete userState[userId];
       await ctx.reply(t(userId, 'successPublish'), { parse_mode: 'HTML', ...getMainMenuKeyboard(userId) });
@@ -641,6 +646,7 @@ bot.on('photo', async (ctx) => {
   }
 });
 
+// 🎥 استلام الفيديوهات وإرسالها بدقة لقاعدة البيانات
 bot.on('video', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
@@ -660,16 +666,21 @@ bot.on('video', async (ctx) => {
       const { data: publicURLData } = supabase.storage.from('test_media').getPublicUrl(fileName);
 
       const p = state.data;
-      await supabase.from('test_messages').insert([{ 
-        property_type: p.property_type,
-        state_name: p.state_name,
-        price: p.price,
-        phone: p.phone,
-        description: p.description,
-        message: p.description,
+      const { error: insertError } = await supabase.from('test_messages').insert([{ 
+        property_type: p.property_type || 'عقار',
+        state_name: p.state_name || 'غير محدد',
+        price: p.price || 'حسب الاتفاق',
+        phone: p.phone || 'غير مسجل',
+        description: p.description || 'بدون وصف',
+        message: p.description || 'بدون وصف',
         image_url: 'EMPTY', 
         video_url: publicURLData.publicUrl 
       }]);
+
+      if (insertError) {
+        console.error('Supabase Insert Error:', insertError);
+        throw insertError;
+      }
 
       delete userState[userId];
       await ctx.reply(t(userId, 'successPublish'), { parse_mode: 'HTML', ...getMainMenuKeyboard(userId) });
