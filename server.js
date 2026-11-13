@@ -98,16 +98,28 @@ function getMainMenuKeyboard(userId) {
   ]).resize();
 }
 
+// 🎛️ دالة أزرار التنقل الذكية (تخفي السابق في البداية والتالي في النهاية)
 function getBrowsingKeyboard(userId, currentIndex, totalCount) {
   const lang = userLang[userId] || 'ar';
   const isAr = lang === 'ar';
+  const prevBtn = isAr ? '⬅️ السابق' : '⬅️ Précédent';
+  const nextBtn = isAr ? 'التالي ➡️' : 'Suivant ➡️';
+  const counterText = `📄 ${currentIndex + 1} / ${totalCount}`;
+  const changeWilayaBtn = isAr ? '📍 تغيير الولاية' : '📍 Changer Wilaya';
+  const homeBtn = isAr ? '🏠 القائمة الرئيسية' : '🏠 Menu principal';
+
+  const navRow = [];
+  if (currentIndex > 0) {
+    navRow.push(prevBtn);
+  }
+  navRow.push(counterText);
+  if (currentIndex < totalCount - 1) {
+    navRow.push(nextBtn);
+  }
+
   return Markup.keyboard([
-    [
-      isAr ? '⬅️ السابق' : '⬅️ Précédent',
-      `📄 ${currentIndex + 1} / ${totalCount}`,
-      isAr ? 'التالي ➡️' : 'Suivant ➡️'
-    ],
-    [isAr ? '📍 تغيير الولاية' : '📍 Changer Wilaya', isAr ? '🏠 القائمة الرئيسية' : '🏠 Menu principal']
+    navRow,
+    [changeWilayaBtn, homeBtn]
   ]).resize();
 }
 
@@ -463,7 +475,6 @@ bot.hears(['🔙 رجوع للعقار', '🔙 Retour au bien'], async (ctx) => 
   }
 });
 
-// معالج زر السابق بدون تعقيد أو تنبيهات
 bot.hears(['⬅️ السابق', '⬅️ Précédent'], async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
@@ -473,7 +484,6 @@ bot.hears(['⬅️ السابق', '⬅️ Précédent'], async (ctx) => {
   }
 });
 
-// معالج زر التالي بدون تعقيد أو تنبيهات
 bot.hears(['التالي ➡️', 'Suivant ➡️'], async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
@@ -483,7 +493,7 @@ bot.hears(['التالي ➡️', 'Suivant ➡️'], async (ctx) => {
   }
 });
 
-// 📍 زر تغيير الولاية (يعمل بكل مرونة ودقة مطلقة)
+// 📍 زر تغيير الولاية (مُفعل ويعمل بكفاءة عالية أثناء التصفح)
 bot.hears(['📍 تغيير الولاية', '📍 Changer Wilaya', 'تغيير الولاية'], async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
@@ -694,7 +704,7 @@ if (WEBHOOK_DOMAIN) {
   });
 
   bot.telegram.setWebhook(`${WEBHOOK_DOMAIN}/bot${BOT_TOKEN}`);
-  app.get('/', (req, res) => res.send('Aqar Algeria Clean System is online 🚀'));
+  app.get('/', (req, res) => res.send('Aqar Algeria Final Production System is online 🚀'));
   app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
 } else {
   bot.launch();
