@@ -98,6 +98,7 @@ function getMainMenuKeyboard(userId) {
   ]).resize();
 }
 
+// 🎛️ أزرار التصفح الذكية: السابق، العداد، التالي + زر تغيير الولاية الفعال أثناء التصفح
 function getBrowsingKeyboard(userId, currentIndex, totalCount) {
   const lang = userLang[userId] || 'ar';
   const isAr = lang === 'ar';
@@ -105,7 +106,6 @@ function getBrowsingKeyboard(userId, currentIndex, totalCount) {
   const nextBtn = isAr ? 'التالي ➡️' : 'Suivant ➡️';
   const counterText = `📄 ${currentIndex + 1} / ${totalCount}`;
   const changeWilayaBtn = isAr ? '📍 تغيير الولاية' : '📍 Changer Wilaya';
-  const homeBtn = isAr ? '🏠 القائمة الرئيسية' : '🏠 Menu principal';
 
   const navRow = [];
   if (currentIndex > 0) {
@@ -118,7 +118,7 @@ function getBrowsingKeyboard(userId, currentIndex, totalCount) {
 
   return Markup.keyboard([
     navRow,
-    [changeWilayaBtn, homeBtn]
+    [changeWilayaBtn] // 👈 زر تغيير الولاية الفعال أثناء التصفح
   ]).resize();
 }
 
@@ -334,7 +334,6 @@ bot.hears(['🌐 الكل', '🌐 Tous'], async (ctx) => {
   await renderPropertyPage(ctx, userId, 0);
 });
 
-// 📄 دالة عرض العقار الواحد (تحدث المحتوى بدون إعادة إرسال أزرار جديدة لتفادي ظهور لوحة الحروف)
 async function renderPropertyPage(ctx, userId, pageIndex) {
   const session = browsingSession[userId];
   if (!session) return;
@@ -488,6 +487,7 @@ bot.hears(['التالي ➡️', 'Suivant ➡️'], async (ctx) => {
   }
 });
 
+// 📍 زر تغيير الولاية المفعل أثناء التصفح
 bot.hears(['📍 تغيير الولاية', '📍 Changer Wilaya', 'تغيير الولاية'], async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
@@ -693,7 +693,7 @@ if (WEBHOOK_DOMAIN) {
   });
 
   bot.telegram.setWebhook(`${WEBHOOK_DOMAIN}/bot${BOT_TOKEN}`);
-  app.get('/', (req, res) => res.send('Aqar Algeria Optimized System is online 🚀'));
+  app.get('/', (req, res) => res.send('Aqar Algeria Active Wilaya System is online 🚀'));
   app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
 } else {
   bot.launch();
