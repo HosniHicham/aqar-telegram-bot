@@ -295,7 +295,7 @@ bot.hears(['🔍 تصفح العقارات المتاحة', '🔍 Parcourir les 
   await showStatesMenu(ctx);
 });
 
-// 🎯 معالج زر الولاية
+// 🎯 معالج زر الولاية (يدعم الإضافة أو اختيار ولاية التصفح)
 bot.hears(/^📍 (.+)/, async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
@@ -463,17 +463,17 @@ bot.hears(['🔙 رجوع للعقار', '🔙 Retour au bien'], async (ctx) => 
   }
 });
 
+// معالج زر السابق بدون تعقيد أو تنبيهات
 bot.hears(['⬅️ السابق', '⬅️ Précédent'], async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   const session = browsingSession[userId];
   if (session && session.page > 0) {
     await renderPropertyPage(ctx, userId, session.page - 1);
-  } else {
-    ctx.reply('⚠️ هذا هو العقار الأول.');
   }
 });
 
+// معالج زر التالي بدون تعقيد أو تنبيهات
 bot.hears(['التالي ➡️', 'Suivant ➡️'], async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
@@ -483,12 +483,12 @@ bot.hears(['التالي ➡️', 'Suivant ➡️'], async (ctx) => {
   }
 });
 
-// 📍 زر تغيير الولاية (يعرض الولايات المتاحة حقيقة من قاعدة البيانات ديناميكياً)
-bot.hears(['📍 تغيير الولاية', '📍 Changer Wilaya'], async (ctx) => {
+// 📍 زر تغيير الولاية (يعمل بكل مرونة ودقة مطلقة)
+bot.hears(['📍 تغيير الولاية', '📍 Changer Wilaya', 'تغيير الولاية'], async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   delete browsingSession[userId];
-  await showStatesMenu(ctx); // 👈 يستعمل نفس دالة الجلب الديناميكية من قاعدة البيانات
+  await showStatesMenu(ctx);
 });
 
 // ➕ معالج إضافة عقار جديد
@@ -694,7 +694,7 @@ if (WEBHOOK_DOMAIN) {
   });
 
   bot.telegram.setWebhook(`${WEBHOOK_DOMAIN}/bot${BOT_TOKEN}`);
-  app.get('/', (req, res) => res.send('Aqar Algeria Dynamic States System is online 🚀'));
+  app.get('/', (req, res) => res.send('Aqar Algeria Clean System is online 🚀'));
   app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
 } else {
   bot.launch();
