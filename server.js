@@ -98,7 +98,6 @@ function getMainMenuKeyboard(userId) {
   ]).resize();
 }
 
-// 🎛️ دالة أزرار التنقل الذكية (تخفي السابق في البداية والتالي في النهاية)
 function getBrowsingKeyboard(userId, currentIndex, totalCount) {
   const lang = userLang[userId] || 'ar';
   const isAr = lang === 'ar';
@@ -270,7 +269,6 @@ bot.use(async (ctx, next) => {
   return next();
 });
 
-// دالة مشتركة لعرض قائمة الولايات ديناميكياً من قاعدة البيانات
 async function showStatesMenu(ctx) {
   const userId = ctx.from.id;
   try {
@@ -299,7 +297,6 @@ async function showStatesMenu(ctx) {
   }
 }
 
-// 🔍 تصفح العقارات
 bot.hears(['🔍 تصفح العقارات المتاحة', '🔍 Parcourir les biens'], async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
@@ -307,7 +304,6 @@ bot.hears(['🔍 تصفح العقارات المتاحة', '🔍 Parcourir les 
   await showStatesMenu(ctx);
 });
 
-// 🎯 معالج زر الولاية (يدعم الإضافة أو اختيار ولاية التصفح)
 bot.hears(/^📍 (.+)/, async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
@@ -338,7 +334,7 @@ bot.hears(['🌐 الكل', '🌐 Tous'], async (ctx) => {
   await renderPropertyPage(ctx, userId, 0);
 });
 
-// 📄 دالة عرض العقار الواحد
+// 📄 دالة عرض العقار الواحد (تحدث المحتوى بدون إعادة إرسال أزرار جديدة لتفادي ظهور لوحة الحروف)
 async function renderPropertyPage(ctx, userId, pageIndex) {
   const session = browsingSession[userId];
   if (!session) return;
@@ -407,7 +403,6 @@ async function renderPropertyPage(ctx, userId, pageIndex) {
   }
 }
 
-// 🔢 معالج زر العداد المتغير لفتح الفهرس
 bot.hears(/^📄 \d+ \/ \d+$/, async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
@@ -493,7 +488,6 @@ bot.hears(['التالي ➡️', 'Suivant ➡️'], async (ctx) => {
   }
 });
 
-// 📍 زر تغيير الولاية (مُفعل ويعمل بكفاءة عالية أثناء التصفح)
 bot.hears(['📍 تغيير الولاية', '📍 Changer Wilaya', 'تغيير الولاية'], async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
@@ -501,7 +495,6 @@ bot.hears(['📍 تغيير الولاية', '📍 Changer Wilaya', 'تغيير 
   await showStatesMenu(ctx);
 });
 
-// ➕ معالج إضافة عقار جديد
 bot.hears(['➕ إضافة عقار جديد', '➕ Ajouter un bien'], async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
@@ -558,7 +551,6 @@ bot.action('set_lang_ar', async (ctx) => {
 bot.action('set_lang_fr', async (ctx) => {
   await ctx.answerCbQuery();
   userLang[ctx.from.id] = 'fr';
-  await ctx.deleteMessage().catch(() => {});
   await ctx.reply(t(ctx.from.id, 'langChanged'), getMainMenuKeyboard(ctx.from.id));
 });
 
@@ -579,7 +571,6 @@ bot.hears(['ℹ️ عن المنصة', 'ℹ️ À propos'], async (ctx) => {
   });
 });
 
-// معالج النصوص أثناء خطوات النشر
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const userText = ctx.message.text.trim();
@@ -607,7 +598,6 @@ bot.on('text', async (ctx) => {
   }
 });
 
-// 📸 استلام الصور
 bot.on('photo', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
@@ -648,7 +638,6 @@ bot.on('photo', async (ctx) => {
   }
 });
 
-// 🎥 استلام الفيديوهات
 bot.on('video', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
@@ -704,7 +693,7 @@ if (WEBHOOK_DOMAIN) {
   });
 
   bot.telegram.setWebhook(`${WEBHOOK_DOMAIN}/bot${BOT_TOKEN}`);
-  app.get('/', (req, res) => res.send('Aqar Algeria Final Production System is online 🚀'));
+  app.get('/', (req, res) => res.send('Aqar Algeria Optimized System is online 🚀'));
   app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
 } else {
   bot.launch();
