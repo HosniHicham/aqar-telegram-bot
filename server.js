@@ -190,7 +190,8 @@ const WIZ = {
       'أرسل الآن <b>صورة أو فيديو</b> العقار لإتمام النشر.'
     ],
     back: '⬅️ رجوع',
-    cancel: '❌ إلغاء',
+    home: '🏠 القائمة الرئيسية',
+    cancelBtn: '❌ إلغاء العملية والعودة',
     publishing: '⏳ جاري الحفظ والنشر السحابي...',
     success: '🎉 <b>تم نشر إعلان العقار بنجاح في المنصة!</b>',
     failed: '⚠️ <b>حدث خطأ أثناء النشر</b>',
@@ -214,7 +215,8 @@ const WIZ = {
       'Envoyez une <b>photo ou vidéo</b> pour publier.'
     ],
     back: '⬅️ Retour',
-    cancel: '❌ Annuler',
+    home: '🏠 Menu principal',
+    cancelBtn: '❌ Annuler et quitter',
     publishing: '⏳ Enregistrement et publication...',
     success: '🎉 <b>Le bien a été publié avec succès !</b>',
     failed: '⚠️ <b>Erreur lors de la publication</b>',
@@ -256,105 +258,96 @@ function buildWizardText(userId, state, opts = {}) {
   return `${head}\n${bar}\n\n${lines.join('\n')}` + (footer ? `\n\n${footer}` : '');
 }
 
-function buildWizardKeyboard(userId, state) {
+// لوحة الأزرار أسفل مربع الكتابة (تتغيّر حسب المرحلة)
+function getWizardKeyboard(userId, state) {
   const W = WIZ[userLang[userId] || 'ar'];
   const rows = [];
 
   if (state.step === 'waiting_for_type') {
-    const btns = PROPERTY_TYPES.map((tp, i) => Markup.button.callback(tp, `wiz_type:${i}`));
-    rows.push(...chunkButtons(btns, 3));
+    rows.push(...chunkButtons(PROPERTY_TYPES.map(tp => `${tp}`), 3));
+    rows.push([W.home]);
   } else if (state.step === 'waiting_for_state') {
-    const btns = POPULAR_WILAYAS.map((w, i) => Markup.button.callback(w, `wiz_state:${i}`));
-    rows.push(...chunkButtons(btns, 3));
+    rows.push(...chunkButtons(POPULAR_WILAYAS.map(w => `📍 ${w}`), 4));
+    rows.push([W.back, W.home]);
+  } else {
+    rows.push([W.back, W.home]);
+    rows.push([W.cancelBtn]);
   }
 
-  const nav = [];
-  if (state.step !== 'waiting_for_type') nav.push(Markup.button.callback(W.back, 'wiz_back'));
-  nav.push(Markup.button.callback(W.cancel, 'wiz_cancel'));
-  rows.push(nav);
-
-  return Markup.inlineKeyboard(rows);
+  return Markup.keyboard(rows).resize();
 }
 
-// يعدّل نفس الرسالة (أو يرسلها أول مرة)
+// تغيير لوحة الأزرار السفلية: نرسل رسالة صغيرة تحملها ثم نحذفها فتبقى الأزرار ظاهرة
+async function setReplyKeyboard(ctx, keyboard) {
+  try {
+    const m = await ctx.reply('⬇️', keyboard);
+    await ctx.telegram.deleteMessage(ctx.chat.id, m.message_id).catch(() => {});
+  } catch (e) {
+    console.error('Keyboard update error:', e.message);
+  }
+}
+
+// يعدّل نفس رسالة المعالج (أو يرسلها أول مرة) ثم يحدّث الأزرار السفلية
 async function renderWizard(ctx, userId, opts = {}) {
   const state = userState[userId];
   if (!state) return;
 
   const text = buildWizardText(userId, state, opts);
-  const kb = (opts.noKeyboard || state.step === 'publishing')
-    ? Markup.inlineKeyboard([])
-    : buildWizardKeyboard(userId, state);
-  const extra = { parse_mode: 'HTML', ...kb };
+  const extra = { parse_mode: 'HTML' };
 
+  let done = false;
   if (state.wizardMsgId) {
     try {
       await ctx.telegram.editMessageText(state.chatId, state.wizardMsgId, undefined, text, extra);
-      return;
+      done = true;
     } catch (e) {
-      if (String(e.message || '').includes('not modified')) return;
-      console.error('Wizard edit error:', e.message);
+      if (String(e.message || '').includes('not modified')) {
+        done = true;
+      } else {
+        console.error('Wizard edit error:', e.message);
+      }
     }
   }
 
-  const sent = await ctx.reply(text, extra);
-  state.wizardMsgId = sent.message_id;
-  state.chatId = ctx.chat.id;
+  if (!done) {
+    const sent = await ctx.reply(text, extra);
+    state.wizardMsgId = sent.message_id;
+    state.chatId = ctx.chat.id;
+  }
+
+  if (opts.noKeyboard) {
+    await setReplyKeyboard(ctx, getMainMenuKeyboard(userId));
+  } else if (state.step !== 'publishing') {
+    await setReplyKeyboard(ctx, getWizardKeyboard(userId, state));
+  }
 }
 
-// حماية الأزرار: يتأكد أن الضغط على رسالة المعالج الحالية وفي مرحلتها الصحيحة
-async function wizGuard(ctx, expectedStep) {
+// اختيار نوع العقار (أزرار أسفل الشاشة)
+bot.hears(PROPERTY_TYPES, async (ctx, next) => {
   const userId = ctx.from.id;
   const state = userState[userId];
-  const msgId = ctx.callbackQuery && ctx.callbackQuery.message ? ctx.callbackQuery.message.message_id : null;
+  if (!state || state.step !== 'waiting_for_type') return next();
 
-  if (!state || !state.wizardMsgId || msgId !== state.wizardMsgId || state.step === 'publishing' || (expectedStep && state.step !== expectedStep)) {
-    const W = WIZ[userLang[userId] || 'ar'];
-    await ctx.answerCbQuery(W.expired).catch(() => {});
-    return null;
-  }
-  await ctx.answerCbQuery().catch(() => {});
-  return state;
-}
-
-bot.action(/^wiz_type:(\d+)$/, async (ctx) => {
-  const state = await wizGuard(ctx, 'waiting_for_type');
-  if (!state) return;
-  const type = PROPERTY_TYPES[parseInt(ctx.match[1], 10)];
-  if (!type) return;
-  state.data.property_type = type;
+  await safeDeleteUserMessage(ctx);
+  state.data.property_type = ctx.message.text;
   state.step = 'waiting_for_state';
-  await renderWizard(ctx, ctx.from.id);
+  await renderWizard(ctx, userId);
 });
 
-bot.action(/^wiz_state:(\d+)$/, async (ctx) => {
-  const state = await wizGuard(ctx, 'waiting_for_state');
-  if (!state) return;
-  const wilaya = POPULAR_WILAYAS[parseInt(ctx.match[1], 10)];
-  if (!wilaya) return;
-  state.data.state_name = wilaya;
-  state.step = 'waiting_for_price';
-  await renderWizard(ctx, ctx.from.id);
-});
+// زر الرجوع للمرحلة السابقة
+bot.hears(['⬅️ رجوع', '⬅️ Retour'], async (ctx) => {
+  await safeDeleteUserMessage(ctx);
+  const userId = ctx.from.id;
+  const state = userState[userId];
+  if (!state || state.step === 'publishing') return;
 
-bot.action('wiz_back', async (ctx) => {
-  const state = await wizGuard(ctx);
-  if (!state) return;
   const idx = WIZ_STEPS.indexOf(state.step);
   if (idx <= 0) return;
+
   const prevKey = WIZ_KEYS[idx - 1];
   if (prevKey) delete state.data[prevKey];
   state.step = WIZ_STEPS[idx - 1];
-  await renderWizard(ctx, ctx.from.id);
-});
-
-bot.action('wiz_cancel', async (ctx) => {
-  const state = await wizGuard(ctx);
-  if (!state) return;
-  const userId = ctx.from.id;
-  const W = WIZ[userLang[userId] || 'ar'];
-  await renderWizard(ctx, userId, { header: W.cancelled, onlyHeader: true, noKeyboard: true });
-  delete userState[userId];
+  await renderWizard(ctx, userId);
 });
 
 bot.start(async (ctx) => {
@@ -508,6 +501,14 @@ bot.hears(/^📍 (.+)/, async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   const selectedState = ctx.match[1].trim();
+  const state = userState[userId];
+
+  if (state && state.step === 'waiting_for_state') {
+    state.data.state_name = selectedState;
+    state.step = 'waiting_for_price';
+    return renderWizard(ctx, userId);
+  }
+
   const stateList = await getUniqueStatesList();
   if (stateList.includes(selectedState)) {
     browsingSession[userId] = { state: selectedState, page: 0 };
