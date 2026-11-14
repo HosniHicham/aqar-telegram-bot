@@ -26,7 +26,7 @@ const userLang = {};
 const browsingSession = {};
 
 const POPULAR_WILAYAS = [
-  'الجزائر العاصمة', 'وهران', 'مستغانم', 'قسنطينة', 
+  'الجزائر العاصمة', 'وهران', 'مستغانم', 'قسنطينة',
   'عنابة', 'البليدة', 'تلمسان', 'سطيف', 'بجاية'
 ];
 
@@ -48,7 +48,7 @@ const STRINGS = {
     supportText: '📞 <b>مركز الدعم التقني - منصة عقار الجزائر:</b>\n\nنحن في خدمتك دائماً.',
     aboutText: '🏛 <b>عن منصة عقار الجزائر (Aqar System):</b>\n\nنظام رقمي ذكي ومتطور لإدارة المعاملات العقارية.',
     langChanged: '✅ تم اعتماد اللغة العربية.',
-    errorMsg: '⚠️ حدث خطأ أثناء الحفظ، يرجى المحاولة مرة أخرى.',
+    errorMsg: '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.',
     contactBtn: '📞 اتصال بالمالك',
     authBtnText: '📱 اضغط هنا لمشاركة رقم هاتفك والبدء'
   },
@@ -98,6 +98,7 @@ function getMainMenuKeyboard(userId) {
   ]).resize();
 }
 
+// أزرار التصفح مع توفير زر تغيير الولاية وزر العودة للقائمة الرئيسية
 function getBrowsingKeyboard(userId, currentIndex, totalCount) {
   const lang = userLang[userId] || 'ar';
   const isAr = lang === 'ar';
@@ -122,6 +123,7 @@ function getBrowsingKeyboard(userId, currentIndex, totalCount) {
   ]).resize();
 }
 
+// أزرار الإلغاء والعودة أثناء معالج النشر
 function getCancelKeyboard(userId) {
   const lang = userLang[userId] || 'ar';
   const isAr = lang === 'ar';
@@ -175,7 +177,7 @@ bot.start(async (ctx) => {
   await ctx.sendChatAction('typing');
   const userName = ctx.from.first_name || 'مستخدمنا الكريم';
   const userId = ctx.from.id;
-  
+
   delete userState[userId];
   delete browsingSession[userId];
   userLang[userId] = userLang[userId] || 'ar';
@@ -260,7 +262,7 @@ bot.use(async (ctx, next) => {
   if (ctx.message && ctx.message.text && ctx.message.text.startsWith('/')) {
     return next();
   }
-  
+
   if (ctx.from && ctx.message && (ctx.message.text?.includes('تصفح') || ctx.message.text?.includes('إضافة') || ctx.message.text?.includes('Parcourir') || ctx.message.text?.includes('Ajouter'))) {
     const verified = await isUserVerified(ctx.from.id);
     if (!verified) {
@@ -376,7 +378,7 @@ async function renderPropertyPage(ctx, userId, pageIndex) {
     const item = validProperties[pageIndex];
     const totalCount = validProperties.length;
 
-    const caption = 
+    const caption =
       `🏛 <b>الولاية:</b> ${item.state_name || 'غير محدد'} (${pageIndex + 1}/${totalCount})\n\n` +
       `🏠 <b>العقار:</b> ${item.property_type || 'عقار'}\n` +
       `💰 <b>السعر:</b> ${item.price || 'حسب الاتفاق'}\n` +
@@ -384,7 +386,7 @@ async function renderPropertyPage(ctx, userId, pageIndex) {
       `📝 <b>الوصف:</b> ${item.description || item.message || 'بدون تفاصيل'}`;
 
     const inlineKb = Markup.inlineKeyboard([
-      [Markup.button.callback(t(userId, 'contact_btn') || '📞 اتصال بالمالك', 'contact_admin')]
+      [Markup.button.callback(t(userId, 'contactBtn'), 'contact_admin')]
     ]);
 
     const replyKb = getBrowsingKeyboard(userId, pageIndex, totalCount);
@@ -455,7 +457,8 @@ bot.hears(/^📄 \d+ \/ \d+$/, async (ctx) => {
   );
 });
 
-bot.hears(/^\d+$/, async (ctx) => {
+// ✅ الإصلاح الرئيسي: تمرير الرسالة (السعر/الهاتف) لمعالج النصوص إذا لم يكن المستخدم في وضع اختيار الصفحة
+bot.hears(/^\d+$/, async (ctx, next) => {
   const userId = ctx.from.id;
   const session = browsingSession[userId];
 
@@ -463,8 +466,10 @@ bot.hears(/^\d+$/, async (ctx) => {
     await safeDeleteUserMessage(ctx);
     const selectedNumber = parseInt(ctx.message.text.trim(), 10);
     session.selectingPage = false;
-    await renderPropertyPage(ctx, userId, selectedNumber - 1);
+    return renderPropertyPage(ctx, userId, selectedNumber - 1);
   }
+
+  return next();
 });
 
 bot.hears(['🔙 رجوع للعقار', '🔙 Retour au bien'], async (ctx) => {
@@ -572,7 +577,7 @@ bot.hears(['ℹ️ عن المنصة', 'ℹ️ À propos'], async (ctx) => {
   });
 });
 
-// 🎯 معالج النصوص المصلح (يستقبل الأرقام والأسعار والنصوص بحرية تامة وبدون قيود)
+// معالج النصوص (السعر، الهاتف، الوصف)
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const userText = ctx.message.text ? ctx.message.text.trim() : '';
@@ -600,96 +605,74 @@ bot.on('text', async (ctx) => {
   }
 });
 
-// 📸 استلام الصور وحفظها في قاعدة البيانات بدون أي أخطاء
+// 📸🎥 دالة موحدة للنشر وحفظ السطر الجديد في قاعدة البيانات
+async function publishProperty(ctx, userId, kind) {
+  const state = userState[userId];
+  if (!state || state.step !== 'waiting_for_media') return;
+
+  const isVideo = kind === 'video';
+
+  try {
+    await ctx.reply(isVideo ? '⏳ جاري رفع الفيديو والنشر السحابي...' : '⏳ جاري الحفظ والنشر السحابي...');
+
+    const fileId = isVideo
+      ? ctx.message.video.file_id
+      : ctx.message.photo[ctx.message.photo.length - 1].file_id;
+
+    let mediaUrl = 'EMPTY';
+    try {
+      const fileLink = await ctx.telegram.getFileLink(fileId);
+      const response = await fetch(fileLink.href);
+      if (!response.ok) throw new Error(`Download failed: ${response.status}`);
+      const buffer = Buffer.from(await response.arrayBuffer());
+
+      const fileName = `${Date.now()}_aqar.${isVideo ? 'mp4' : 'jpg'}`;
+      const { error: uploadError } = await supabase.storage
+        .from('test_media')
+        .upload(fileName, buffer, { contentType: isVideo ? 'video/mp4' : 'image/jpeg' });
+      if (uploadError) throw uploadError;
+
+      const { data: publicURLData } = supabase.storage.from('test_media').getPublicUrl(fileName);
+      mediaUrl = publicURLData.publicUrl;
+    } catch (mediaErr) {
+      console.error('Media upload error:', mediaErr);
+    }
+
+    const p = state.data;
+    const { error: insertError } = await supabase.from('test_messages').insert([{
+      property_type: p.property_type || 'عقار',
+      state_name: p.state_name || 'غير محدد',
+      price: String(p.price || 'حسب الاتفاق'),
+      phone: String(p.phone || 'غير مسجل'),
+      description: p.description || 'بدون وصف',
+      message: p.description || 'بدون وصف',
+      image_url: !isVideo && mediaUrl !== 'EMPTY' ? mediaUrl : 'EMPTY',
+      video_url: isVideo && mediaUrl !== 'EMPTY' ? mediaUrl : 'EMPTY'
+    }]);
+
+    if (insertError) throw insertError;
+
+    delete userState[userId];
+    await ctx.reply(t(userId, 'successPublish'), { parse_mode: 'HTML', ...getMainMenuKeyboard(userId) });
+
+    if (mediaUrl === 'EMPTY') {
+      await ctx.reply('⚠️ تم نشر الإعلان لكن تعذّر رفع الصورة/الفيديو (قد يكون الحجم كبيراً).');
+    }
+  } catch (err) {
+    console.error('Publish Error:', err);
+    delete userState[userId];
+    await ctx.reply(t(userId, 'errorMsg'), getMainMenuKeyboard(userId));
+  }
+}
+
 bot.on('photo', async (ctx) => {
   await safeDeleteUserMessage(ctx);
-  const userId = ctx.from.id;
-  const state = userState[userId];
-
-  if (state && state.step === 'waiting_for_media') {
-    try {
-      await ctx.reply('⏳ جاري الحفظ والنشر السحابي...');
-      const photo = ctx.message.photo[ctx.message.photo.length - 1];
-      const fileLink = await ctx.telegram.getFileLink(photo.file_id);
-      
-      const response = await fetch(fileLink.href);
-      const buffer = Buffer.from(await response.arrayBuffer());
-      const fileName = `${Date.now()}_aqar.jpg`;
-
-      await supabase.storage.from('test_media').upload(fileName, buffer, { contentType: 'image/jpeg' });
-      const { data: publicURLData } = supabase.storage.from('test_media').getPublicUrl(fileName);
-
-      const p = state.data;
-      const { error: insertError } = await supabase.from('test_messages').insert([{ 
-        property_type: p.property_type || 'عقار',
-        state_name: p.state_name || 'غير محدد',
-        price: String(p.price || 'حسب الاتفاق'),
-        phone: String(p.phone || 'غير مسجل'),
-        description: p.description || 'بدون وصف',
-        message: p.description || 'بدون وصف',
-        image_url: publicURLData.publicUrl, 
-        video_url: 'EMPTY' 
-      }]);
-
-      if (insertError) {
-        console.error('Supabase Insert Error:', insertError);
-        throw insertError;
-      }
-
-      delete userState[userId];
-      await ctx.reply(t(userId, 'successPublish'), { parse_mode: 'HTML', ...getMainMenuKeyboard(userId) });
-    } catch (err) {
-      console.error('Publish Photo Error:', err);
-      delete userState[userId];
-      await ctx.reply(t(userId, 'errorMsg'), getMainMenuKeyboard(userId));
-    }
-  }
+  await publishProperty(ctx, ctx.from.id, 'photo');
 });
 
-// 🎥 استلام الفيديوهات وحفظها في قاعدة البيانات بدون أي أخطاء
 bot.on('video', async (ctx) => {
   await safeDeleteUserMessage(ctx);
-  const userId = ctx.from.id;
-  const state = userState[userId];
-
-  if (state && state.step === 'waiting_for_media') {
-    try {
-      await ctx.reply('⏳ جاري رفع الفيديو والنشر السحابي...');
-      const video = ctx.message.video;
-      const fileLink = await ctx.telegram.getFileLink(video.file_id);
-      
-      const response = await fetch(fileLink.href);
-      const buffer = Buffer.from(await response.arrayBuffer());
-      const fileName = `${Date.now()}_aqar.mp4`;
-
-      await supabase.storage.from('test_media').upload(fileName, buffer, { contentType: 'video/mp4' });
-      const { data: publicURLData } = supabase.storage.from('test_media').getPublicUrl(fileName);
-
-      const p = state.data;
-      const { error: insertError } = await supabase.from('test_messages').insert([{ 
-        property_type: p.property_type || 'عقار',
-        state_name: p.state_name || 'غير محدد',
-        price: String(p.price || 'حسب الاتفاق'),
-        phone: String(p.phone || 'غير مسجل'),
-        description: p.description || 'بدون وصف',
-        message: p.description || 'بدون وصف',
-        image_url: 'EMPTY', 
-        video_url: publicURLData.publicUrl 
-      }]);
-
-      if (insertError) {
-        console.error('Supabase Insert Error:', insertError);
-        throw insertError;
-      }
-
-      delete userState[userId];
-      await ctx.reply(t(userId, 'successPublish'), { parse_mode: 'HTML', ...getMainMenuKeyboard(userId) });
-    } catch (err) {
-      console.error('Publish Video Error:', err);
-      delete userState[userId];
-      await ctx.reply(t(userId, 'errorMsg'), getMainMenuKeyboard(userId));
-    }
-  }
+  await publishProperty(ctx, ctx.from.id, 'video');
 });
 
 const PORT = process.env.PORT || 3000;
