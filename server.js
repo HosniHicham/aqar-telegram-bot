@@ -98,7 +98,6 @@ function getMainMenuKeyboard(userId) {
   ]).resize();
 }
 
-// أزرار التصفح مع توفير زر تغيير الولاية وزر العودة للقائمة الرئيسية
 function getBrowsingKeyboard(userId, currentIndex, totalCount) {
   const lang = userLang[userId] || 'ar';
   const isAr = lang === 'ar';
@@ -123,7 +122,6 @@ function getBrowsingKeyboard(userId, currentIndex, totalCount) {
   ]).resize();
 }
 
-// أزرار الإلغاء والعودة أثناء معالج النشر
 function getCancelKeyboard(userId) {
   const lang = userLang[userId] || 'ar';
   const isAr = lang === 'ar';
@@ -140,12 +138,13 @@ function getAuthKeyboard(userId) {
   ]).resize().oneTime();
 }
 
+// 🗄️ دالة التحقق تقرأ من جدول users الجديد
 async function isUserVerified(telegramId) {
   try {
     const { data } = await supabase
-      .from('test_messages')
+      .from('users')
       .select('*')
-      .eq('price', `ID: ${telegramId}`)
+      .eq('id', telegramId)
       .limit(1);
 
     return data && data.length > 0;
@@ -164,7 +163,7 @@ async function safeDeleteUserMessage(ctx) {
 
 async function getUniqueStatesList() {
   try {
-    const { data } = await supabase.from('test_messages').select('state_name').neq('property_type', '⭐ توثيق حساب اجباري');
+    const { data } = await supabase.from('test_messages').select('state_name');
     if (!data) return [];
     return [...new Set(data.map(item => item.state_name).filter(Boolean))];
   } catch (e) {
@@ -172,7 +171,6 @@ async function getUniqueStatesList() {
   }
 }
 
-// ================= معالج نشر العقار: رسالة واحدة تتحدّث مع كل مرحلة =================
 const WIZ_STEPS = ['waiting_for_type', 'waiting_for_state', 'waiting_for_price', 'waiting_for_phone', 'waiting_for_description', 'waiting_for_media'];
 const WIZ_KEYS = ['property_type', 'state_name', 'price', 'phone', 'description', null];
 
@@ -258,7 +256,6 @@ function buildWizardText(userId, state, opts = {}) {
   return `${head}\n${bar}\n\n${lines.join('\n')}` + (footer ? `\n\n${footer}` : '');
 }
 
-// لوحة الأزرار أسفل مربع الكتابة (تتغيّر حسب المرحلة)
 function getWizardKeyboard(userId, state) {
   const W = WIZ[userLang[userId] || 'ar'];
   const rows = [];
@@ -277,17 +274,12 @@ function getWizardKeyboard(userId, state) {
   return Markup.keyboard(rows).resize();
 }
 
-// يعرض رسالة المعالج: كل مرحلة = رسالة جديدة تحمل الأزرار السفلية الخاصة بها،
-// ثم تُحذف الرسالة السابقة (فتبدو للمستخدم رسالة واحدة تتحدّث).
-// ملاحظة: تيليجرام يخفي الأزرار السفلية إذا حُذفت الرسالة التي تحملها،
-// لذلك نرسل الجديدة أولاً ثم نحذف القديمة.
 async function renderWizard(ctx, userId, opts = {}) {
   const state = userState[userId];
   if (!state) return;
 
   const text = buildWizardText(userId, state, opts);
 
-  // أثناء الرفع: تعديل نفس الرسالة فقط (الأزرار السفلية تبقى كما هي)
   if (state.step === 'publishing' && !opts.noKeyboard && state.wizardMsgId) {
     try {
       await ctx.telegram.editMessageText(state.chatId, state.wizardMsgId, undefined, text, { parse_mode: 'HTML' });
@@ -314,7 +306,6 @@ async function renderWizard(ctx, userId, opts = {}) {
   }
 }
 
-// اختيار نوع العقار (أزرار أسفل الشاشة)
 bot.hears(PROPERTY_TYPES, async (ctx, next) => {
   const userId = ctx.from.id;
   const state = userState[userId];
@@ -326,7 +317,6 @@ bot.hears(PROPERTY_TYPES, async (ctx, next) => {
   await renderWizard(ctx, userId);
 });
 
-// زر الرجوع للمرحلة السابقة
 bot.hears(['⬅️ رجوع', '⬅️ Retour'], async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
@@ -386,35 +376,33 @@ bot.hears(['❌ إلغاء العملية والعودة', '❌ Annuler et quitt
   );
 });
 
+// 📱 الحدث الأهم: تسجيل المستخدم مباشرة في جدول users الجديد عند ضغط زر مشاركة الهاتف
 bot.on('contact', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   await ctx.sendChatAction('typing');
   const contact = ctx.message.contact;
   const phoneNumber = contact.phone_number;
-  const firstName = ctx.from.first_name || '';
+  const firstName = ctx.from.first_name || 'مستخدم';
   const userId = ctx.from.id;
   const lang = userLang[userId] || 'ar';
 
   try {
-    await supabase.from('test_messages').insert([
+    const { error: insertError } = await supabase.from('users').insert([
       {
-        property_type: '⭐ توثيق حساب اجباري',
-        state_name: firstName,
-        price: `ID: ${userId}`,
-        phone: phoneNumber,
-        description: `هاتف موثق: ${phoneNumber}`,
-        message: `تم توثيق مستخدم: ${firstName}`,
-        image_url: 'EMPTY',
-        video_url: 'EMPTY'
+        id: userId,
+        first_name: firstName,
+        phone_number: phoneNumber
       }
     ]);
 
+    if (insertError) throw insertError;
+
     await ctx.reply(
-      lang === 'ar' ? '🎉 <b>تم توثيق حسابك بنجاح!</b>\n\nأصبح بإمكانك استخدام المنصة بكامل ميزاتها:' : '🎉 <b>Compte vérifié avec succès !</b>',
+      lang === 'ar' ? '🎉 <b>تم توثيق حسابك بنجاح وحفظ بياناتك في النظام!</b>\n\nأصبح بإمكانك استخدام المنصة بكامل ميزاتها:' : '🎉 <b>Compte vérifié avec succès !</b>',
       { parse_mode: 'HTML', ...getMainMenuKeyboard(userId) }
     );
   } catch (err) {
-    console.error(err);
+    console.error('User verification insert error:', err);
     await ctx.reply(t(userId, 'errorMsg'));
   }
 });
@@ -449,7 +437,7 @@ bot.use(async (ctx, next) => {
 async function showStatesMenu(ctx) {
   const userId = ctx.from.id;
   try {
-    const { data, error } = await supabase.from('test_messages').select('state_name').neq('property_type', '⭐ توثيق حساب اجباري');
+    const { data, error } = await supabase.from('test_messages').select('state_name');
 
     if (error || !data || data.length === 0) {
       return ctx.reply(t(userId, 'noProperties'), getMainMenuKeyboard(userId));
@@ -535,7 +523,7 @@ async function renderPropertyPage(ctx, userId, pageIndex) {
       return ctx.reply('📭 عذراً، لا توجد أي عقارات مسجلة.', getMainMenuKeyboard(userId));
     }
 
-    const validProperties = data.filter(item => item.property_type !== '⭐ توثيق حساب اجباري');
+    const validProperties = data;
 
     if (validProperties.length === 0) {
       return ctx.reply('📭 عذراً، لا توجد أي عقارات مسجلة.', getMainMenuKeyboard(userId));
@@ -566,7 +554,6 @@ async function renderPropertyPage(ctx, userId, pageIndex) {
     }
 
     const sendOpts = { caption, parse_mode: 'HTML', ...inlineKb, ...replyKb };
-    // الوسائط المحفوظة كـ file_id من تيليجرام تبدأ بـ tg:
     const mediaRef = (v) => (typeof v === 'string' && v.startsWith('tg:')) ? v.slice(3) : v;
 
     let sentMsg;
@@ -588,7 +575,7 @@ async function renderPropertyPage(ctx, userId, pageIndex) {
     }
   } catch (err) {
     console.error('Pagination error:', err);
-    await ctx.reply(t(userId, 'errorMsg'));
+    ctx.reply(t(userId, 'errorMsg'));
   }
 }
 
@@ -606,7 +593,7 @@ bot.hears(/^📄 \d+ \/ \d+$/, async (ctx) => {
     query = query.eq('state_name', session.state);
   }
   const { data } = await query;
-  const validProps = data ? data.filter(item => item.property_type !== '⭐ توثيق حساب اجباري') : [];
+  const validProps = data ? data : [];
   const totalCount = validProps.length;
 
   if (totalCount === 0) return;
@@ -636,7 +623,6 @@ bot.hears(/^📄 \d+ \/ \d+$/, async (ctx) => {
   );
 });
 
-// ✅ الإصلاح الرئيسي: تمرير الرسالة (السعر/الهاتف) لمعالج النصوص إذا لم يكن المستخدم في وضع اختيار الصفحة
 bot.hears(/^\d+$/, async (ctx, next) => {
   const userId = ctx.from.id;
   const session = browsingSession[userId];
@@ -733,7 +719,6 @@ bot.hears(['ℹ️ عن المنصة', 'ℹ️ À propos'], async (ctx) => {
   });
 });
 
-// معالج النصوص (السعر، الهاتف، الوصف) - يحدّث رسالة المعالج نفسها
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const userText = ctx.message.text ? ctx.message.text.trim() : '';
@@ -761,17 +746,16 @@ bot.on('text', async (ctx) => {
   await renderWizard(ctx, userId);
 });
 
-// 📸🎥 دالة موحدة للنشر وحفظ السطر الجديد في قاعدة البيانات
 async function publishProperty(ctx, userId, kind) {
   const state = userState[userId];
   if (!state || state.step !== 'waiting_for_media') return;
-  state.step = 'publishing'; // يمنع تكرار النشر إذا وصلت عدة صور
+  state.step = 'publishing';
 
   const W = WIZ[userLang[userId] || 'ar'];
   const isVideo = kind === 'video';
   const media = isVideo ? ctx.message.video : ctx.message.photo[ctx.message.photo.length - 1];
   const fileId = media.file_id;
-  const TG_DOWNLOAD_LIMIT = 20 * 1024 * 1024; // حد تيليجرام لتحميل الملفات عبر البوت
+  const TG_DOWNLOAD_LIMIT = 20 * 1024 * 1024;
   const mediaLabel = isVideo ? W.video : W.photo;
 
   try {
@@ -801,7 +785,6 @@ async function publishProperty(ctx, userId, kind) {
     } catch (mediaErr) {
       console.error('Media upload error:', mediaErr);
       failReason = mediaErr.message || String(mediaErr);
-      // احتياطي: نحفظ file_id الخاص بتيليجرام ليظهر داخل البوت
       mediaUrl = `tg:${fileId}`;
     }
 
@@ -841,12 +824,12 @@ async function publishProperty(ctx, userId, kind) {
 
 bot.on('photo', async (ctx) => {
   await safeDeleteUserMessage(ctx);
-  await publishProperty(ctx, ctx.from.id, 'photo');
+  publishProperty(ctx, ctx.from.id, 'photo');
 });
 
 bot.on('video', async (ctx) => {
   await safeDeleteUserMessage(ctx);
-  await publishProperty(ctx, ctx.from.id, 'video');
+  publishProperty(ctx, ctx.from.id, 'video');
 });
 
 const PORT = process.env.PORT || 3000;
