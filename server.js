@@ -277,48 +277,40 @@ function getWizardKeyboard(userId, state) {
   return Markup.keyboard(rows).resize();
 }
 
-// تغيير لوحة الأزرار السفلية: نرسل رسالة صغيرة تحملها ثم نحذفها فتبقى الأزرار ظاهرة
-async function setReplyKeyboard(ctx, keyboard) {
-  try {
-    const m = await ctx.reply('⬇️', keyboard);
-    await ctx.telegram.deleteMessage(ctx.chat.id, m.message_id).catch(() => {});
-  } catch (e) {
-    console.error('Keyboard update error:', e.message);
-  }
-}
-
-// يعدّل نفس رسالة المعالج (أو يرسلها أول مرة) ثم يحدّث الأزرار السفلية
+// يعرض رسالة المعالج: كل مرحلة = رسالة جديدة تحمل الأزرار السفلية الخاصة بها،
+// ثم تُحذف الرسالة السابقة (فتبدو للمستخدم رسالة واحدة تتحدّث).
+// ملاحظة: تيليجرام يخفي الأزرار السفلية إذا حُذفت الرسالة التي تحملها،
+// لذلك نرسل الجديدة أولاً ثم نحذف القديمة.
 async function renderWizard(ctx, userId, opts = {}) {
   const state = userState[userId];
   if (!state) return;
 
   const text = buildWizardText(userId, state, opts);
-  const extra = { parse_mode: 'HTML' };
 
-  let done = false;
-  if (state.wizardMsgId) {
+  // أثناء الرفع: تعديل نفس الرسالة فقط (الأزرار السفلية تبقى كما هي)
+  if (state.step === 'publishing' && !opts.noKeyboard && state.wizardMsgId) {
     try {
-      await ctx.telegram.editMessageText(state.chatId, state.wizardMsgId, undefined, text, extra);
-      done = true;
+      await ctx.telegram.editMessageText(state.chatId, state.wizardMsgId, undefined, text, { parse_mode: 'HTML' });
     } catch (e) {
-      if (String(e.message || '').includes('not modified')) {
-        done = true;
-      } else {
+      if (!String(e.message || '').includes('not modified')) {
         console.error('Wizard edit error:', e.message);
       }
     }
+    return;
   }
 
-  if (!done) {
-    const sent = await ctx.reply(text, extra);
-    state.wizardMsgId = sent.message_id;
-    state.chatId = ctx.chat.id;
-  }
+  const keyboard = opts.noKeyboard
+    ? getMainMenuKeyboard(userId)
+    : getWizardKeyboard(userId, state);
 
-  if (opts.noKeyboard) {
-    await setReplyKeyboard(ctx, getMainMenuKeyboard(userId));
-  } else if (state.step !== 'publishing') {
-    await setReplyKeyboard(ctx, getWizardKeyboard(userId, state));
+  const sent = await ctx.reply(text, { parse_mode: 'HTML', ...keyboard });
+
+  const oldId = state.wizardMsgId;
+  state.wizardMsgId = sent.message_id;
+  state.chatId = ctx.chat.id;
+
+  if (oldId) {
+    await ctx.telegram.deleteMessage(state.chatId, oldId).catch(() => {});
   }
 }
 
