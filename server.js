@@ -395,13 +395,22 @@ async function renderPropertyPage(ctx, userId, pageIndex) {
       await ctx.telegram.deleteMessage(ctx.chat.id, session.lastMessageId).catch(() => {});
     }
 
+    const sendOpts = { caption, parse_mode: 'HTML', ...inlineKb, ...replyKb };
+    // الوسائط المحفوظة كـ file_id من تيليجرام تبدأ بـ tg:
+    const mediaRef = (v) => (typeof v === 'string' && v.startsWith('tg:')) ? v.slice(3) : v;
+
     let sentMsg;
-    if (item.video_url && item.video_url !== 'EMPTY') {
-      sentMsg = await ctx.replyWithVideo(item.video_url, { caption, parse_mode: 'HTML', ...inlineKb, ...replyKb });
-    } else if (item.image_url && item.image_url !== 'EMPTY') {
-      sentMsg = await ctx.replyWithPhoto(item.image_url, { caption, parse_mode: 'HTML', ...inlineKb, ...replyKb });
-    } else {
-      sentMsg = await ctx.reply(caption, { parse_mode: 'HTML', ...inlineKb, ...replyKb });
+    try {
+      if (item.video_url && item.video_url !== 'EMPTY') {
+        sentMsg = await ctx.replyWithVideo(mediaRef(item.video_url), sendOpts);
+      } else if (item.image_url && item.image_url !== 'EMPTY') {
+        sentMsg = await ctx.replyWithPhoto(mediaRef(item.image_url), sendOpts);
+      } else {
+        sentMsg = await ctx.reply(caption, { parse_mode: 'HTML', ...inlineKb, ...replyKb });
+      }
+    } catch (mediaSendErr) {
+      console.error('Media send error:', mediaSendErr.message);
+      sentMsg = await ctx.reply(caption + '\n\n⚠️ تعذّر عرض الصورة/الفيديو', { parse_mode: 'HTML', ...inlineKb, ...replyKb });
     }
 
     if (sentMsg) {
@@ -611,16 +620,21 @@ async function publishProperty(ctx, userId, kind) {
   if (!state || state.step !== 'waiting_for_media') return;
 
   const isVideo = kind === 'video';
+  const media = isVideo ? ctx.message.video : ctx.message.photo[ctx.message.photo.length - 1];
+  const fileId = media.file_id;
+  const TG_DOWNLOAD_LIMIT = 20 * 1024 * 1024; // حد تيليجرام لتحميل الملفات عبر البوت
 
   try {
     await ctx.reply(isVideo ? '⏳ جاري رفع الفيديو والنشر السحابي...' : '⏳ جاري الحفظ والنشر السحابي...');
 
-    const fileId = isVideo
-      ? ctx.message.video.file_id
-      : ctx.message.photo[ctx.message.photo.length - 1].file_id;
+    let mediaUrl;
+    let failReason = '';
 
-    let mediaUrl = 'EMPTY';
     try {
+      if (media.file_size && media.file_size > TG_DOWNLOAD_LIMIT) {
+        throw new Error('حجم الملف أكبر من 20MB');
+      }
+
       const fileLink = await ctx.telegram.getFileLink(fileId);
       const response = await fetch(fileLink.href);
       if (!response.ok) throw new Error(`Download failed: ${response.status}`);
@@ -629,13 +643,16 @@ async function publishProperty(ctx, userId, kind) {
       const fileName = `${Date.now()}_aqar.${isVideo ? 'mp4' : 'jpg'}`;
       const { error: uploadError } = await supabase.storage
         .from('test_media')
-        .upload(fileName, buffer, { contentType: isVideo ? 'video/mp4' : 'image/jpeg' });
+        .upload(fileName, buffer, { contentType: isVideo ? 'video/mp4' : 'image/jpeg', upsert: true });
       if (uploadError) throw uploadError;
 
       const { data: publicURLData } = supabase.storage.from('test_media').getPublicUrl(fileName);
       mediaUrl = publicURLData.publicUrl;
     } catch (mediaErr) {
       console.error('Media upload error:', mediaErr);
+      failReason = mediaErr.message || String(mediaErr);
+      // احتياطي: نحفظ file_id الخاص بتيليجرام ليظهر داخل البوت
+      mediaUrl = `tg:${fileId}`;
     }
 
     const p = state.data;
@@ -646,8 +663,8 @@ async function publishProperty(ctx, userId, kind) {
       phone: String(p.phone || 'غير مسجل'),
       description: p.description || 'بدون وصف',
       message: p.description || 'بدون وصف',
-      image_url: !isVideo && mediaUrl !== 'EMPTY' ? mediaUrl : 'EMPTY',
-      video_url: isVideo && mediaUrl !== 'EMPTY' ? mediaUrl : 'EMPTY'
+      image_url: isVideo ? 'EMPTY' : mediaUrl,
+      video_url: isVideo ? mediaUrl : 'EMPTY'
     }]);
 
     if (insertError) throw insertError;
@@ -655,13 +672,13 @@ async function publishProperty(ctx, userId, kind) {
     delete userState[userId];
     await ctx.reply(t(userId, 'successPublish'), { parse_mode: 'HTML', ...getMainMenuKeyboard(userId) });
 
-    if (mediaUrl === 'EMPTY') {
-      await ctx.reply('⚠️ تم نشر الإعلان لكن تعذّر رفع الصورة/الفيديو (قد يكون الحجم كبيراً).');
+    if (failReason) {
+      await ctx.reply(`⚠️ تم نشر الإعلان، لكن تعذّر رفع الملف للسحابة وسيظهر داخل البوت فقط.\nالسبب: ${failReason}`);
     }
   } catch (err) {
     console.error('Publish Error:', err);
     delete userState[userId];
-    await ctx.reply(t(userId, 'errorMsg'), getMainMenuKeyboard(userId));
+    await ctx.reply(`${t(userId, 'errorMsg')}\n(${err.message || 'unknown'})`, getMainMenuKeyboard(userId));
   }
 }
 
