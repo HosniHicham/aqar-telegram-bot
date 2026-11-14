@@ -138,7 +138,7 @@ function getAuthKeyboard(userId) {
   ]).resize().oneTime();
 }
 
-// 🗄️ دالة التحقق تقرأ من جدول users الجديد
+// 🗄️ التحقق من جدول المستخدمين الجديد (users) بدلاً من البحث في جدول العقارات
 async function isUserVerified(telegramId) {
   try {
     const { data } = await supabase
@@ -376,13 +376,13 @@ bot.hears(['❌ إلغاء العملية والعودة', '❌ Annuler et quitt
   );
 });
 
-// 📱 الحدث الأهم: تسجيل المستخدم مباشرة في جدول users الجديد عند ضغط زر مشاركة الهاتف
+// 📱 حفظ المستخدم ورقم هاتفه مباشرة في جدول users الجديد
 bot.on('contact', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   await ctx.sendChatAction('typing');
   const contact = ctx.message.contact;
   const phoneNumber = contact.phone_number;
-  const firstName = ctx.from.first_name || 'مستخدم';
+  const firstName = ctx.from.first_name || '';
   const userId = ctx.from.id;
   const lang = userLang[userId] || 'ar';
 
@@ -398,7 +398,7 @@ bot.on('contact', async (ctx) => {
     if (insertError) throw insertError;
 
     await ctx.reply(
-      lang === 'ar' ? '🎉 <b>تم توثيق حسابك بنجاح وحفظ بياناتك في النظام!</b>\n\nأصبح بإمكانك استخدام المنصة بكامل ميزاتها:' : '🎉 <b>Compte vérifié avec succès !</b>',
+      lang === 'ar' ? '🎉 <b>تم توثيق حسابك بنجاح!</b>\n\nأصبح بإمكانك استخدام المنصة بكامل ميزاتها:' : '🎉 <b>Compte vérifié avec succès !</b>',
       { parse_mode: 'HTML', ...getMainMenuKeyboard(userId) }
     );
   } catch (err) {
@@ -824,12 +824,12 @@ async function publishProperty(ctx, userId, kind) {
 
 bot.on('photo', async (ctx) => {
   await safeDeleteUserMessage(ctx);
-  publishProperty(ctx, ctx.from.id, 'photo');
+  await publishProperty(ctx, ctx.from.id, 'photo');
 });
 
 bot.on('video', async (ctx) => {
   await safeDeleteUserMessage(ctx);
-  publishProperty(ctx, ctx.from.id, 'video');
+  await publishProperty(ctx, ctx.from.id, 'video');
 });
 
 const PORT = process.env.PORT || 3000;
