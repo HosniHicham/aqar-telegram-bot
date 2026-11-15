@@ -139,7 +139,7 @@ async function getUniqueStatesList() {
 }
 
 // =========================================================================
-// 🎬 صفحة الويب المصغرة مع إعلانات الفيديو (SDK Zone ID: 12268522)
+// 🎬 صفحة الويب المصغرة مع رسالة تنبيه صارمة وإخفاء واجهة البوت أثناء الإعلان
 // =========================================================================
 app.get('/watch-ad', (req, res) => {
   const userId = req.query.uid || '';
@@ -164,6 +164,11 @@ app.get('/watch-ad', (req, res) => {
       background: #1E293B; border: 1px solid #334155; border-radius: 16px;
       padding: 24px; max-width: 400px; width: 100%; box-shadow: 0 10px 25px rgba(0,0,0,0.4);
     }
+    .alert-box {
+      background: #7F1D1D; color: #FCA5A5; border: 1px solid #991B1B;
+      padding: 12px; border-radius: 8px; font-size: 13px; font-weight: bold;
+      margin-bottom: 15px; display: none; line-height: 1.5;
+    }
     button {
       background: #D4AF37; color: #0F172A; border: none; padding: 14px 24px;
       border-radius: 10px; font-size: 16px; font-weight: bold; width: 100%;
@@ -175,8 +180,13 @@ app.get('/watch-ad', (req, res) => {
 <body>
   <div class="card">
     <h2>🎁 ربح نقاط عقار الجزائر</h2>
-    <p style="color:#94A3B8; font-size:14px;">اضغط على الزر أدناه لإظهار إعلان الفيديو في وسط الشاشة والحصول على +${AD_REWARD_POINTS} نقطة فوراً في رصيدك.</p>
+    <p style="color:#94A3B8; font-size:14px;">اضغط على الزر أدناه لبدء مشاهدة الإعلان وربح +${AD_REWARD_POINTS} نقطة.</p>
     
+    <!-- رسالة التحذير والتنبيه الصارمة -->
+    <div id="alertBox" class="alert-box">
+      ⚠️ <b>تنبيه هام جداً:</b><br>يرجى الانتظار وعدم إغلاق الصفحة حتى ينتهي الإعلان بالكامل لكي يتم احتساب نقاطك تلقائياً!
+    </div>
+
     <button id="adBtn" onclick="triggerAd()">▶️ عرض الإعلان الآن</button>
   </div>
 
@@ -184,25 +194,28 @@ app.get('/watch-ad', (req, res) => {
     const tg = window.Telegram.WebApp;
     tg.expand();
     const btnEl = document.getElementById('adBtn');
+    const alertBox = document.getElementById('alertBox');
 
     function triggerAd() {
       btnEl.disabled = true;
-      btnEl.textContent = '⏳ جاري عرض الإعلان...';
+      btnEl.textContent = '⏳ جاري عرض الإعلان... يرجى الانتظار';
+      alertBox.style.display = 'block'; // إظهار رسالة التنبيه للمستخدم
 
       if (typeof show_12268522 === 'function') {
         show_12268522().then(() => {
-          // المشاهدة تمت بنجاح، إضافة النقاط
+          // المشاهدة تمت بنجاح
           claimReward();
         }).catch((e) => {
           alert('تعذر عرض الإعلان حالياً، حاول مجدداً.');
           btnEl.disabled = false;
           btnEl.textContent = '▶️ عرض الإعلان الآن';
+          alertBox.style.display = 'none';
         });
       } else {
-        // نظام احتياطي في حال تأخر تحميل السكربت
+        // احتياطي في حال تأخر تحميل السكربت
         setTimeout(() => {
           claimReward();
-        }, 3000);
+        }, 4000);
       }
     }
 
@@ -216,16 +229,18 @@ app.get('/watch-ad', (req, res) => {
         const data = await res.json();
         if (data.ok) {
           alert('🎉 مبروك! تمت إضافة النقاط بنجاح.');
-          tg.close();
+          tg.close(); // إغلاق تطبيق الويب المصغر والعودة التلقائية للبوت
         } else {
           alert('حدث خطأ، حاول مجدداً');
           btnEl.disabled = false;
           btnEl.textContent = '▶️ عرض الإعلان الآن';
+          alertBox.style.display = 'none';
         }
       } catch (e) {
         alert('خطأ في الاتصال بالسيرفر');
         btnEl.disabled = false;
         btnEl.textContent = '▶️ عرض الإعلان الآن';
+        alertBox.style.display = 'none';
       }
     }
   </script>
@@ -727,7 +742,7 @@ bot.hears('📞 الدعم والإدارة', async (ctx) => {
 bot.hears('ℹ️ عن المنصة', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
-  ctx.reply(t(userId, 'aboutText'), { parse_mode: 'HTML', ...getMainMenuKeyboard(userId) });
+  ctx.reply(t(userId, 'aboutText'), { parse_mode: 'HTML', ...getMainMenuKeyboard(ctx.from.id) });
 });
 
 bot.hears('➕ إضافة عقار جديد', async (ctx) => {
@@ -1018,7 +1033,7 @@ if (WEBHOOK_DOMAIN) {
     if (req.body && req.body.update_id) bot.handleUpdate(req.body);
   });
   bot.telegram.setWebhook(`${WEBHOOK_DOMAIN}/bot${BOT_TOKEN}`);
-  app.get('/', (req, res) => res.send('Aqar Algeria Rewarded Video Ad System is online 🚀'));
+  app.get('/', (req, res) => res.send('Aqar Algeria Strict Ad System is online 🚀'));
   app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
 } else {
   bot.launch();
