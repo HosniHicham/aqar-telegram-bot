@@ -59,25 +59,6 @@ const STRINGS = {
     errorMsg: '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.',
     contactBtn: '📞 اتصال بالمالك',
     authBtnText: '📱 اضغط هنا لمشاركة رقم هاتفك والبدء'
-  },
-  fr: {
-    welcome: (name) => `Bienvenue <b>${name}</b> sur <b>Aqar Algérie</b> 🏠\n\nSystème numérique professionnel de gestion immobilière. Choisissez :`,
-    authPrompt: (name) => `Bienvenue <b>${name}</b> sur <b>Aqar Algérie</b> 🏠\n\n⚠️ <b>Sécurité:</b>\nVeuillez <b>confirmer votre numéro de téléphone</b> :`,
-    browseTitle: '🔍 <b>Choisissez la wilaya en bas de l\'écran :</b>',
-    noProperties: '📭 Désolé, aucun bien enregistré.',
-    paymentMethodPrompt: (points) => `💰 <b>Choisissez le mode de publication :</b>\n\n1️⃣ <b>CCP / BaridiMob :</b> 500 DA\n2️⃣ <b>Gratuit avec points :</b> ${PUBLISH_COST_POINTS} pts (Votre solde : <b>${points} pts</b>)`,
-    ccpInstructions: '💳 <b>Paiement CCP/BaridiMob (Cliquez pour copier 👇):</b>\n<code>00234567890123456789</code>\n\nEnvoyez la photo du reçu :',
-    paymentPending: (reqId) => `⏳ <b>Reçu reçu (Demande #${reqId}) !</b> En attente de validation.`,
-    pointsPublishSuccess: `🎉 <b>${PUBLISH_COST_POINTS} points déduits. Annonce publiée gratuitement !</b>`,
-    notEnoughPoints: (points) => `⚠️ <b>Solde insuffisant (${points}/${PUBLISH_COST_POINTS} pts).</b> Regardez des publicités pour gagner des points !`,
-    successPublish: (type, state, reqId) => `🎉 <b>Annonce #${reqId} (${type} - ${state}) publiée avec succès !</b>`,
-    rejectPublish: (type, state, reqId) => `❌ <b>Reçu rejeté pour la demande #${reqId} (${type} - ${state}).</b>`,
-    supportText: '📞 <b>Support Technique:</b>',
-    aboutText: '🏛 <b>À propos:</b>',
-    langChanged: '✅ Langue changée.',
-    errorMsg: '⚠️ Erreur survenue.',
-    contactBtn: 'Contacter',
-    authBtnText: 'Partager mon numéro'
   }
 };
 
@@ -96,24 +77,20 @@ function chunkButtons(buttonsArray, chunkSize = 4) {
 }
 
 function getMainMenuKeyboard(userId) {
-  const lang = userLang[userId] || 'ar';
-  const isAr = lang === 'ar';
   return Markup.keyboard([
-    [isAr ? '🔍 تصفح العقارات المتاحة' : '🔍 Parcourir les biens', isAr ? '➕ إضافة عقار جديد' : '➕ Ajouter un bien'],
-    [isAr ? '🎁 رصيدي وجمع النقاط' : '🎁 Mes Points & Pubs', isAr ? '📞 الدعم والإدارة' : '📞 Support & Contact'],
-    [isAr ? '🌐 تغيير اللغة / Langue' : '🌐 Langue / اللغة', isAr ? 'ℹ️ عن المنصة' : 'ℹ️ À propos'],
-    [isAr ? '🌐 تصفح الموقع الرسمي (البروزر)' : '🌐 Site Officiel (Navigateur)']
+    ['🔍 تصفح العقارات المتاحة', '➕ إضافة عقار جديد'],
+    ['🎁 رصيدي وجمع النقاط', '📞 الدعم والإدارة'],
+    ['🌐 تغيير اللغة / Langue', 'ℹ️ عن المنصة'],
+    ['🌐 تصفح الموقع الرسمي (البروزر)']
   ]).resize();
 }
 
 function getBrowsingKeyboard(userId, currentIndex, totalCount) {
-  const lang = userLang[userId] || 'ar';
-  const isAr = lang === 'ar';
-  const prevBtn = isAr ? '⬅️ السابق' : '⬅️ Précédent';
-  const nextBtn = isAr ? 'التالي ➡️' : 'Suivant ➡️';
+  const prevBtn = '⬅️ السابق';
+  const nextBtn = 'التالي ➡️';
   const counterText = `📄 ${currentIndex + 1} / ${totalCount}`;
-  const changeWilayaBtn = isAr ? '📍 تغيير الولاية' : '📍 Changer Wilaya';
-  const homeBtn = isAr ? '🏠 القائمة الرئيسية' : '🏠 Menu principal';
+  const changeWilayaBtn = '📍 تغيير الولاية';
+  const homeBtn = '🏠 القائمة الرئيسية';
 
   const navRow = [];
   if (currentIndex > 0) navRow.push(prevBtn);
@@ -124,9 +101,8 @@ function getBrowsingKeyboard(userId, currentIndex, totalCount) {
 }
 
 function getAuthKeyboard(userId) {
-  const lang = userLang[userId] || 'ar';
   return Markup.keyboard([
-    [Markup.button.contactRequest(STRINGS[lang]['authBtnText'])]
+    [Markup.button.contactRequest('📱 اضغط هنا لمشاركة رقم هاتفك والبدء')]
   ]).resize().oneTime();
 }
 
@@ -163,7 +139,7 @@ async function getUniqueStatesList() {
 }
 
 // =========================================================================
-// 🎬 واجهة الإعلانات المصغرة داخل تيليجرام (Telegram Mini App - Rewarded Ad)
+// 🎬 صفحة الويب المصغرة مع إعلانات Monetag الحقيقية (Zone ID: 12268522)
 // =========================================================================
 app.get('/watch-ad', (req, res) => {
   const userId = req.query.uid || '';
@@ -174,6 +150,10 @@ app.get('/watch-ad', (req, res) => {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>مشاهدة إعلان وربح نقاط</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  
+  <!-- سكربت إعلانات Monetag الحقيقي -->
+  <script src='//libtl.com/sdk.js' data-zone='12268522' data-sdk='show_12268522'></script>
+
   <style>
     body {
       background: #0F172A; color: #F8FAFC; font-family: system-ui, -apple-system, sans-serif;
@@ -184,55 +164,49 @@ app.get('/watch-ad', (req, res) => {
       background: #1E293B; border: 1px solid #334155; border-radius: 16px;
       padding: 24px; max-width: 400px; width: 100%; box-shadow: 0 10px 25px rgba(0,0,0,0.4);
     }
-    .ad-box {
-      background: linear-gradient(135deg, #0D9488 0%, #0284C7 100%);
-      border-radius: 12px; padding: 30px 15px; margin: 20px 0;
-      font-weight: bold; font-size: 18px; color: white;
-    }
-    .timer { font-size: 36px; font-weight: 800; color: #38BDF8; margin: 10px 0; }
     button {
       background: #D4AF37; color: #0F172A; border: none; padding: 14px 24px;
       border-radius: 10px; font-size: 16px; font-weight: bold; width: 100%;
-      cursor: pointer; display: none;
+      cursor: pointer; margin-top: 15px;
     }
     button:disabled { opacity: 0.6; cursor: not-allowed; }
   </style>
 </head>
 <body>
   <div class="card">
-    <h2>🎁 إعلان مدفوع (+${AD_REWARD_POINTS} نقطة)</h2>
-    <p style="color:#94A3B8; font-size:14px;">انتظر انتهاء العداد للحصول على مكافأتك فوراً</p>
+    <h2>🎁 ربح نقاط عقار الجزائر</h2>
+    <p style="color:#94A3B8; font-size:14px;">اضغط على الزر أدناه لمشاهدة الإعلان والحصول على +${AD_REWARD_POINTS} نقطة فوراً في رصيدك.</p>
     
-    <!-- هنا تضع مستقبلاً كود شبكة الإعلانات مثل Adsgram أو Monetag -->
-    <div class="ad-box" id="adSlot">
-      🏠 منصة عقار الجزائر<br>
-      <span style="font-size:13px; font-weight:normal;">مساحة إعلانية ممولة</span>
-    </div>
-
-    <div class="timer" id="countdown">15</div>
-    <button id="claimBtn" onclick="claimReward()">✅ استلام ${AD_REWARD_POINTS} نقطة والعودة</button>
+    <button id="adBtn" onclick="triggerAd()">▶️ اضغط لمشاهدة الإعلان</button>
   </div>
 
   <script>
     const tg = window.Telegram.WebApp;
     tg.expand();
-    let seconds = 15;
-    const timerEl = document.getElementById('countdown');
-    const btnEl = document.getElementById('claimBtn');
+    const btnEl = document.getElementById('adBtn');
 
-    const interval = setInterval(() => {
-      seconds--;
-      timerEl.textContent = seconds;
-      if (seconds <= 0) {
-        clearInterval(interval);
-        timerEl.style.display = 'none';
-        btnEl.style.display = 'block';
+    function triggerAd() {
+      btnEl.disabled = true;
+      btnEl.textContent = '⏳ جاري عرض الإعلان...';
+
+      if (typeof show_12268522 === 'function') {
+        show_12268522().then(() => {
+          // المستخدم شاهد الإعلان بنجاح، نقوم بإضافة النقاط
+          claimReward();
+        }).catch((e) => {
+          alert('تعذر عرض الإعلان حالياً، حاول مجدداً.');
+          btnEl.disabled = false;
+          btnEl.textContent = '▶️ اضغط لمشاهدة الإعلان';
+        });
+      } else {
+        // احتياطي في حال تأخر تحميل السكربت
+        setTimeout(() => {
+          claimReward();
+        }, 3000);
       }
-    }, 1000);
+    }
 
     async function claimReward() {
-      btnEl.disabled = true;
-      btnEl.textContent = '⏳ جاري إضافة النقاط...';
       try {
         const res = await fetch('/api/claim-ad-reward', {
           method: 'POST',
@@ -241,14 +215,17 @@ app.get('/watch-ad', (req, res) => {
         });
         const data = await res.json();
         if (data.ok) {
+          alert('🎉 مبروك! تمت إضافة النقاط بنجاح.');
           tg.close();
         } else {
           alert('حدث خطأ، حاول مجدداً');
           btnEl.disabled = false;
+          btnEl.textContent = '▶️ اضغط لمشاهدة الإعلان';
         }
       } catch (e) {
-        alert('خطأ في الاتصال');
+        alert('خطأ في الاتصال بالسيرفر');
         btnEl.disabled = false;
+        btnEl.textContent = '▶️ اضغط لمشاهدة الإعلان';
       }
     }
   </script>
@@ -281,7 +258,7 @@ app.post('/api/claim-ad-reward', async (req, res) => {
 });
 
 // =========================================================================
-// 🏢 معالج نشر العقار (7 خطوات: النوع -> الولاية -> السعر -> الهاتف -> الوصف -> الوسائط -> طريقة الدفع)
+// 🏢 معالج نشر العقار
 // =========================================================================
 const WIZ_STEPS = [
   'waiting_for_type',
@@ -314,25 +291,6 @@ const WIZ = {
     home: '🏠 القائمة الرئيسية',
     cancelBtn: '❌ إلغاء العملية والعودة',
     publishing: '⏳ جاري المعالجة والحفظ...'
-  },
-  fr: {
-    title: '🏢 <b>Nouvelle annonce</b>',
-    step: (n, total) => `Étape ${n} sur ${total}`,
-    labels: ['🏠 Type', '📍 Wilaya', '💰 Prix', '📞 Téléphone', '📝 Description', '📸 Média', '💳 Paiement'],
-    prompts: [
-      'Choisissez le type :',
-      'Choisissez la wilaya :',
-      'Prix demandé :',
-      'Téléphone :',
-      'Description :',
-      'Photo ou vidéo :',
-      'Choisissez le mode de paiement :',
-      'Envoyez le reçu de paiement :'
-    ],
-    back: '⬅️ Retour',
-    home: '🏠 Menu principal',
-    cancelBtn: '❌ Annuler',
-    publishing: '⏳ Envoi...'
   }
 };
 
@@ -341,7 +299,7 @@ function escapeHtml(str) {
 }
 
 function buildWizardText(userId, state, opts = {}) {
-  const W = WIZ[userLang[userId] || 'ar'];
+  const W = WIZ['ar'];
   const totalSteps = 7;
   let active = WIZ_STEPS.indexOf(state.step);
   if (active >= 6 || state.step === 'publishing') active = 6;
@@ -368,7 +326,7 @@ function buildWizardText(userId, state, opts = {}) {
 }
 
 function getWizardKeyboard(userId, state) {
-  const W = WIZ[userLang[userId] || 'ar'];
+  const W = WIZ['ar'];
   const rows = [];
 
   if (state.step === 'waiting_for_type') {
@@ -414,8 +372,8 @@ async function renderWizard(ctx, userId, opts = {}) {
   }
 }
 
-// 🎁 قائمة رصيدي وجمع النقاط (مشاهدة إعلانات + دعوة أصدقاء)
-bot.hears(['🎁 رصيدي وجمع النقاط', '🎁 Mes Points & Pubs'], async (ctx) => {
+// 🎁 قائمة رصيدي وجمع النقاط
+bot.hears('🎁 رصيدي وجمع النقاط', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   const user = await getUserRecord(userId);
@@ -429,14 +387,14 @@ bot.hears(['🎁 رصيدي وجمع النقاط', '🎁 Mes Points & Pubs'], a
     `🪙 <b>رصيدك الحالي:</b> <b>${points} نقطة</b>\n` +
     `📌 <b>تكلفة نشر عقار مجاناً:</b> ${PUBLISH_COST_POINTS} نقطة\n\n` +
     `🎬 <b>الطريقة 1: مشاهدة إعلان (+${AD_REWARD_POINTS} نقطة)</b>\n` +
-    `اضغط على الزر أدناه لمشاهدة إعلان قصير داخل تيليجرام وربح النقاط فوراً.\n\n` +
+    `اضغط على الزر أدناه لمشاهدة إعلان Monetag وربح النقاط فوراً.\n\n` +
     `👥 <b>الطريقة 2: دعوة الأصدقاء (+50 نقطة لكل صديق)</b>\n` +
     `شارك رابطك الخاص:\n<code>${refLink}</code>`;
 
   const inlineButtons = [];
   if (WEBHOOK_DOMAIN) {
     inlineButtons.push([
-      Markup.button.webApp(`🎬 شاهد إعلان الآن (+${AD_REWARD_POINTS} نقطة)`, `${WEBHOOK_DOMAIN}/watch-ad?uid=${userId}`)
+      Markup.button.webApp(`🎬 شاهد إعلان Monetag (+${AD_REWARD_POINTS} نقطة)`, `${WEBHOOK_DOMAIN}/watch-ad?uid=${userId}`)
     ]);
   }
 
@@ -457,7 +415,7 @@ bot.hears(PROPERTY_TYPES, async (ctx, next) => {
   await renderWizard(ctx, userId);
 });
 
-bot.hears(['⬅️ رجوع', '⬅️ Retour'], async (ctx) => {
+bot.hears('⬅️ رجوع', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   const state = userState[userId];
@@ -485,7 +443,6 @@ bot.start(async (ctx) => {
   const userName = ctx.from.first_name || 'مستخدمنا الكريم';
   const userId = ctx.from.id;
 
-  // التقاط كود الإحالة إن وجد (?start=ref_12345)
   const startPayload = ctx.startPayload || '';
   if (startPayload.startsWith('ref_')) {
     const referrerId = Number(startPayload.replace('ref_', ''));
@@ -497,7 +454,7 @@ bot.start(async (ctx) => {
   }
 
   delete browsingSession[userId];
-  userLang[userId] = userLang[userId] || 'ar';
+  userLang[userId] = 'ar';
 
   const verified = await isUserVerified(userId);
   if (verified) {
@@ -508,7 +465,7 @@ bot.start(async (ctx) => {
   }
 });
 
-bot.hears(['❌ إلغاء العملية والعودة', '❌ Annuler et quitter', '🏠 القائمة الرئيسية', '🏠 Menu principal'], async (ctx) => {
+bot.hears(['❌ إلغاء العملية والعودة', '🏠 القائمة الرئيسية'], async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   const oldWizard = userState[userId];
@@ -518,13 +475,12 @@ bot.hears(['❌ إلغاء العملية والعودة', '❌ Annuler et quitt
   delete userState[userId];
   delete browsingSession[userId];
 
-  ctx.reply(userLang[userId] === 'fr' ? '✅ Retour au menu principal :' : '✅ العودة إلى القائمة الرئيسية:', {
+  ctx.reply('✅ العودة إلى القائمة الرئيسية:', {
     parse_mode: 'HTML',
     ...getMainMenuKeyboard(userId)
   });
 });
 
-// 📱 تسجيل المستخدم في جدول users + منح مكافأة الإحالة
 bot.on('contact', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   await ctx.sendChatAction('typing');
@@ -532,7 +488,6 @@ bot.on('contact', async (ctx) => {
   const phoneNumber = contact.phone_number;
   const firstName = ctx.from.first_name || '';
   const userId = ctx.from.id;
-  const lang = userLang[userId] || 'ar';
   const referrerId = userState[userId]?.pendingReferrer || null;
 
   try {
@@ -547,7 +502,6 @@ bot.on('contact', async (ctx) => {
     ]);
     if (insertError) throw insertError;
 
-    // منح 50 نقطة لصاحب رابط الإحالة
     if (referrerId) {
       const refUser = await getUserRecord(referrerId);
       if (refUser) {
@@ -562,7 +516,7 @@ bot.on('contact', async (ctx) => {
     }
 
     delete userState[userId];
-    ctx.reply(lang === 'ar' ? '🎉 <b>تم توثيق حسابك بنجاح!</b>' : '🎉 <b>Compte vérifié !</b>', {
+    ctx.reply('🎉 <b>تم توثيق حسابك بنجاح!</b>', {
       parse_mode: 'HTML',
       ...getMainMenuKeyboard(userId)
     });
@@ -572,7 +526,7 @@ bot.on('contact', async (ctx) => {
   }
 });
 
-bot.hears(['🌐 تصفح الموقع الرسمي (البروزر)', '🌐 Site Officiel (Navigateur)'], async (ctx) => {
+bot.hears('🌐 تصفح الموقع الرسمي (البروزر)', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   await ctx.reply(
     '🌐 <b>رابط منصة عقار الجزائر (ويب):</b>\n\nانقر على الزر أدناه لفتح الموقع وتصفحه في متصفح الهاتف:',
@@ -587,7 +541,7 @@ bot.hears(['🌐 تصفح الموقع الرسمي (البروزر)', '🌐 Sit
 
 bot.use(async (ctx, next) => {
   if (ctx.message && ctx.message.text && ctx.message.text.startsWith('/')) return next();
-  if (ctx.from && ctx.message && (ctx.message.text?.includes('تصفح') || ctx.message.text?.includes('إضافة') || ctx.message.text?.includes('رصيدي') || ctx.message.text?.includes('Parcourir') || ctx.message.text?.includes('Ajouter'))) {
+  if (ctx.from && ctx.message && (ctx.message.text?.includes('تصفح') || ctx.message.text?.includes('إضافة') || ctx.message.text?.includes('رصيدي'))) {
     const verified = await isUserVerified(ctx.from.id);
     if (!verified) {
       return ctx.reply('⚠️ عذراً، يجب عليك تأكيد رقم هاتفك أولاً عبر الزر أدناه:', getAuthKeyboard(ctx.from.id));
@@ -613,13 +567,13 @@ async function showStatesMenu(ctx) {
   }
 }
 
-bot.hears(['🔍 تصفح العقارات المتاحة', '🔍 Parcourir les biens'], async (ctx) => {
+bot.hears('🔍 تصفح العقارات المتاحة', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   delete browsingSession[ctx.from.id];
   showStatesMenu(ctx);
 });
 
-bot.hears(['📍 تغيير الولاية', '📍 Changer Wilaya', 'تغيير الولاية'], async (ctx) => {
+bot.hears(['📍 تغيير الولاية', 'تغيير الولاية'], async (ctx) => {
   await safeDeleteUserMessage(ctx);
   delete browsingSession[ctx.from.id];
   showStatesMenu(ctx);
@@ -644,7 +598,7 @@ bot.hears(/^📍 (.+)/, async (ctx) => {
   }
 });
 
-bot.hears(['🌐 الكل', '🌐 Tous'], async (ctx) => {
+bot.hears('🌐 الكل', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   browsingSession[ctx.from.id] = { state: 'ALL', page: 0 };
   renderPropertyPage(ctx, ctx.from.id, 0);
@@ -695,16 +649,12 @@ bot.hears(/^📄 \d+ \/ \d+$/, async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   const session = browsingSession[userId];
-  const lang = userLang[userId] || 'ar';
-  const isAr = lang === 'ar';
-
   if (!session) return;
 
   let query = supabase.from('test_messages').select('*').order('id', { ascending: false });
   if (session.state !== 'ALL') query = query.eq('state_name', session.state);
   const { data } = await query;
   const totalCount = data ? data.length : 0;
-
   if (totalCount === 0) return;
 
   session.selectingPage = true;
@@ -719,17 +669,12 @@ bot.hears(/^📄 \d+ \/ \d+$/, async (ctx) => {
     }
   }
   if (row.length > 0) numberButtons.push(row);
-  numberButtons.push([isAr ? '🔙 رجوع للعقار' : '🔙 Retour au bien']);
+  numberButtons.push(['🔙 رجوع للعقار']);
 
-  await ctx.reply(
-    isAr
-      ? `🔢 <b>اختر رقم العقار للانتقال إليه مباشرة (من 1 إلى ${totalCount}):</b>`
-      : `🔢 <b>Choisissez le numéro du bien (1 à ${totalCount}) :</b>`,
-    {
-      parse_mode: 'HTML',
-      ...Markup.keyboard(numberButtons).resize()
-    }
-  );
+  await ctx.reply(`🔢 <b>اختر رقم العقار للانتقال إليه مباشرة (من 1 إلى ${totalCount}):</b>`, {
+    parse_mode: 'HTML',
+    ...Markup.keyboard(numberButtons).resize()
+  });
 });
 
 bot.hears(/^\d+$/, async (ctx, next) => {
@@ -746,7 +691,7 @@ bot.hears(/^\d+$/, async (ctx, next) => {
   return next();
 });
 
-bot.hears(['🔙 رجوع للعقار', '🔙 Retour au bien'], async (ctx) => {
+bot.hears('🔙 رجوع للعقار', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   const session = browsingSession[userId];
@@ -756,7 +701,7 @@ bot.hears(['🔙 رجوع للعقار', '🔙 Retour au bien'], async (ctx) => 
   }
 });
 
-bot.hears(['⬅️ السابق', '⬅️ Précédent'], async (ctx) => {
+bot.hears('⬅️ السابق', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   const session = browsingSession[userId];
@@ -765,7 +710,7 @@ bot.hears(['⬅️ السابق', '⬅️ Précédent'], async (ctx) => {
   }
 });
 
-bot.hears(['التالي ➡️', 'Suivant ➡️'], async (ctx) => {
+bot.hears('التالي ➡️', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   const session = browsingSession[userId];
@@ -774,42 +719,18 @@ bot.hears(['التالي ➡️', 'Suivant ➡️'], async (ctx) => {
   }
 });
 
-bot.hears(['🌐 تغيير اللغة / Langue', '🌐 Langue / اللغة'], async (ctx) => {
-  await safeDeleteUserMessage(ctx);
-  ctx.reply(`🌐 <b>اختر لغة النظام / Choisir la langue:</b>`, {
-    parse_mode: 'HTML',
-    ...Markup.inlineKeyboard([
-      [Markup.button.callback('🇩🇿 العربية', 'set_lang_ar'), Markup.button.callback('🇫🇷 Français', 'set_lang_fr')]
-    ])
-  });
-});
-
-bot.action('set_lang_ar', async (ctx) => {
-  await ctx.answerCbQuery();
-  userLang[ctx.from.id] = 'ar';
-  await ctx.deleteMessage().catch(() => {});
-  ctx.reply(t(ctx.from.id, 'langChanged'), getMainMenuKeyboard(ctx.from.id));
-});
-
-bot.action('set_lang_fr', async (ctx) => {
-  await ctx.answerCbQuery();
-  userLang[ctx.from.id] = 'fr';
-  await ctx.deleteMessage().catch(() => {});
-  ctx.reply(t(ctx.from.id, 'langChanged'), getMainMenuKeyboard(ctx.from.id));
-});
-
-bot.hears(['📞 الدعم والإدارة', '📞 Support & Contact'], async (ctx) => {
+bot.hears('📞 الدعم والإدارة', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   ctx.reply(t(ctx.from.id, 'supportText'), { parse_mode: 'HTML', ...getMainMenuKeyboard(ctx.from.id) });
 });
 
-bot.hears(['ℹ️ عن المنصة', 'ℹ️ À propos'], async (ctx) => {
+bot.hears('ℹ️ عن المنصة', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   ctx.reply(t(userId, 'aboutText'), { parse_mode: 'HTML', ...getMainMenuKeyboard(userId) });
 });
 
-bot.hears(['➕ إضافة عقار جديد', '➕ Ajouter un bien'], async (ctx) => {
+bot.hears('➕ إضافة عقار جديد', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   const old = userState[userId];
@@ -819,7 +740,6 @@ bot.hears(['➕ إضافة عقار جديد', '➕ Ajouter un bien'], async (ct
   renderWizard(ctx, userId);
 });
 
-// اختيار طريقة الدفع في الخطوة 7
 bot.hears('💳 الدفع عبر BaridiMob / CCP', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
@@ -846,7 +766,7 @@ bot.hears(`🪙 النشر مجاناً (${PUBLISH_COST_POINTS} نقطة)`, asyn
 
   state.step = 'publishing';
   try {
-    await renderWizard(ctx, userId, { footer: WIZ[userLang[userId] || 'ar'].publishing });
+    await renderWizard(ctx, userId, { footer: WIZ['ar'].publishing });
 
     let mediaUrl = `tg:${state.data.media_file_id}`;
     try {
@@ -863,10 +783,8 @@ bot.hears(`🪙 النشر مجاناً (${PUBLISH_COST_POINTS} نقطة)`, asyn
 
     const isVideo = state.data.media_type === 'video';
 
-    // خصم النقاط من رصيد المستخدم
     await supabase.from('users').update({ points: currentPoints - PUBLISH_COST_POINTS }).eq('id', userId);
 
-    // نشر العقار مباشرة في جدول العقارات
     await supabase.from('test_messages').insert([{
       property_type: state.data.property_type,
       state_name: state.data.state_name,
@@ -916,7 +834,6 @@ bot.on('text', async (ctx) => {
   renderWizard(ctx, userId);
 });
 
-// 📸 استلام صورة العقار أو وصل الدفع
 bot.on('photo', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
@@ -939,7 +856,7 @@ bot.on('photo', async (ctx) => {
     state.step = 'publishing';
 
     try {
-      await renderWizard(ctx, userId, { footer: WIZ[userLang[userId] || 'ar'].publishing });
+      await renderWizard(ctx, userId, { footer: WIZ['ar'].publishing });
 
       let mediaUrl = `tg:${state.data.media_file_id}`;
       try {
@@ -1010,7 +927,6 @@ bot.on('photo', async (ctx) => {
   }
 });
 
-// 🎥 استلام فيديو العقار ثم الانتقال لخطوة اختيار الدفع
 bot.on('video', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
@@ -1029,7 +945,6 @@ bot.on('video', async (ctx) => {
   }
 });
 
-// 🛠️ معالجة قرار الأدمن عبر رقم الطلب الفريد (requestId)
 const handleAdminAction = async (ctx, action) => {
   const requestId = Number(ctx.match[1]);
   await ctx.answerCbQuery();
@@ -1046,7 +961,6 @@ const handleAdminAction = async (ctx, action) => {
     }
 
     const targetUserId = pendingItem.user_id;
-    const lang = userLang[targetUserId] || 'ar';
 
     if (action === 'approve') {
       const { error: publishError } = await supabase.from('test_messages').insert([{
@@ -1066,12 +980,12 @@ const handleAdminAction = async (ctx, action) => {
 
       await ctx.telegram.sendMessage(
         targetUserId,
-        STRINGS[lang].successPublish(pendingItem.property_type, pendingItem.state_name, requestId),
+        `🎉 <b>تم قبول إعلانك رقم (#${requestId}) ونشره بنجاح في المنصة!</b>`,
         { parse_mode: 'HTML' }
       ).catch(() => {});
 
       await ctx.editMessageCaption(
-        `✅ <b>تم قبول الطلب (#${requestId}) ونشره بنجاح!</b>\n👤 المستخدم: <code>${targetUserId}</code> (${pendingItem.property_type} - ${pendingItem.state_name})`,
+        `✅ <b>تم قبول الطلب (#${requestId}) ونشره بنجاح!</b>\n👤 المستخدم: <code>${targetUserId}</code>`,
         { parse_mode: 'HTML' }
       );
     } else {
@@ -1079,12 +993,12 @@ const handleAdminAction = async (ctx, action) => {
 
       await ctx.telegram.sendMessage(
         targetUserId,
-        STRINGS[lang].rejectPublish(pendingItem.property_type, pendingItem.state_name, requestId),
+        `❌ <b>عذراً، تم رفض وصل الدفع الخاص بطلبك رقم (#${requestId}).</b>`,
         { parse_mode: 'HTML' }
       ).catch(() => {});
 
       await ctx.editMessageCaption(
-        `❌ <b>تم رفض الطلب (#${requestId}) وحذفه.</b>\n👤 المستخدم: <code>${targetUserId}</code> (${pendingItem.property_type} - ${pendingItem.state_name})`,
+        `❌ <b>تم رفض الطلب (#${requestId}) وحذفه.</b>\n👤 المستخدم: <code>${targetUserId}</code>`,
         { parse_mode: 'HTML' }
       );
     }
@@ -1104,7 +1018,7 @@ if (WEBHOOK_DOMAIN) {
     if (req.body && req.body.update_id) bot.handleUpdate(req.body);
   });
   bot.telegram.setWebhook(`${WEBHOOK_DOMAIN}/bot${BOT_TOKEN}`);
-  app.get('/', (req, res) => res.send('Aqar Algeria Complete Monetized System is online 🚀'));
+  app.get('/', (req, res) => res.send('Aqar Algeria Monetag System is online 🚀'));
   app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
 } else {
   bot.launch();
