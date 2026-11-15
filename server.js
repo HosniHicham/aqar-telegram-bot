@@ -47,7 +47,7 @@ const STRINGS = {
     step4Phone: (price) => `✅ السعر: <b>${price}</b>\n\n📞 <b>الخطوة 4:</b> أدخل <b>رقم الهاتف للتواصل</b>:`,
     step5Desc: (phone) => `✅ رقم الهاتف: <b>${phone}</b>\n\n📝 <b>الخطوة 5:</b> أدخل <b>الوصف التفصيلي</b> للعقار:`,
     step6Media: '✅ تم تسجيل كافة البيانات!\n\n📸 <b>الخطوة الأخيرة:</b> أرسل الآن <b>صورة أو فيديو العقار</b> لإتمام النشر.',
-    paymentPrompt: '💳 <b>رسوم نشر أو تمييز الإعلان:</b>\n\nيرجى تحويل مبلغ <b>500 دج</b> عبر بريدي موب أو CCP:\n📌 <b>رقم الحساب (RIP/CCP):</b> <code>0023456789 رقم الحساب هنا</code>\n\n📸 <b>بعد التحويل، أرسل هنا صورة وصل الدفع (Reçu) لمراجعته من طرف الإدارة:</b>',
+    paymentPrompt: '💳 <b>رسوم نشر أو تمييز الإعلان:</b>\n\nيرجى تحويل مبلغ <b>500 دج</b> عبر بريدي موب أو CCP:\n📌 <b>رقم الحساب (RIP):</b>\n<code>00234567890123456789</code>\n\n📸 <b>بعد التحويل، أرسل هنا صورة وصل الدفع (Reçu) لمراجعته من طرف الإدارة:</b>',
     paymentPending: '⏳ <b>تم استلام وصل الدفع بنجاح!</b>\n\nالإعلان قيد المراجعة من طرف الإدارة وسيتم نشره فور تأكيد التحويل.',
     successPublish: '🎉 <b>تم قبول إعلانك ونشره بنجاح في المنصة!</b>',
     rejectPublish: '❌ <b>عذراً، تم رفض وصل الدفع من طرف الإدارة. يرجى التأكد من الوصل وإعادة المحاولة.</b>',
@@ -140,6 +140,7 @@ function getAuthKeyboard(userId) {
   ]).resize().oneTime();
 }
 
+// 🗄️ التحقق من جدول المستخدمين الجديد (users)
 async function isUserVerified(telegramId) {
   try {
     const { data } = await supabase.from('users').select('*').eq('id', telegramId).limit(1);
@@ -340,6 +341,7 @@ bot.hears(['❌ إلغاء العملية والعودة', '❌ Annuler et quitt
   });
 });
 
+// 📱 تسجيل المستخدم في جدول users الجديد عند ضغط زر مشاركة الهاتف
 bot.on('contact', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   await ctx.sendChatAction('typing');
@@ -350,12 +352,22 @@ bot.on('contact', async (ctx) => {
   const lang = userLang[userId] || 'ar';
 
   try {
-    await supabase.from('users').insert([{ id: userId, first_name: firstName, phone_number: phoneNumber }]);
+    const { error: insertError } = await supabase.from('users').insert([
+      {
+        id: userId,
+        first_name: firstName,
+        phone_number: phoneNumber
+      }
+    ]);
+
+    if (insertError) throw insertError;
+
     ctx.reply(lang === 'ar' ? '🎉 <b>تم توثيق حسابك بنجاح!</b>' : '🎉 <b>Compte vérifié !</b>', {
       parse_mode: 'HTML',
       ...getMainMenuKeyboard(userId)
     });
   } catch (err) {
+    console.error('User verification insert error:', err);
     ctx.reply(t(userId, 'errorMsg'));
   }
 });
@@ -540,7 +552,7 @@ bot.hears(['🔙 رجوع للعقار', '🔙 Retour au bien'], async (ctx) => 
   const session = browsingSession[userId];
   if (session) {
     session.selectingPage = false;
-    await renderPropertyPage(ctx, userId, session.page);
+    renderPropertyPage(ctx, userId, session.page);
   }
 });
 
@@ -549,7 +561,7 @@ bot.hears(['⬅️ السابق', '⬅️ Précédent'], async (ctx) => {
   const userId = ctx.from.id;
   const session = browsingSession[userId];
   if (session && session.page > 0) {
-    await renderPropertyPage(ctx, userId, session.page - 1);
+    renderPropertyPage(ctx, userId, session.page - 1);
   }
 });
 
@@ -558,7 +570,7 @@ bot.hears(['التالي ➡️', 'Suivant ➡️'], async (ctx) => {
   const userId = ctx.from.id;
   const session = browsingSession[userId];
   if (session) {
-    await renderPropertyPage(ctx, userId, session.page + 1);
+    renderPropertyPage(ctx, userId, session.page + 1);
   }
 });
 
@@ -576,31 +588,25 @@ bot.action('set_lang_ar', async (ctx) => {
   await ctx.answerCbQuery();
   userLang[ctx.from.id] = 'ar';
   await ctx.deleteMessage().catch(() => {});
-  await ctx.reply(t(ctx.from.id, 'langChanged'), getMainMenuKeyboard(ctx.from.id));
+  ctx.reply(t(ctx.from.id, 'langChanged'), getMainMenuKeyboard(ctx.from.id));
 });
 
 bot.action('set_lang_fr', async (ctx) => {
   await ctx.answerCbQuery();
   userLang[ctx.from.id] = 'fr';
   await ctx.deleteMessage().catch(() => {});
-  await ctx.reply(t(ctx.from.id, 'langChanged'), getMainMenuKeyboard(ctx.from.id));
+  ctx.reply(t(ctx.from.id, 'langChanged'), getMainMenuKeyboard(ctx.from.id));
 });
 
 bot.hears(['📞 الدعم والإدارة', '📞 Support & Contact'], async (ctx) => {
   await safeDeleteUserMessage(ctx);
-  await ctx.reply(t(ctx.from.id, 'supportText'), {
-    parse_mode: 'HTML',
-    ...getMainMenuKeyboard(ctx.from.id)
-  });
+  ctx.reply(t(ctx.from.id, 'supportText'), { parse_mode: 'HTML', ...getMainMenuKeyboard(ctx.from.id) });
 });
 
 bot.hears(['ℹ️ عن المنصة', 'ℹ️ À propos'], async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
-  await ctx.reply(t(userId, 'aboutText'), {
-    parse_mode: 'HTML',
-    ...getMainMenuKeyboard(userId)
-  });
+  ctx.reply(t(userId, 'aboutText'), { parse_mode: 'HTML', ...getMainMenuKeyboard(userId) });
 });
 
 bot.hears(['➕ إضافة عقار جديد', '➕ Ajouter un bien'], async (ctx) => {
@@ -742,7 +748,6 @@ const handleAdminAction = async (ctx, action) => {
   if (action === 'approve') {
     const propData = global.pendingProperties && global.pendingProperties[targetUserId];
     if (propData) {
-      // في حال كان الفيديو مرفوعاً كـ tg: نضعه في video_url
       if (propData.image_url && propData.image_url.startsWith('tg:') && propData.media_type === 'video') {
         propData.video_url = propData.image_url;
         propData.image_url = 'EMPTY';
@@ -771,7 +776,7 @@ if (WEBHOOK_DOMAIN) {
     if (req.body && req.body.update_id) bot.handleUpdate(req.body);
   });
   bot.telegram.setWebhook(`${WEBHOOK_DOMAIN}/bot${BOT_TOKEN}`);
-  app.get('/', (req, res) => res.send('Aqar Algeria Payment System is online 🚀'));
+  app.get('/', (req, res) => res.send('Aqar Algeria Complete System is online 🚀'));
   app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
 } else {
   bot.launch();
