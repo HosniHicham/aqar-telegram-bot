@@ -139,12 +139,10 @@ async function getUniqueStatesList() {
 }
 
 // =========================================================================
-// 🎬 صفحة الويب المصغرة باستخدام الرابط المباشر (Direct Link) لـ Monetag
+// 🎬 صفحة الويب المصغرة مع رسالة تنبيه صارمة وإخفاء واجهة البوت أثناء الإعلان
 // =========================================================================
 app.get('/watch-ad', (req, res) => {
   const userId = req.query.uid || '';
-  const directLink = 'https://uplcm.com/4/12268547'; //[span_1](start_span)[span_1](end_span)
-
   res.send(`<!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
@@ -152,6 +150,10 @@ app.get('/watch-ad', (req, res) => {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>مشاهدة إعلان وربح نقاط</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  
+  <!-- سكربت إعلانات Monetag SDK الحقيقي -->
+  <script src='//libtl.com/sdk.js' data-zone='12268522' data-sdk='show_12268522'></script>
+
   <style>
     body {
       background: #0F172A; color: #F8FAFC; font-family: system-ui, -apple-system, sans-serif;
@@ -162,57 +164,62 @@ app.get('/watch-ad', (req, res) => {
       background: #1E293B; border: 1px solid #334155; border-radius: 16px;
       padding: 24px; max-width: 400px; width: 100%; box-shadow: 0 10px 25px rgba(0,0,0,0.4);
     }
-    .timer { font-size: 32px; font-weight: 800; color: #38BDF8; margin: 15px 0; }
-    .btn {
+    .alert-box {
+      background: #7F1D1D; color: #FCA5A5; border: 1px solid #991B1B;
+      padding: 12px; border-radius: 8px; font-size: 13px; font-weight: bold;
+      margin-bottom: 15px; display: none; line-height: 1.5;
+    }
+    button {
       background: #D4AF37; color: #0F172A; border: none; padding: 14px 24px;
       border-radius: 10px; font-size: 16px; font-weight: bold; width: 100%;
-      cursor: pointer; text-decoration: none; display: inline-block; margin-top: 10px;
+      cursor: pointer; margin-top: 15px;
     }
-    .btn-claim { background: #0D9488; color: white; display: none; }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
   </style>
 </head>
 <body>
   <div class="card">
     <h2>🎁 ربح نقاط عقار الجزائر</h2>
-    <p style="color:#94A3B8; font-size:14px;">1️⃣ اضغط على زر فتح الإعلان أدناه وتصفحه لعدة ثوانٍ.<br>2️⃣ ثم ارجع هنا لاستلام مكافأتك (${AD_REWARD_POINTS} نقطة).</p>
+    <p style="color:#94A3B8; font-size:14px;">اضغط على الزر أدناه لبدء مشاهدة الإعلان وربح +${AD_REWARD_POINTS} نقطة.</p>
     
-    <a href="${directLink}" target="_blank" class="btn" onclick="startTimer()">🌐 اضغط هنا لفتح الإعلان</a>
+    <!-- رسالة التحذير والتنبيه الصارمة -->
+    <div id="alertBox" class="alert-box">
+      ⚠️ <b>تنبيه هام جداً:</b><br>يرجى الانتظار وعدم إغلاق الصفحة حتى ينتهي الإعلان بالكامل لكي يتم احتساب نقاطك تلقائياً!
+    </div>
 
-    <div class="timer" id="timerBox" style="display:none;">15</div>
-
-    <button id="claimBtn" class="btn btn-claim" onclick="claimReward()">✅ تأكيد واستلام ${AD_REWARD_POINTS} نقطة</button>
+    <button id="adBtn" onclick="triggerAd()">▶️ عرض الإعلان الآن</button>
   </div>
 
   <script>
     const tg = window.Telegram.WebApp;
     tg.expand();
-    
-    let timerStarted = false;
+    const btnEl = document.getElementById('adBtn');
+    const alertBox = document.getElementById('alertBox');
 
-    function startTimer() {
-      if (timerStarted) return;
-      timerStarted = true;
-      
-      document.getElementById('timerBox').style.display = 'block';
-      let seconds = 15;
-      const timerEl = document.getElementById('timerBox');
-      
-      const interval = setInterval(() => {
-        seconds--;
-        timerEl.textContent = seconds;
-        if (seconds <= 0) {
-          clearInterval(interval);
-          timerEl.style.display = 'none';
-          document.getElementById('claimBtn').style.display = 'block';
-        }
-      }, 1000);
+    function triggerAd() {
+      btnEl.disabled = true;
+      btnEl.textContent = '⏳ جاري عرض الإعلان... يرجى الانتظار';
+      alertBox.style.display = 'block'; // إظهار رسالة التنبيه للمستخدم
+
+      if (typeof show_12268522 === 'function') {
+        show_12268522().then(() => {
+          // المشاهدة تمت بنجاح
+          claimReward();
+        }).catch((e) => {
+          alert('تعذر عرض الإعلان حالياً، حاول مجدداً.');
+          btnEl.disabled = false;
+          btnEl.textContent = '▶️ عرض الإعلان الآن';
+          alertBox.style.display = 'none';
+        });
+      } else {
+        // احتياطي في حال تأخر تحميل السكربت
+        setTimeout(() => {
+          claimReward();
+        }, 4000);
+      }
     }
 
     async function claimReward() {
-      const btn = document.getElementById('claimBtn');
-      btn.disabled = true;
-      btn.textContent = '⏳ جاري إضافة النقاط...';
-
       try {
         const res = await fetch('/api/claim-ad-reward', {
           method: 'POST',
@@ -222,14 +229,18 @@ app.get('/watch-ad', (req, res) => {
         const data = await res.json();
         if (data.ok) {
           alert('🎉 مبروك! تمت إضافة النقاط بنجاح.');
-          tg.close();
+          tg.close(); // إغلاق تطبيق الويب المصغر والعودة التلقائية للبوت
         } else {
           alert('حدث خطأ، حاول مجدداً');
-          btn.disabled = false;
+          btnEl.disabled = false;
+          btnEl.textContent = '▶️ عرض الإعلان الآن';
+          alertBox.style.display = 'none';
         }
       } catch (e) {
         alert('خطأ في الاتصال بالسيرفر');
-        btn.disabled = false;
+        btnEl.disabled = false;
+        btnEl.textContent = '▶️ عرض الإعلان الآن';
+        alertBox.style.display = 'none';
       }
     }
   </script>
@@ -391,14 +402,14 @@ bot.hears('🎁 رصيدي وجمع النقاط', async (ctx) => {
     `🪙 <b>رصيدك الحالي:</b> <b>${points} نقطة</b>\n` +
     `📌 <b>تكلفة نشر عقار مجاناً:</b> ${PUBLISH_COST_POINTS} نقطة\n\n` +
     `🎬 <b>الطريقة 1: مشاهدة إعلان (+${AD_REWARD_POINTS} نقطة)</b>\n` +
-    `اضغط على الزر أدناه لمشاهدة إعلان Monetag وربح النقاط فوراً.\n\n` +
+    `اضغط على الزر أدناه لمشاهدة إعلان الفيديو وربح النقاط فوراً.\n\n` +
     `👥 <b>الطريقة 2: دعوة الأصدقاء (+50 نقطة لكل صديق)</b>\n` +
     `شارك رابطك الخاص:\n<code>${refLink}</code>`;
 
   const inlineButtons = [];
   if (WEBHOOK_DOMAIN) {
     inlineButtons.push([
-      Markup.button.webApp(`🎬 شاهد إعلان Monetag (+${AD_REWARD_POINTS} نقطة)`, `${WEBHOOK_DOMAIN}/watch-ad?uid=${userId}`)
+      Markup.button.webApp(`🎬 مشاهدة إعلان الفيديو (+${AD_REWARD_POINTS} نقطة)`, `${WEBHOOK_DOMAIN}/watch-ad?uid=${userId}`)
     ]);
   }
 
@@ -731,7 +742,7 @@ bot.hears('📞 الدعم والإدارة', async (ctx) => {
 bot.hears('ℹ️ عن المنصة', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
-  ctx.reply(t(userId, 'aboutText'), { parse_mode: 'HTML', ...getMainMenuKeyboard(userId) });
+  ctx.reply(t(userId, 'aboutText'), { parse_mode: 'HTML', ...getMainMenuKeyboard(ctx.from.id) });
 });
 
 bot.hears('➕ إضافة عقار جديد', async (ctx) => {
@@ -1022,7 +1033,7 @@ if (WEBHOOK_DOMAIN) {
     if (req.body && req.body.update_id) bot.handleUpdate(req.body);
   });
   bot.telegram.setWebhook(`${WEBHOOK_DOMAIN}/bot${BOT_TOKEN}`);
-  app.get('/', (req, res) => res.send('Aqar Algeria Monetag Direct Link System is online 🚀'));
+  app.get('/', (req, res) => res.send('Aqar Algeria Strict Ad System is online 🚀'));
   app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
 } else {
   bot.launch();
