@@ -47,7 +47,7 @@ const STRINGS = {
     step4Phone: (price) => `✅ السعر: <b>${price}</b>\n\n📞 <b>الخطوة 4:</b> أدخل <b>رقم الهاتف للتواصل</b>:`,
     step5Desc: (phone) => `✅ رقم الهاتف: <b>${phone}</b>\n\n📝 <b>الخطوة 5:</b> أدخل <b>الوصف التفصيلي</b> للعقار:`,
     step6Media: '✅ تم تسجيل كافة البيانات!\n\n📸 <b>الخطوة الأخيرة:</b> أرسل الآن <b>صورة أو فيديو العقار</b> لإتمام النشر.',
-    paymentPrompt: '💳 <b>رسوم نشر أو تمييز الإعلان:</b>\n\nيرجى تحويل مبلغ <b>500 دج</b> عبر بريدي موب أو CCP:\n📌 <b>رقم الحساب (RIP):</b>\n<code>00234567890123456789</code>\n\n📸 <b>بعد التحويل، أرسل هنا صورة وصل الدفع (Reçu) لمراجعته من طرف الإدارة:</b>',
+    paymentPrompt: '💳 <b>رسوم نشر أو تمييز الإعلان:</b>\n\nيرجى تحويل مبلغ <b>500 دج</b> عبر بريدي موب أو CCP:\n📌 <b>رقم الحساب (RIP) (اضغط للنسخ 👇):</b>\n<code>00234567890123456789</code>\n\n📸 <b>بعد التحويل، أرسل هنا صورة وصل الدفع (Reçu) لمراجعته من طرف الإدارة:</b>',
     paymentPending: '⏳ <b>تم استلام وصل الدفع بنجاح!</b>\n\nالإعلان قيد المراجعة من طرف الإدارة وسيتم نشره فور تأكيد التحويل.',
     successPublish: '🎉 <b>تم قبول إعلانك ونشره بنجاح في المنصة!</b>',
     rejectPublish: '❌ <b>عذراً، تم رفض وصل الدفع من طرف الإدارة. يرجى التأكد من الوصل وإعادة المحاولة.</b>',
@@ -69,7 +69,7 @@ const STRINGS = {
     step4Phone: (price) => `✅ Prix : <b>${price}</b>\n\n📞 <b>Étape 4:</b> Téléphone :`,
     step5Desc: (phone) => `📞 Téléphone : <b>${phone}</b>\n\n📝 <b>Étape 5:</b> Description :`,
     step6Media: '✅ Données enregistrées !\n\n📸 <b>Dernière étape:</b> Envoyez une <b>photo ou vidéo</b>.',
-    paymentPrompt: '💳 <b>Paiement requis:</b>\nEnvoyez la photo du reçu CCP/BaridiMob.',
+    paymentPrompt: '💳 <b>Paiement requis (Cliquez pour copier 👇):</b>\n<code>00234567890123456789</code>\n\nEnvoyez la photo du reçu CCP/BaridiMob.',
     paymentPending: '⏳ <b>Reçu reçu !</b> En attente de validation.',
     successPublish: '🎉 <b>Annonce publiée avec succès !</b>',
     rejectPublish: '❌ <b>Reçu rejeté.</b>',
@@ -140,7 +140,6 @@ function getAuthKeyboard(userId) {
   ]).resize().oneTime();
 }
 
-// 🗄️ التحقق من جدول المستخدمين الجديد (users)
 async function isUserVerified(telegramId) {
   try {
     const { data } = await supabase.from('users').select('*').eq('id', telegramId).limit(1);
@@ -341,7 +340,6 @@ bot.hears(['❌ إلغاء العملية والعودة', '❌ Annuler et quitt
   });
 });
 
-// 📱 تسجيل المستخدم في جدول users الجديد عند ضغط زر مشاركة الهاتف
 bot.on('contact', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   await ctx.sendChatAction('typing');
