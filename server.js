@@ -283,8 +283,8 @@ const WIZ = {
     prompts: [
       'اختر <b>نوع العقار</b> من الأزرار أدناه:',
       'اختر <b>الولاية</b> من الأزرار أدناه:',
-      'أدخل <b>السعر المطلوب</b> عبر لوحة الأرقام أدناه:',
-      'أدخل <b>رقم الهاتف للتواصل</b> عبر لوحة الأرقام أدناه:',
+      'استخدم <b>لوحة الأرقام السفلية</b> لإدخال السعر المطلوب:',
+      'استخدم <b>لوحة الأرقام السفلية</b> لإدخال رقم الهاتف:',
       'أدخل <b>الوصف التفصيلي</b> للعقار:',
       'أرسل الآن <b>صورة أو فيديو العقار</b>:',
       'اختر طريقة الدفع أدناه:',
@@ -317,7 +317,7 @@ function buildWizardText(userId, state, opts = {}) {
 
   const desc = d.description ? (d.description.length > 200 ? d.description.slice(0, 200) + '…' : d.description) : null;
   
-  // عرض القيمة المؤقتة للأرقام أثناء كتابتها عبر النمباد التفاعلي
+  // عرض القيمة المؤقتة أثناء كتابتها عبر أزرار النمباد السفلية
   let currentPriceDisplay = d.price || (state.step === 'waiting_for_price' ? (state.tempInput || '0') : null);
   let currentPhoneDisplay = d.phone || (state.step === 'waiting_for_phone' ? (state.tempInput || '0') : null);
 
@@ -341,33 +341,17 @@ function buildWizardText(userId, state, opts = {}) {
   return `${head}\n${bar}\n\n${lines.join('\n')}` + (footer ? `\n\n${footer}` : '');
 }
 
-// لوحة مفاتيح الأرقام التفاعلية (Inline Numpad) للسعر والهاتف
-function getNumpadInlineKeyboard(currentVal = '') {
-  return Markup.inlineKeyboard([
-    [
-      Markup.button.callback('1', 'num_1'),
-      Markup.button.callback('2', 'num_2'),
-      Markup.button.callback('3', 'num_3')
-    ],
-    [
-      Markup.button.callback('4', 'num_4'),
-      Markup.button.callback('5', 'num_5'),
-      Markup.button.callback('6', 'num_6')
-    ],
-    [
-      Markup.button.callback('7', 'num_7'),
-      Markup.button.callback('8', 'num_8'),
-      Markup.button.callback('9', 'num_9')
-    ],
-    [
-      Markup.button.callback('0', 'num_0'),
-      Markup.button.callback('000 (ألف)', 'num_000'),
-      Markup.button.callback('⌫ مسح', 'num_back')
-    ],
-    [
-      Markup.button.callback('✅ تأكيد وإرسال', 'num_confirm')
-    ]
-  ]);
+// أزرار لوحة الأرقام السفلية الثابتة (Reply Keyboard Numpad)
+function getNumpadReplyKeyboard() {
+  return Markup.keyboard([
+    ['1', '2', '3'],
+    ['4', '5', '6'],
+    ['7', '8', '9'],
+    ['0', '000 (ألف)', '⌫ مسح'],
+    ['✅ تأكيد وإرسال الرقم'],
+    ['⬅️ رجوع', '🏠 القائمة الرئيسية'],
+    ['❌ إلغاء العملية والعودة']
+  ]).resize();
 }
 
 function getWizardKeyboard(userId, state) {
@@ -380,6 +364,9 @@ function getWizardKeyboard(userId, state) {
   } else if (state.step === 'waiting_for_state') {
     rows.push(...chunkButtons(POPULAR_WILAYAS.map(w => `📍 ${w}`), 4));
     rows.push([W.back, W.home]);
+  } else if (state.step === 'waiting_for_price' || state.step === 'waiting_for_phone') {
+    // إرجاع لوحة الأرقام السفلية الخاصة بإدخال السعر والهاتف
+    return getNumpadReplyKeyboard();
   } else if (state.step === 'waiting_for_payment_choice') {
     rows.push(['💳 الدفع عبر BaridiMob / CCP']);
     rows.push([`🪙 النشر مجاناً (${PUBLISH_COST_POINTS} نقطة)`]);
@@ -405,28 +392,9 @@ async function renderWizard(ctx, userId, opts = {}) {
     return;
   }
 
-  // إذا كنا في خطوة السعر أو الهاتف، نعرض الـ Inline Numpad تحت الرسالة
-  let extraMarkup = {};
-  if (state.step === 'waiting_for_price' || state.step === 'waiting_for_phone') {
-    extraMarkup = getNumpadInlineKeyboard(state.tempInput);
-  } else {
-    extraMarkup = opts.noKeyboard ? getMainMenuKeyboard(userId) : getWizardKeyboard(userId, state);
-  }
+  const keyboard = opts.noKeyboard ? getMainMenuKeyboard(userId) : getWizardKeyboard(userId, state);
+  const sent = await ctx.reply(text, { parse_mode: 'HTML', ...keyboard });
 
-  // إذا كانت الرسالة القديمة موجودة، نقوم بتحديثها لتفادي تراكم الرسائل
-  if (state.wizardMsgId) {
-    try {
-      await ctx.telegram.editMessageText(state.chatId, state.wizardMsgId, undefined, text, {
-        parse_mode: 'HTML',
-        ...extraMarkup
-      });
-      return;
-    } catch (e) {
-      // إذا فشل التحديث (مثلاً تغير نوع الكيبورد من عادي لـ Inline)، نرسل رسالة جديدة ونحذف القديمة
-    }
-  }
-
-  const sent = await ctx.reply(text, { parse_mode: 'HTML', ...extraMarkup });
   const oldId = state.wizardMsgId;
   state.wizardMsgId = sent.message_id;
   state.chatId = ctx.chat.id;
@@ -475,7 +443,7 @@ bot.hears(PROPERTY_TYPES, async (ctx, next) => {
   await safeDeleteUserMessage(ctx);
   state.data.property_type = ctx.message.text;
   state.step = 'waiting_for_state';
-  state.tempInput = ''; // تهيئة الإدخال المؤقت للأرقام
+  state.tempInput = '';
   await renderWizard(ctx, userId);
 });
 
@@ -851,11 +819,14 @@ bot.hears(`🪙 النشر مجاناً (${PUBLISH_COST_POINTS} نقطة)`, asyn
 
     await supabase.from('users').update({ points: currentPoints - PUBLISH_COST_POINTS }).eq('id', userId);
 
+    const cleanPrice = String(state.data.price || '0').replace(/[^\d.]/g, '') || '0';
+    const cleanPhone = String(state.data.phone || '').trim();
+
     await supabase.from('test_messages').insert([{
       property_type: state.data.property_type,
       state_name: state.data.state_name,
-      price: String(state.data.price),
-      phone: String(state.data.phone),
+      price: cleanPrice,
+      phone: cleanPhone,
       description: state.data.description,
       message: state.data.description,
       image_url: isVideo ? 'EMPTY' : mediaUrl,
@@ -875,45 +846,7 @@ bot.hears(`🪙 النشر مجاناً (${PUBLISH_COST_POINTS} نقطة)`, asyn
   }
 });
 
-// 🎛️ معالج أزرار لوحة الأرقام الافتراضية (Inline Numpad) للسعر ورقم الهاتف
-bot.action(/^num_(.+)$/, async (ctx) => {
-  const userId = ctx.from.id;
-  const state = userState[userId];
-  if (!state) return await ctx.answerCbQuery('انتهت الجلسة، ابدأ من جديد.');
-
-  const action = ctx.match[1];
-  state.tempInput = state.tempInput || '';
-
-  if (action >= '0' && action <= '9') {
-    state.tempInput += action;
-  } else if (action === '000') {
-    state.tempInput += '000';
-  } else if (action === 'back') {
-    state.tempInput = state.tempInput.slice(0, -1);
-  } else if (action === 'confirm') {
-    if (!state.tempInput || state.tempInput.length === 0) {
-      return await ctx.answerCbQuery('⚠️ يرجى إدخال الرقم أولاً!');
-    }
-
-    if (state.step === 'waiting_for_price') {
-      state.data.price = state.tempInput;
-      state.step = 'waiting_for_phone';
-      state.tempInput = ''; // إعادة تعيين لخطوة الهاتف
-    } else if (state.step === 'waiting_for_phone') {
-      if (state.tempInput.length < 9) {
-        return await ctx.answerCbQuery('⚠️ رقم الهاتف قصير جداً!');
-      }
-      state.data.phone = state.tempInput;
-      state.step = 'waiting_for_description';
-      state.tempInput = '';
-    }
-  }
-
-  await ctx.answerCbQuery().catch(() => {});
-  await renderWizard(ctx, userId);
-});
-
-// 📝 الوصف يكتبه المستخدم بالنص العادي
+// 🔢 معالجة ضغطات أزرار لوحة الأرقام السفلية (Reply Keyboard Numpad)
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const userText = ctx.message.text ? ctx.message.text.trim() : '';
@@ -923,7 +856,41 @@ bot.on('text', async (ctx) => {
   if (!state) return;
 
   await safeDeleteUserMessage(ctx);
+  state.tempInput = state.tempInput || '';
 
+  // إذا كنا في خطوة السعر أو الهاتف ونستخدم أزرار النمباد السفلية
+  if (state.step === 'waiting_for_price' || state.step === 'waiting_for_phone') {
+    if (/^[0-9]$/.test(userText)) {
+      state.tempInput += userText;
+      return renderWizard(ctx, userId);
+    } else if (userText.includes('000')) {
+      state.tempInput += '000';
+      return renderWizard(ctx, userId);
+    } else if (userText.includes('مسح')) {
+      state.tempInput = state.tempInput.slice(0, -1);
+      return renderWizard(ctx, userId);
+    } else if (userText.includes('تأكيد وإرسال الرقم')) {
+      if (!state.tempInput || state.tempInput.length === 0) {
+        return ctx.reply('⚠️ يرجى إدخال الرقم عبر الأزرار السفلية أولاً!');
+      }
+
+      if (state.step === 'waiting_for_price') {
+        state.data.price = state.tempInput;
+        state.step = 'waiting_for_phone';
+        state.tempInput = ''; // تصفير لتشغيل النمباد لرقم الهاتف
+      } else if (state.step === 'waiting_for_phone') {
+        if (state.tempInput.length < 9) {
+          return ctx.reply('⚠️ رقم الهاتف قصير جداً، يرجى إدخال رقم صحيح عبر الأزرار السفلية:');
+        }
+        state.data.phone = state.tempInput;
+        state.step = 'waiting_for_description';
+        state.tempInput = '';
+      }
+      return renderWizard(ctx, userId);
+    }
+  }
+
+  // إذا وصلنا لخطوة الوصف (تتم كتابتها طبيعياً بالكيبورد)
   if (state.step === 'waiting_for_description') {
     state.data.description = userText;
     state.step = 'waiting_for_media';
@@ -982,6 +949,8 @@ bot.on('photo', async (ctx) => {
       }
 
       const isVideo = state.data.media_type === 'video';
+      const cleanPrice = String(state.data.price || '0').replace(/[^\d.]/g, '') || '0';
+      const cleanPhone = String(state.data.phone || '').trim();
 
       const { data: insertedRow, error: insertError } = await supabase
         .from('pending_properties')
@@ -989,8 +958,8 @@ bot.on('photo', async (ctx) => {
           user_id: userId,
           property_type: state.data.property_type,
           state_name: state.data.state_name,
-          price: String(state.data.price),
-          phone: String(state.data.phone),
+          price: cleanPrice,
+          phone: cleanPhone,
           description: state.data.description,
           image_url: isVideo ? 'EMPTY' : mediaUrl,
           video_url: isVideo ? mediaUrl : 'EMPTY',
@@ -1009,8 +978,8 @@ bot.on('photo', async (ctx) => {
         `👤 <b>معرف المستخدم:</b> <code>${userId}</code>\n` +
         `🏠 <b>النوع:</b> ${state.data.property_type}\n` +
         `📍 <b>الولاية:</b> ${state.data.state_name}\n` +
-        `💰 <b>السعر:</b> ${state.data.price}\n` +
-        `📞 <b>الهاتف:</b> ${state.data.phone}\n` +
+        `💰 <b>السعر:</b> ${cleanPrice}\n` +
+        `📞 <b>الهاتف:</b> ${cleanPhone}\n` +
         `📝 <b>الوصف:</b> ${state.data.description}`;
 
       await ctx.telegram.sendPhoto(ADMIN_ID, receiptPhoto.file_id, {
