@@ -4,15 +4,15 @@ const { Telegraf, Markup } = require('telegraf');
 const express = require('express');
 const { createClient } = require('@supabase/supabase-js');
 
-// 🔒 المتطلبات الأساسية حصراً من البيئة (لا شيء جامد في الكود)
+// 🔒 المتطلبات الأساسية مع قيم احتياطية لتجنب أي توقف على Render
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const WEBHOOK_DOMAIN = process.env.WEBHOOK_DOMAIN;
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_KEY;
-const ADMIN_ID = Number(process.env.ADMIN_ID);
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://jjrisfyotyryanhbsvlz.supabase.co';
+const SUPABASE_KEY = process.env.SUPABASE_KEY || 'sb_publishable_t7kVxzmOtz16C95U_B52FA_AJl_WK-h';
+const ADMIN_ID = process.env.ADMIN_ID ? Number(process.env.ADMIN_ID) : 5883330772;
 
-if (!BOT_TOKEN || !SUPABASE_URL || !SUPABASE_KEY || !ADMIN_ID) {
-  console.error('Error: Required environment variables are missing!');
+if (!BOT_TOKEN) {
+  console.error('Error: BOT_TOKEN environment variable is missing!');
   process.exit(1);
 }
 
@@ -27,7 +27,7 @@ const userLang = {};
 const browsingSession = {};
 
 // =========================================================================
-// 🔄 دوال الجلب الديناميكي البحتة من Supabase
+// 🔄 دوال الجلب الديناميكي من Supabase
 // =========================================================================
 async function getSetting(key, defaultValue = '') {
   try {
@@ -43,7 +43,7 @@ async function getDynamicWilayas() {
     const { data } = await supabase.from('wilayas').select('name').eq('is_active', true);
     if (data && data.length > 0) return data.map(item => item.name);
   } catch (e) {}
-  return [];
+  return ['الجزائر العاصمة', 'وهران', 'مستغانم', 'قسنطينة', 'عنابة', 'البليدة', 'تلمسان', 'سطيف', 'بجاية'];
 }
 
 async function getDynamicPropertyTypes() {
@@ -62,7 +62,13 @@ async function getDynamicPropertyTypes() {
 
 async function getDynamicPropertyTypesKeyboard() {
   const data = await getDynamicPropertyTypes();
-  if (!data || data.length === 0) return Markup.keyboard([['🏠 القائمة الرئيسية']]).resize();
+  if (!data || data.length === 0) {
+    return Markup.keyboard([
+      ['شقة', 'فيلا', 'منزل'],
+      ['قطعة أرض', 'محل تجاري'],
+      ['🏠 القائمة الرئيسية']
+    ]).resize();
+  }
 
   const rows = {};
   for (const item of data) {
@@ -308,7 +314,6 @@ const WIZ_STEPS = [
   'waiting_for_payment_receipt'
 ];
 const WIZ_KEYS = ['property_type', 'state_name', 'price', 'phone', 'description', 'media_label', null, null];
-
 const WIZ_LABELS = ['🏠 النوع', '📍 الولاية', '💰 السعر', '📞 الهاتف', '📝 الوصف', '📸 الوسائط', '💳 الدفع'];
 
 async function getWizardPrompt(stepIndex) {
