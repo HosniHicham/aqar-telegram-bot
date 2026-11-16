@@ -145,28 +145,43 @@ function formatMoney(numStr) {
   return Number(clean).toLocaleString('en-US') + ' دج';
 }
 
-// 🎛️ تصميم حقل الإدخال الوهمي (Input Num) ولوحة الأرقام مطابقة تماماً للرسمة
+// 🎛️ تصميم حقل الإدخال الوهمي (Input Num) ولوحة الأرقام مطابقة 100% للرسمة والترتيب المطلوب
 function getSketchNumpad(displayValue, isPrice = true) {
   const displayText = displayValue ? (isPrice ? formatMoney(displayValue) : displayValue) : '0';
   
   return Markup.inlineKeyboard([
+    // 1. حقل الإدخال الوهمي بالأعلى (Input Num)
     [Markup.button.callback(`📥 [ ${displayText} ]`, 'noop_input')],
+    
+    // 2. الصف الأول (1, 2, 3)
     [
       Markup.button.callback('1', 'n_1'),
       Markup.button.callback('2', 'n_2'),
-      Markup.button.callback('3', 'n_3'),
+      Markup.button.callback('3', 'n_3')
+    ],
+    
+    // 3. الصف الثاني (4, 5, 6)
+    [
       Markup.button.callback('4', 'n_4'),
       Markup.button.callback('5', 'n_5'),
       Markup.button.callback('6', 'n_6')
     ],
+    
+    // 4. الصف الثالث (7, 8, 9)
     [
       Markup.button.callback('7', 'n_7'),
       Markup.button.callback('8', 'n_8'),
-      Markup.button.callback('9', 'n_9'),
+      Markup.button.callback('9', 'n_9')
+    ],
+    
+    // 5. صف الصفر والاختصارات والمسح
+    [
       Markup.button.callback('0', 'n_0'),
       isPrice ? Markup.button.callback('+مليون', 'n_million') : Markup.button.callback('⌫', 'n_back'),
       Markup.button.callback('🗑️ مسح', 'n_clear')
     ],
+    
+    // 6. زر التأكيد الكبير "OK" في الأسفل تماماً
     [
       Markup.button.callback('✅ [ OK ] تأكيد', 'n_confirm')
     ]
