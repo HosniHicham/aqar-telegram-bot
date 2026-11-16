@@ -10,8 +10,9 @@ const WEBHOOK_DOMAIN = process.env.WEBHOOK_DOMAIN;
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://jjrisfyotyryanhbsvlz.supabase.co';
 const SUPABASE_KEY = process.env.SUPABASE_KEY || 'sb_publishable_t7kVxzmOtz16C95U_B52FA_AJl_WK-h';
 
-// ⚙️ معرف الأدمن الخاص بك لاستقبال إشعارات الدفع والوصولات
-const ADMIN_ID = process.env.ADMIN_ID ? Number(process.env.ADMIN_ID) : 5883330772; 
+const ADMIN_ID = process.env.ADMIN_ID ? Number(process.env.ADMIN_ID) : 5883330772;
+const AD_REWARD_POINTS = 25; // عدد النقاط لكل مشاهدة إعلان
+const PUBLISH_COST_POINTS = 100; // تكلفة نشر إعلان واحد بالنقاط
 
 if (!BOT_TOKEN) {
   console.error('Error: BOT_TOKEN environment variable is missing!');
@@ -41,44 +42,23 @@ const STRINGS = {
     authPrompt: (name) => `أهلاً بك يا <b>${name}</b> في <b>منصة عقار الجزائر (Aqar)</b> 🏠\n\n⚠️ <b>تنبيه أمني:</b>\nللاستفادة من خدمات المنصة وتصفح العقارات، يرجى <b>تأكيد رقم هاتفك</b> أولاً بضغطة زر واحدة:`,
     browseTitle: '🔍 <b>اختر الولاية المطلوبة لعرض العقارات من الأزرار أسفل الشاشة:</b>',
     noProperties: '📭 عذراً، لا توجد أي عقارات مسجلة في المنصة حالياً.',
-    step1Type: '🏢 <b>معالج نشر عقار جديد (الخطوة 1 من 5)</b>\n\nاختر <b>نوع العقار</b> من الأزرار أسفل الشاشة:',
-    step2State: (type) => `✅ تم تحديد النوع: <b>${type}</b>\n\n📍 <b>الخطوة 2:</b> اختر الولاية من الأزرار أسفل الشاشة:`,
-    step3Price: (state) => `✅ الولاية: <b>${state}</b>\n\n💰 <b>الخطوة 3:</b> أرسل الآن <b>السعر المطلوب</b>:`,
-    step4Phone: (price) => `✅ السعر: <b>${price}</b>\n\n📞 <b>الخطوة 4:</b> أدخل <b>رقم الهاتف للتواصل</b>:`,
-    step5Desc: (phone) => `✅ رقم الهاتف: <b>${phone}</b>\n\n📝 <b>الخطوة 5:</b> أدخل <b>الوصف التفصيلي</b> للعقار:`,
-    step6Media: '✅ تم تسجيل كافة البيانات!\n\n📸 <b>الخطوة الأخيرة:</b> أرسل الآن <b>صورة أو فيديو العقار</b> لإتمام النشر.',
-    paymentPrompt: '💳 <b>رسوم نشر أو تمييز الإعلان:</b>\n\nيرجى تحويل مبلغ <b>500 دج</b> عبر بريدي موب أو CCP:\n📌 <b>رقم الحساب (RIP) (اضغط للنسخ 👇):</b>\n<code>00234567890123456789</code>\n\n📸 <b>بعد التحويل، أرسل هنا صورة وصل الدفع (Reçu) لمراجعته من طرف الإدارة:</b>',
-    paymentPending: '⏳ <b>تم استلام وصل الدفع بنجاح!</b>\n\nالإعلان قيد المراجعة من طرف الإدارة وسيتم نشره فور تأكيد التحويل.',
-    successPublish: '🎉 <b>تم قبول إعلانك ونشره بنجاح في المنصة!</b>',
-    rejectPublish: '❌ <b>عذراً، تم رفض وصل الدفع من طرف الإدارة. يرجى التأكد من الوصل وإعادة المحاولة.</b>',
+    paymentMethodPrompt: (points) =>
+      `💰 <b>اختر طريقة إتمام ونشر الإعلان:</b>\n\n` +
+      `1️⃣ <b>الدفع السريع (BaridiMob / CCP):</b> 500 دج (أولوية ومراجعة فورية).\n` +
+      `2️⃣ <b>النشر المجاني بالنقاط:</b> يتطلب <b>${PUBLISH_COST_POINTS} نقطة</b> (رصيدك الحالي: <b>${points} نقطة</b>).`,
+    ccpInstructions:
+      `💳 <b>الدفع عبر بريدي موب أو CCP:</b>\n\nيرجى تحويل مبلغ <b>500 دج</b> إلى الحساب التالي:\n📌 <b>رقم الحساب (RIP) (اضغط للنسخ 👇):</b>\n<code>00234567890123456789</code>\n\n📸 <b>بعد التحويل، أرسل هنا صورة وصل الدفع (Reçu):</b>`,
+    paymentPending: (reqId) => `⏳ <b>تم استلام وصل الدفع وحفظ طلبك برقم (#${reqId})!</b>\n\nالإعلان قيد المراجعة من طرف الإدارة وسيتم نشره فور تأكيد التحويل.`,
+    pointsPublishSuccess: `🎉 <b>تم خصم ${PUBLISH_COST_POINTS} نقطة ونشر إعلانك بنجاح في المنصة مجاناً!</b>`,
+    notEnoughPoints: (points) => `⚠️ <b>عذراً، رصيدك غير كافٍ!</b>\nرصيدك الحالي: <b>${points} نقطة</b> وتحتاج إلى <b>${PUBLISH_COST_POINTS} نقطة</b>.\n\nاضغط على زر <b>"🎁 رصيدي وجمع النقاط"</b> لمشاهدة إعلانات وربح نقاط مجانية!`,
+    successPublish: (type, state, reqId) => `🎉 <b>تم قبول إعلانك رقم (#${reqId}) ونشره بنجاح في المنصة!</b>\n🏠 <b>العقار:</b> ${type} - ${state}`,
+    rejectPublish: (type, state, reqId) => `❌ <b>عذراً، تم رفض وصل الدفع الخاص بطلبك رقم (#${reqId}) (${type} - ${state}).</b>\nيرجى التأكد من الوصل وإعادة المحاولة.`,
     supportText: '📞 <b>مركز الدعم التقني - منصة عقار الجزائر:</b>\n\nنحن في خدمتك دائماً.',
     aboutText: '🏛 <b>عن منصة عقار الجزائر (Aqar System):</b>\n\nنظام رقمي ذكي ومتطور لإدارة المعاملات العقارية.',
     langChanged: '✅ تم اعتماد اللغة العربية.',
     errorMsg: '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.',
     contactBtn: '📞 اتصال بالمالك',
     authBtnText: '📱 اضغط هنا لمشاركة رقم هاتفك والبدء'
-  },
-  fr: {
-    welcome: (name) => `Bienvenue <b>${name}</b> sur <b>Aqar Algérie</b> 🏠\n\nSystème numérique professionnel de gestion immobilière. Choisissez :`,
-    authPrompt: (name) => `Bienvenue <b>${name}</b> sur <b>Aqar Algérie</b> 🏠\n\n⚠️ <b>Sécurité:</b>\nVeuillez <b>confirmer votre numéro de téléphone</b> :`,
-    browseTitle: '🔍 <b>Choisissez la wilaya en bas de l\'écran :</b>',
-    noProperties: '📭 Désolé, aucun bien enregistré.',
-    step1Type: '🏢 <b>Assistant de publication</b>\n\nChoisissez le <b>type de bien</b> :',
-    step2State: (type) => `✅ Type : <b>${type}</b>\n\n📍 <b>Étape 2:</b> Wilaya :`,
-    step3Price: (state) => `✅ Wilaya : <b>${state}</b>\n\n💰 <b>Étape 3:</b> Prix :`,
-    step4Phone: (price) => `✅ Prix : <b>${price}</b>\n\n📞 <b>Étape 4:</b> Téléphone :`,
-    step5Desc: (phone) => `📞 Téléphone : <b>${phone}</b>\n\n📝 <b>Étape 5:</b> Description :`,
-    step6Media: '✅ Données enregistrées !\n\n📸 <b>Dernière étape:</b> Envoyez une <b>photo ou vidéo</b>.',
-    paymentPrompt: '💳 <b>Paiement requis (Cliquez pour copier 👇):</b>\n<code>00234567890123456789</code>\n\nEnvoyez la photo du reçu CCP/BaridiMob.',
-    paymentPending: '⏳ <b>Reçu reçu !</b> En attente de validation.',
-    successPublish: '🎉 <b>Annonce publiée avec succès !</b>',
-    rejectPublish: '❌ <b>Reçu rejeté.</b>',
-    supportText: '📞 <b>Support Technique:</b>',
-    aboutText: '🏛 <b>À propos:</b>',
-    langChanged: '✅ Langue changée.',
-    errorMsg: '⚠️ Erreur survenue.',
-    contactBtn: 'Contacter',
-    authBtnText: 'Partager mon numéro'
   }
 };
 
@@ -97,24 +77,20 @@ function chunkButtons(buttonsArray, chunkSize = 4) {
 }
 
 function getMainMenuKeyboard(userId) {
-  const lang = userLang[userId] || 'ar';
-  const isAr = lang === 'ar';
   return Markup.keyboard([
-    [isAr ? '🔍 تصفح العقارات المتاحة' : '🔍 Parcourir les biens', isAr ? '➕ إضافة عقار جديد' : '➕ Ajouter un bien'],
-    [isAr ? '📞 الدعم والإدارة' : '📞 Support & Contact', isAr ? '🌐 تغيير اللغة / Langue' : '🌐 Langue / اللغة'],
-    [isAr ? 'ℹ️ عن المنصة' : 'ℹ️ À propos'],
-    [isAr ? '🌐 تصفح الموقع الرسمي (البروزر)' : '🌐 Site Officiel (Navigateur)']
+    ['🔍 تصفح العقارات المتاحة', '➕ إضافة عقار جديد'],
+    ['🎁 رصيدي وجمع النقاط', '📞 الدعم والإدارة'],
+    ['🌐 تغيير اللغة / Langue', 'ℹ️ عن المنصة'],
+    ['🌐 تصفح الموقع الرسمي (البروزر)']
   ]).resize();
 }
 
 function getBrowsingKeyboard(userId, currentIndex, totalCount) {
-  const lang = userLang[userId] || 'ar';
-  const isAr = lang === 'ar';
-  const prevBtn = isAr ? '⬅️ السابق' : '⬅️ Précédent';
-  const nextBtn = isAr ? 'التالي ➡️' : 'Suivant ➡️';
+  const prevBtn = '⬅️ السابق';
+  const nextBtn = 'التالي ➡️';
   const counterText = `📄 ${currentIndex + 1} / ${totalCount}`;
-  const changeWilayaBtn = isAr ? '📍 تغيير الولاية' : '📍 Changer Wilaya';
-  const homeBtn = isAr ? '🏠 القائمة الرئيسية' : '🏠 Menu principal';
+  const changeWilayaBtn = '📍 تغيير الولاية';
+  const homeBtn = '🏠 القائمة الرئيسية';
 
   const navRow = [];
   if (currentIndex > 0) navRow.push(prevBtn);
@@ -124,29 +100,24 @@ function getBrowsingKeyboard(userId, currentIndex, totalCount) {
   return Markup.keyboard([navRow, [changeWilayaBtn, homeBtn]]).resize();
 }
 
-function getCancelKeyboard(userId) {
-  const lang = userLang[userId] || 'ar';
-  const isAr = lang === 'ar';
-  return Markup.keyboard([
-    [isAr ? '🏠 القائمة الرئيسية' : '🏠 Menu principal'],
-    [isAr ? '❌ إلغاء العملية والعودة' : '❌ Annuler et quitter']
-  ]).resize();
-}
-
 function getAuthKeyboard(userId) {
-  const lang = userLang[userId] || 'ar';
   return Markup.keyboard([
-    [Markup.button.contactRequest(STRINGS[lang]['authBtnText'])]
+    [Markup.button.contactRequest('📱 اضغط هنا لمشاركة رقم هاتفك والبدء')]
   ]).resize().oneTime();
 }
 
-async function isUserVerified(telegramId) {
+async function getUserRecord(telegramId) {
   try {
     const { data } = await supabase.from('users').select('*').eq('id', telegramId).limit(1);
-    return data && data.length > 0;
+    return data && data.length > 0 ? data[0] : null;
   } catch (err) {
-    return false;
+    return null;
   }
+}
+
+async function isUserVerified(telegramId) {
+  const user = await getUserRecord(telegramId);
+  return !!user;
 }
 
 async function safeDeleteUserMessage(ctx) {
@@ -167,14 +138,158 @@ async function getUniqueStatesList() {
   }
 }
 
-const WIZ_STEPS = ['waiting_for_type', 'waiting_for_state', 'waiting_for_price', 'waiting_for_phone', 'waiting_for_description', 'waiting_for_media', 'waiting_for_payment_receipt'];
-const WIZ_KEYS = ['property_type', 'state_name', 'price', 'phone', 'description', 'media_url', null];
+// =========================================================================
+// 🎬 صفحة الويب المصغرة مع رسالة تنبيه صارمة وإخفاء واجهة البوت أثناء الإعلان
+// =========================================================================
+app.get('/watch-ad', (req, res) => {
+  const userId = req.query.uid || '';
+  res.send(`<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>مشاهدة إعلان وربح نقاط</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  
+  <!-- سكربت إعلانات Monetag SDK الحقيقي -->
+  <script src='//libtl.com/sdk.js' data-zone='12268522' data-sdk='show_12268522'></script>
+
+  <style>
+    body {
+      background: #0F172A; color: #F8FAFC; font-family: system-ui, -apple-system, sans-serif;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      min-height: 100vh; margin: 0; padding: 20px; text-align: center; box-sizing: border-box;
+    }
+    .card {
+      background: #1E293B; border: 1px solid #334155; border-radius: 16px;
+      padding: 24px; max-width: 400px; width: 100%; box-shadow: 0 10px 25px rgba(0,0,0,0.4);
+    }
+    .alert-box {
+      background: #7F1D1D; color: #FCA5A5; border: 1px solid #991B1B;
+      padding: 12px; border-radius: 8px; font-size: 13px; font-weight: bold;
+      margin-bottom: 15px; display: none; line-height: 1.5;
+    }
+    button {
+      background: #D4AF37; color: #0F172A; border: none; padding: 14px 24px;
+      border-radius: 10px; font-size: 16px; font-weight: bold; width: 100%;
+      cursor: pointer; margin-top: 15px;
+    }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>🎁 ربح نقاط عقار الجزائر</h2>
+    <p style="color:#94A3B8; font-size:14px;">اضغط على الزر أدناه لبدء مشاهدة الإعلان وربح +${AD_REWARD_POINTS} نقطة.</p>
+    
+    <!-- رسالة التحذير والتنبيه الصارمة -->
+    <div id="alertBox" class="alert-box">
+      ⚠️ <b>تنبيه هام جداً:</b><br>يرجى الانتظار وعدم إغلاق الصفحة حتى ينتهي الإعلان بالكامل لكي يتم احتساب نقاطك تلقائياً!
+    </div>
+
+    <button id="adBtn" onclick="triggerAd()">▶️ عرض الإعلان الآن</button>
+  </div>
+
+  <script>
+    const tg = window.Telegram.WebApp;
+    tg.expand();
+    const btnEl = document.getElementById('adBtn');
+    const alertBox = document.getElementById('alertBox');
+
+    function triggerAd() {
+      btnEl.disabled = true;
+      btnEl.textContent = '⏳ جاري عرض الإعلان... يرجى الانتظار';
+      alertBox.style.display = 'block';
+
+      if (typeof show_12268522 === 'function') {
+        show_12268522().then(() => {
+          claimReward();
+        }).catch((e) => {
+          alert('تعذر عرض الإعلان حالياً، حاول مجدداً.');
+          btnEl.disabled = false;
+          btnEl.textContent = '▶️ عرض الإعلان الآن';
+          alertBox.style.display = 'none';
+        });
+      } else {
+        setTimeout(() => {
+          claimReward();
+        }, 4000);
+      }
+    }
+
+    async function claimReward() {
+      try {
+        const res = await fetch('/api/claim-ad-reward', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId: '${userId}' })
+        });
+        const data = await res.json();
+        if (data.ok) {
+          alert('🎉 مبروك! تمت إضافة النقاط بنجاح.');
+          tg.close();
+        } else {
+          alert('حدث خطأ، حاول مجدداً');
+          btnEl.disabled = false;
+          btnEl.textContent = '▶️ عرض الإعلان الآن';
+          alertBox.style.display = 'none';
+        }
+      } catch (e) {
+        alert('خطأ في الاتصال بالسيرفر');
+        btnEl.disabled = false;
+        btnEl.textContent = '▶️ عرض الإعلان الآن';
+        alertBox.style.display = 'none';
+      }
+    }
+  </script>
+</body>
+</html>`);
+});
+
+// 🎯 نقطة نهاية (API) لإضافة النقاط بعد إتمام مشاهدة الإعلان
+app.post('/api/claim-ad-reward', async (req, res) => {
+  const userId = Number(req.body.userId);
+  if (!userId) return res.status(400).json({ ok: false });
+
+  try {
+    const user = await getUserRecord(userId);
+    if (!user) return res.status(404).json({ ok: false });
+
+    const newPoints = (user.points || 0) + AD_REWARD_POINTS;
+    await supabase.from('users').update({ points: newPoints }).eq('id', userId);
+
+    await bot.telegram.sendMessage(
+      userId,
+      `🎉 <b>مبروك! تمت إضافة +${AD_REWARD_POINTS} نقطة إلى رصيدك بعد مشاهدة الإعلان.</b>\n🪙 <b>رصيدك الحالي:</b> ${newPoints} نقطة.`,
+      { parse_mode: 'HTML' }
+    ).catch(() => {});
+
+    res.json({ ok: true, points: newPoints });
+  } catch (err) {
+    res.status(500).json({ ok: false });
+  }
+});
+
+// =========================================================================
+// 🏢 معالج نشر العقار
+// =========================================================================
+const WIZ_STEPS = [
+  'waiting_for_type',
+  'waiting_for_state',
+  'waiting_for_price',
+  'waiting_for_phone',
+  'waiting_for_description',
+  'waiting_for_media',
+  'waiting_for_payment_choice',
+  'waiting_for_payment_receipt'
+];
+const WIZ_KEYS = ['property_type', 'state_name', 'price', 'phone', 'description', 'media_label', null, null];
 
 const WIZ = {
   ar: {
-    title: '🏢 <b>نشر عقار جديد وإتمام الدفع</b>',
+    title: '🏢 <b>نشر عقار جديد</b>',
     step: (n, total) => `الخطوة ${n} من ${total}`,
-    labels: ['🏠 النوع', '📍 الولاية', '💰 السعر', '📞 الهاتف', '📝 الوصف', '📸 الوسائط', '💳 وصل الدفع'],
+    labels: ['🏠 النوع', '📍 الولاية', '💰 السعر', '📞 الهاتف', '📝 الوصف', '📸 الوسائط', '💳 الدفع'],
     prompts: [
       'اختر <b>نوع العقار</b> من الأزرار أدناه:',
       'اختر <b>الولاية</b> من الأزرار أدناه:',
@@ -182,30 +297,13 @@ const WIZ = {
       'أدخل <b>رقم الهاتف للتواصل</b>:',
       'أدخل <b>الوصف التفصيلي</b> للعقار:',
       'أرسل الآن <b>صورة أو فيديو العقار</b>:',
+      'اختر طريقة الدفع أدناه:',
       'أرسل الآن <b>صورة وصل الدفع (BaridiMob / CCP)</b>:'
     ],
     back: '⬅️ رجوع',
     home: '🏠 القائمة الرئيسية',
     cancelBtn: '❌ إلغاء العملية والعودة',
-    publishing: '⏳ جاري رفع الإعلان ووصل الدفع للإدارة...'
-  },
-  fr: {
-    title: '🏢 <b>Nouvelle annonce & Paiement</b>',
-    step: (n, total) => `Étape ${n} sur ${total}`,
-    labels: ['🏠 Type', '📍 Wilaya', '💰 Prix', '📞 Téléphone', '📝 Description', '📸 Média', '💳 Reçu'],
-    prompts: [
-      'Choisissez le type :',
-      'Choisissez la wilaya :',
-      'Prix demandé :',
-      'Téléphone :',
-      'Description :',
-      'Photo ou vidéo :',
-      'Envoyez le reçu de paiement :'
-    ],
-    back: '⬅️ Retour',
-    home: '🏠 Menu principal',
-    cancelBtn: '❌ Annuler',
-    publishing: '⏳ Envoi...'
+    publishing: '⏳ جاري المعالجة والحفظ...'
   }
 };
 
@@ -214,31 +312,34 @@ function escapeHtml(str) {
 }
 
 function buildWizardText(userId, state, opts = {}) {
-  const W = WIZ[userLang[userId] || 'ar'];
-  const last = WIZ_STEPS.length - 1;
-  const active = state.step === 'publishing' ? last : Math.max(WIZ_STEPS.indexOf(state.step), 0);
-  const d = state.data;
+  const W = WIZ['ar'];
+  const totalSteps = 7;
+  let active = WIZ_STEPS.indexOf(state.step);
+  if (active >= 6 || state.step === 'publishing') active = 6;
+  if (active < 0) active = 0;
 
-  const head = opts.header || `${W.title}  •  ${W.step(active + 1, WIZ_STEPS.length)}`;
+  const d = state.data;
+  const head = opts.header || `${W.title}  •  ${W.step(active + 1, totalSteps)}`;
   if (opts.onlyHeader) return head;
 
-  const filled = opts.complete ? WIZ_STEPS.length : active + 1;
-  const bar = '▰'.repeat(filled) + '▱'.repeat(WIZ_STEPS.length - filled);
+  const filled = opts.complete ? totalSteps : active + 1;
+  const bar = '▰'.repeat(filled) + '▱'.repeat(totalSteps - filled);
 
   const desc = d.description ? (d.description.length > 200 ? d.description.slice(0, 200) + '…' : d.description) : null;
-  const values = [d.property_type, d.state_name, d.price, d.phone, desc, d.media_label || opts.mediaText || null, d.receipt_label || null];
+  const values = [d.property_type, d.state_name, d.price, d.phone, desc, d.media_label || null, d.payment_label || null];
 
   const lines = values.map((val, i) => {
     let mark = val ? '✅' : (i === active ? '👉' : '▫️');
     return `${mark} ${W.labels[i]}: ${val ? '<b>' + escapeHtml(val) + '</b>' : '…'}`;
   });
 
-  const footer = opts.footer !== undefined ? opts.footer : (active === 6 ? STRINGS[userLang[userId] || 'ar'].paymentPrompt : W.prompts[active]);
+  const stepPromptIdx = Math.max(WIZ_STEPS.indexOf(state.step), 0);
+  const footer = opts.footer !== undefined ? opts.footer : W.prompts[stepPromptIdx];
   return `${head}\n${bar}\n\n${lines.join('\n')}` + (footer ? `\n\n${footer}` : '');
 }
 
 function getWizardKeyboard(userId, state) {
-  const W = WIZ[userLang[userId] || 'ar'];
+  const W = WIZ['ar'];
   const rows = [];
 
   if (state.step === 'waiting_for_type') {
@@ -246,6 +347,10 @@ function getWizardKeyboard(userId, state) {
     rows.push([W.home]);
   } else if (state.step === 'waiting_for_state') {
     rows.push(...chunkButtons(POPULAR_WILAYAS.map(w => `📍 ${w}`), 4));
+    rows.push([W.back, W.home]);
+  } else if (state.step === 'waiting_for_payment_choice') {
+    rows.push(['💳 الدفع عبر BaridiMob / CCP']);
+    rows.push([`🪙 النشر مجاناً (${PUBLISH_COST_POINTS} نقطة)`]);
     rows.push([W.back, W.home]);
   } else {
     rows.push([W.back, W.home]);
@@ -280,6 +385,38 @@ async function renderWizard(ctx, userId, opts = {}) {
   }
 }
 
+// 🎁 قائمة رصيدي وجمع النقاط
+bot.hears('🎁 رصيدي وجمع النقاط', async (ctx) => {
+  await safeDeleteUserMessage(ctx);
+  const userId = ctx.from.id;
+  const user = await getUserRecord(userId);
+  const points = user ? (user.points || 0) : 0;
+
+  const botUsername = ctx.botInfo?.username || 'AqarDZ_bot';
+  const refLink = `https://t.me/${botUsername}?start=ref_${userId}`;
+
+  const msg =
+    `🎁 <b>محفظة النقاط والمكافآت:</b>\n\n` +
+    `🪙 <b>رصيدك الحالي:</b> <b>${points} نقطة</b>\n` +
+    `📌 <b>تكلفة نشر عقار مجاناً:</b> ${PUBLISH_COST_POINTS} نقطة\n\n` +
+    `🎬 <b>الطريقة 1: مشاهدة إعلان (+${AD_REWARD_POINTS} نقطة)</b>\n` +
+    `اضغط على الزر أدناه لمشاهدة إعلان الفيديو وربح النقاط فوراً.\n\n` +
+    `👥 <b>الطريقة 2: دعوة الأصدقاء (+50 نقطة لكل صديق)</b>\n` +
+    `شارك رابطك الخاص:\n<code>${refLink}</code>`;
+
+  const inlineButtons = [];
+  if (WEBHOOK_DOMAIN) {
+    inlineButtons.push([
+      Markup.button.webApp(`🎬 مشاهدة إعلان الفيديو (+${AD_REWARD_POINTS} نقطة)`, `${WEBHOOK_DOMAIN}/watch-ad?uid=${userId}`)
+    ]);
+  }
+
+  await ctx.reply(msg, {
+    parse_mode: 'HTML',
+    ...(inlineButtons.length ? Markup.inlineKeyboard(inlineButtons) : {})
+  });
+});
+
 bot.hears(PROPERTY_TYPES, async (ctx, next) => {
   const userId = ctx.from.id;
   const state = userState[userId];
@@ -291,7 +428,7 @@ bot.hears(PROPERTY_TYPES, async (ctx, next) => {
   await renderWizard(ctx, userId);
 });
 
-bot.hears(['⬅️ رجوع', '⬅️ Retour'], async (ctx) => {
+bot.hears('⬅️ رجوع', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   const state = userState[userId];
@@ -303,6 +440,13 @@ bot.hears(['⬅️ رجوع', '⬅️ Retour'], async (ctx) => {
   const prevKey = WIZ_KEYS[idx - 1];
   if (prevKey) delete state.data[prevKey];
   state.step = WIZ_STEPS[idx - 1];
+
+  if (state.step === 'waiting_for_payment_choice') {
+    const user = await getUserRecord(userId);
+    const pts = user ? (user.points || 0) : 0;
+    return renderWizard(ctx, userId, { footer: t(userId, 'paymentMethodPrompt', pts) });
+  }
+
   await renderWizard(ctx, userId);
 });
 
@@ -312,19 +456,29 @@ bot.start(async (ctx) => {
   const userName = ctx.from.first_name || 'مستخدمنا الكريم';
   const userId = ctx.from.id;
 
-  delete userState[userId];
+  const startPayload = ctx.startPayload || '';
+  if (startPayload.startsWith('ref_')) {
+    const referrerId = Number(startPayload.replace('ref_', ''));
+    if (referrerId && referrerId !== userId) {
+      userState[userId] = { pendingReferrer: referrerId };
+    }
+  } else {
+    delete userState[userId];
+  }
+
   delete browsingSession[userId];
-  userLang[userId] = userLang[userId] || 'ar';
+  userLang[userId] = 'ar';
 
   const verified = await isUserVerified(userId);
   if (verified) {
+    delete userState[userId];
     ctx.reply(t(userId, 'welcome', userName), { parse_mode: 'HTML', ...getMainMenuKeyboard(userId) });
   } else {
     ctx.reply(t(userId, 'authPrompt', userName), { parse_mode: 'HTML', ...getAuthKeyboard(userId) });
   }
 });
 
-bot.hears(['❌ إلغاء العملية والعودة', '❌ Annuler et quitter', '🏠 القائمة الرئيسية', '🏠 Menu principal'], async (ctx) => {
+bot.hears(['❌ إلغاء العملية والعودة', '🏠 القائمة الرئيسية'], async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   const oldWizard = userState[userId];
@@ -334,7 +488,7 @@ bot.hears(['❌ إلغاء العملية والعودة', '❌ Annuler et quitt
   delete userState[userId];
   delete browsingSession[userId];
 
-  ctx.reply(userLang[userId] === 'fr' ? '✅ Retour au menu principal :' : '✅ العودة إلى القائمة الرئيسية:', {
+  ctx.reply('✅ العودة إلى القائمة الرئيسية:', {
     parse_mode: 'HTML',
     ...getMainMenuKeyboard(userId)
   });
@@ -347,20 +501,35 @@ bot.on('contact', async (ctx) => {
   const phoneNumber = contact.phone_number;
   const firstName = ctx.from.first_name || '';
   const userId = ctx.from.id;
-  const lang = userLang[userId] || 'ar';
+  const referrerId = userState[userId]?.pendingReferrer || null;
 
   try {
     const { error: insertError } = await supabase.from('users').insert([
       {
         id: userId,
         first_name: firstName,
-        phone_number: phoneNumber
+        phone_number: phoneNumber,
+        points: 0,
+        referred_by: referrerId
       }
     ]);
-
     if (insertError) throw insertError;
 
-    ctx.reply(lang === 'ar' ? '🎉 <b>تم توثيق حسابك بنجاح!</b>' : '🎉 <b>Compte vérifié !</b>', {
+    if (referrerId) {
+      const refUser = await getUserRecord(referrerId);
+      if (refUser) {
+        const updatedPts = (refUser.points || 0) + 50;
+        await supabase.from('users').update({ points: updatedPts }).eq('id', referrerId);
+        await ctx.telegram.sendMessage(
+          referrerId,
+          `🎉 <b>مبروك! انضم صديق جديد عبر رابطك وحصلت على +50 نقطة!</b>\n🪙 رصيدك الحالي: ${updatedPts} نقطة.`,
+          { parse_mode: 'HTML' }
+        ).catch(() => {});
+      }
+    }
+
+    delete userState[userId];
+    ctx.reply('🎉 <b>تم توثيق حسابك بنجاح!</b>', {
       parse_mode: 'HTML',
       ...getMainMenuKeyboard(userId)
     });
@@ -370,7 +539,7 @@ bot.on('contact', async (ctx) => {
   }
 });
 
-bot.hears(['🌐 تصفح الموقع الرسمي (البروزر)', '🌐 Site Officiel (Navigateur)'], async (ctx) => {
+bot.hears('🌐 تصفح الموقع الرسمي (البروزر)', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   await ctx.reply(
     '🌐 <b>رابط منصة عقار الجزائر (ويب):</b>\n\nانقر على الزر أدناه لفتح الموقع وتصفحه في متصفح الهاتف:',
@@ -385,7 +554,7 @@ bot.hears(['🌐 تصفح الموقع الرسمي (البروزر)', '🌐 Sit
 
 bot.use(async (ctx, next) => {
   if (ctx.message && ctx.message.text && ctx.message.text.startsWith('/')) return next();
-  if (ctx.from && ctx.message && (ctx.message.text?.includes('تصفح') || ctx.message.text?.includes('إضافة') || ctx.message.text?.includes('Parcourir') || ctx.message.text?.includes('Ajouter'))) {
+  if (ctx.from && ctx.message && (ctx.message.text?.includes('تصفح') || ctx.message.text?.includes('إضافة') || ctx.message.text?.includes('رصيدي'))) {
     const verified = await isUserVerified(ctx.from.id);
     if (!verified) {
       return ctx.reply('⚠️ عذراً، يجب عليك تأكيد رقم هاتفك أولاً عبر الزر أدناه:', getAuthKeyboard(ctx.from.id));
@@ -411,13 +580,13 @@ async function showStatesMenu(ctx) {
   }
 }
 
-bot.hears(['🔍 تصفح العقارات المتاحة', '🔍 Parcourir les biens'], async (ctx) => {
+bot.hears('🔍 تصفح العقارات المتاحة', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   delete browsingSession[ctx.from.id];
   showStatesMenu(ctx);
 });
 
-bot.hears(['📍 تغيير الولاية', '📍 Changer Wilaya', 'تغيير الولاية'], async (ctx) => {
+bot.hears(['📍 تغيير الولاية', 'تغيير الولاية'], async (ctx) => {
   await safeDeleteUserMessage(ctx);
   delete browsingSession[ctx.from.id];
   showStatesMenu(ctx);
@@ -442,7 +611,7 @@ bot.hears(/^📍 (.+)/, async (ctx) => {
   }
 });
 
-bot.hears(['🌐 الكل', '🌐 Tous'], async (ctx) => {
+bot.hears('🌐 الكل', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   browsingSession[ctx.from.id] = { state: 'ALL', page: 0 };
   renderPropertyPage(ctx, ctx.from.id, 0);
@@ -493,16 +662,12 @@ bot.hears(/^📄 \d+ \/ \d+$/, async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   const session = browsingSession[userId];
-  const lang = userLang[userId] || 'ar';
-  const isAr = lang === 'ar';
-
   if (!session) return;
 
   let query = supabase.from('test_messages').select('*').order('id', { ascending: false });
   if (session.state !== 'ALL') query = query.eq('state_name', session.state);
   const { data } = await query;
   const totalCount = data ? data.length : 0;
-
   if (totalCount === 0) return;
 
   session.selectingPage = true;
@@ -517,17 +682,12 @@ bot.hears(/^📄 \d+ \/ \d+$/, async (ctx) => {
     }
   }
   if (row.length > 0) numberButtons.push(row);
-  numberButtons.push([isAr ? '🔙 رجوع للعقار' : '🔙 Retour au bien']);
+  numberButtons.push(['🔙 رجوع للعقار']);
 
-  await ctx.reply(
-    isAr
-      ? `🔢 <b>اختر رقم العقار للانتقال إليه مباشرة (من 1 إلى ${totalCount}):</b>`
-      : `🔢 <b>Choisissez le numéro du bien (1 à ${totalCount}) :</b>`,
-    {
-      parse_mode: 'HTML',
-      ...Markup.keyboard(numberButtons).resize()
-    }
-  );
+  await ctx.reply(`🔢 <b>اختر رقم العقار للانتقال إليه مباشرة (من 1 إلى ${totalCount}):</b>`, {
+    parse_mode: 'HTML',
+    ...Markup.keyboard(numberButtons).resize()
+  });
 });
 
 bot.hears(/^\d+$/, async (ctx, next) => {
@@ -544,7 +704,7 @@ bot.hears(/^\d+$/, async (ctx, next) => {
   return next();
 });
 
-bot.hears(['🔙 رجوع للعقار', '🔙 Retour au bien'], async (ctx) => {
+bot.hears('🔙 رجوع للعقار', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   const session = browsingSession[userId];
@@ -554,7 +714,7 @@ bot.hears(['🔙 رجوع للعقار', '🔙 Retour au bien'], async (ctx) => 
   }
 });
 
-bot.hears(['⬅️ السابق', '⬅️ Précédent'], async (ctx) => {
+bot.hears('⬅️ السابق', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   const session = browsingSession[userId];
@@ -563,7 +723,7 @@ bot.hears(['⬅️ السابق', '⬅️ Précédent'], async (ctx) => {
   }
 });
 
-bot.hears(['التالي ➡️', 'Suivant ➡️'], async (ctx) => {
+bot.hears('التالي ➡️', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   const session = browsingSession[userId];
@@ -572,42 +732,18 @@ bot.hears(['التالي ➡️', 'Suivant ➡️'], async (ctx) => {
   }
 });
 
-bot.hears(['🌐 تغيير اللغة / Langue', '🌐 Langue / اللغة'], async (ctx) => {
-  await safeDeleteUserMessage(ctx);
-  ctx.reply(`🌐 <b>اختر لغة النظام / Choisir la langue:</b>`, {
-    parse_mode: 'HTML',
-    ...Markup.inlineKeyboard([
-      [Markup.button.callback('🇩🇿 العربية', 'set_lang_ar'), Markup.button.callback('🇫🇷 Français', 'set_lang_fr')]
-    ])
-  });
-});
-
-bot.action('set_lang_ar', async (ctx) => {
-  await ctx.answerCbQuery();
-  userLang[ctx.from.id] = 'ar';
-  await ctx.deleteMessage().catch(() => {});
-  ctx.reply(t(ctx.from.id, 'langChanged'), getMainMenuKeyboard(ctx.from.id));
-});
-
-bot.action('set_lang_fr', async (ctx) => {
-  await ctx.answerCbQuery();
-  userLang[ctx.from.id] = 'fr';
-  await ctx.deleteMessage().catch(() => {});
-  ctx.reply(t(ctx.from.id, 'langChanged'), getMainMenuKeyboard(ctx.from.id));
-});
-
-bot.hears(['📞 الدعم والإدارة', '📞 Support & Contact'], async (ctx) => {
+bot.hears('📞 الدعم والإدارة', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   ctx.reply(t(ctx.from.id, 'supportText'), { parse_mode: 'HTML', ...getMainMenuKeyboard(ctx.from.id) });
 });
 
-bot.hears(['ℹ️ عن المنصة', 'ℹ️ À propos'], async (ctx) => {
+bot.hears('ℹ️ عن المنصة', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   ctx.reply(t(userId, 'aboutText'), { parse_mode: 'HTML', ...getMainMenuKeyboard(userId) });
 });
 
-bot.hears(['➕ إضافة عقار جديد', '➕ Ajouter un bien'], async (ctx) => {
+bot.hears('➕ إضافة عقار جديد', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   const old = userState[userId];
@@ -615,6 +751,75 @@ bot.hears(['➕ إضافة عقار جديد', '➕ Ajouter un bien'], async (ct
 
   userState[userId] = { step: 'waiting_for_type', data: {}, chatId: ctx.chat.id, wizardMsgId: null };
   renderWizard(ctx, userId);
+});
+
+bot.hears('💳 الدفع عبر BaridiMob / CCP', async (ctx) => {
+  await safeDeleteUserMessage(ctx);
+  const userId = ctx.from.id;
+  const state = userState[userId];
+  if (!state || state.step !== 'waiting_for_payment_choice') return;
+
+  state.data.payment_label = '💳 تحويل بريدي موب / CCP';
+  state.step = 'waiting_for_payment_receipt';
+  await renderWizard(ctx, userId, { footer: t(userId, 'ccpInstructions') });
+});
+
+bot.hears(`🪙 النشر مجاناً (${PUBLISH_COST_POINTS} نقطة)`, async (ctx) => {
+  await safeDeleteUserMessage(ctx);
+  const userId = ctx.from.id;
+  const state = userState[userId];
+  if (!state || state.step !== 'waiting_for_payment_choice') return;
+
+  const user = await getUserRecord(userId);
+  const currentPoints = user ? (user.points || 0) : 0;
+
+  if (currentPoints < PUBLISH_COST_POINTS) {
+    return ctx.reply(t(userId, 'notEnoughPoints', currentPoints), { parse_mode: 'HTML' });
+  }
+
+  state.step = 'publishing';
+  try {
+    await renderWizard(ctx, userId, { footer: WIZ['ar'].publishing });
+
+    let mediaUrl = `tg:${state.data.media_file_id}`;
+    try {
+      const fileLink = await ctx.telegram.getFileLink(state.data.media_file_id);
+      const res = await fetch(fileLink.href);
+      const buf = Buffer.from(await res.arrayBuffer());
+      const ext = state.data.media_type === 'video' ? 'mp4' : 'jpg';
+      const mime = state.data.media_type === 'video' ? 'video/mp4' : 'image/jpeg';
+      const fileName = `${Date.now()}_aqar.${ext}`;
+      await supabase.storage.from('test_media').upload(fileName, buf, { contentType: mime, upsert: true });
+      const { data: pubUrl } = supabase.storage.from('test_media').getPublicUrl(fileName);
+      mediaUrl = pubUrl.publicUrl;
+    } catch (e) {}
+
+    const isVideo = state.data.media_type === 'video';
+
+    await supabase.from('users').update({ points: currentPoints - PUBLISH_COST_POINTS }).eq('id', userId);
+
+    await supabase.from('test_messages').insert([{
+      property_type: state.data.property_type,
+      state_name: state.data.state_name,
+      price: String(state.data.price),
+      phone: String(state.data.phone),
+      description: state.data.description,
+      message: state.data.description,
+      image_url: isVideo ? 'EMPTY' : mediaUrl,
+      video_url: isVideo ? mediaUrl : 'EMPTY'
+    }]);
+
+    if (state.wizardMsgId) {
+      await ctx.telegram.deleteMessage(state.chatId, state.wizardMsgId).catch(() => {});
+    }
+
+    await ctx.reply(t(userId, 'pointsPublishSuccess'), { parse_mode: 'HTML', ...getMainMenuKeyboard(userId) });
+    delete userState[userId];
+  } catch (err) {
+    console.error('Points publish error:', err);
+    ctx.reply(t(userId, 'errorMsg'), getMainMenuKeyboard(userId));
+    delete userState[userId];
+  }
 });
 
 bot.on('text', async (ctx) => {
@@ -642,7 +847,6 @@ bot.on('text', async (ctx) => {
   renderWizard(ctx, userId);
 });
 
-// 📸 استلام صورة العقار ثم الانتقال لخطوة دفع الوصل
 bot.on('photo', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
@@ -654,32 +858,57 @@ bot.on('photo', async (ctx) => {
     state.data.media_type = 'photo';
     state.data.media_label = '🖼 تم إرفاق الصورة';
 
-    state.step = 'waiting_for_payment_receipt';
-    return renderWizard(ctx, userId);
+    state.step = 'waiting_for_payment_choice';
+    const user = await getUserRecord(userId);
+    const pts = user ? (user.points || 0) : 0;
+    return renderWizard(ctx, userId, { footer: t(userId, 'paymentMethodPrompt', pts) });
   }
 
-  // 💳 استلام وصل الدفع وإرساله للأدمن للمراجعة
   if (state && state.step === 'waiting_for_payment_receipt') {
     const receiptPhoto = ctx.message.photo[ctx.message.photo.length - 1];
     state.step = 'publishing';
 
     try {
-      await renderWizard(ctx, userId, { footer: WIZ[userLang[userId] || 'ar'].publishing });
+      await renderWizard(ctx, userId, { footer: WIZ['ar'].publishing });
 
       let mediaUrl = `tg:${state.data.media_file_id}`;
       try {
         const fileLink = await ctx.telegram.getFileLink(state.data.media_file_id);
         const res = await fetch(fileLink.href);
         const buf = Buffer.from(await res.arrayBuffer());
-        const fileName = `${Date.now()}_aqar.jpg`;
-        await supabase.storage.from('test_media').upload(fileName, buf, { contentType: 'image/jpeg', upsert: true });
+        const ext = state.data.media_type === 'video' ? 'mp4' : 'jpg';
+        const mime = state.data.media_type === 'video' ? 'video/mp4' : 'image/jpeg';
+        const fileName = `${Date.now()}_aqar.${ext}`;
+        await supabase.storage.from('test_media').upload(fileName, buf, { contentType: mime, upsert: true });
         const { data: pubUrl } = supabase.storage.from('test_media').getPublicUrl(fileName);
         mediaUrl = pubUrl.publicUrl;
       } catch (e) {}
 
-      const adminCaption = 
-        `🚨 <b>طلب إعلان عقاري جديد بانتظار المراجعة!</b>\n\n` +
-        `👤 <b>المعرف (ID):</b> <code>${userId}</code>\n` +
+      const isVideo = state.data.media_type === 'video';
+
+      const { data: insertedRow, error: insertError } = await supabase
+        .from('pending_properties')
+        .insert([{
+          user_id: userId,
+          property_type: state.data.property_type,
+          state_name: state.data.state_name,
+          price: String(state.data.price),
+          phone: String(state.data.phone),
+          description: state.data.description,
+          image_url: isVideo ? 'EMPTY' : mediaUrl,
+          video_url: isVideo ? mediaUrl : 'EMPTY',
+          receipt_file_id: receiptPhoto.file_id
+        }])
+        .select()
+        .single();
+
+      if (insertError) throw insertError;
+
+      const requestId = insertedRow.id;
+
+      const adminCaption =
+        `🚨 <b>طلب إعلان عقاري جديد (#${requestId})</b>\n\n` +
+        `👤 <b>معرف المستخدم:</b> <code>${userId}</code>\n` +
         `🏠 <b>النوع:</b> ${state.data.property_type}\n` +
         `📍 <b>الولاية:</b> ${state.data.state_name}\n` +
         `💰 <b>السعر:</b> ${state.data.price}\n` +
@@ -691,34 +920,26 @@ bot.on('photo', async (ctx) => {
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard([
           [
-            Markup.button.callback('✅ قبول ونشر', `approve_${userId}`),
-            Markup.button.callback('❌ رفض', `reject_${userId}`)
+            Markup.button.callback(`✅ قبول ونشر (#${requestId})`, `approve_${requestId}`),
+            Markup.button.callback(`❌ رفض (#${requestId})`, `reject_${requestId}`)
           ]
         ])
       });
 
-      global.pendingProperties = global.pendingProperties || {};
-      global.pendingProperties[userId] = {
-        property_type: state.data.property_type,
-        state_name: state.data.state_name,
-        price: String(state.data.price),
-        phone: String(state.data.phone),
-        description: state.data.description,
-        message: state.data.description,
-        image_url: mediaUrl,
-        video_url: 'EMPTY'
-      };
+      if (state.wizardMsgId) {
+        await ctx.telegram.deleteMessage(state.chatId, state.wizardMsgId).catch(() => {});
+      }
 
-      await ctx.reply(t(userId, 'paymentPending'), { parse_mode: 'HTML', ...getMainMenuKeyboard(userId) });
+      await ctx.reply(t(userId, 'paymentPending', requestId), { parse_mode: 'HTML', ...getMainMenuKeyboard(userId) });
       delete userState[userId];
     } catch (err) {
+      console.error('Receipt submit error:', err);
       ctx.reply(t(userId, 'errorMsg'), getMainMenuKeyboard(userId));
       delete userState[userId];
     }
   }
 });
 
-// 🎥 دعم الفيديو أيضاً في خطوة وسائط العقار
 bot.on('video', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
@@ -730,42 +951,78 @@ bot.on('video', async (ctx) => {
     state.data.media_type = 'video';
     state.data.media_label = '🎥 تم إرفاق الفيديو';
 
-    state.step = 'waiting_for_payment_receipt';
-    return renderWizard(ctx, userId);
+    state.step = 'waiting_for_payment_choice';
+    const user = await getUserRecord(userId);
+    const pts = user ? (user.points || 0) : 0;
+    return renderWizard(ctx, userId, { footer: t(userId, 'paymentMethodPrompt', pts) });
   }
 });
 
-// 🛠️ أزرار تفاعل الأدمن (قبول أو رفض الإعلان)
 const handleAdminAction = async (ctx, action) => {
-  const userIdStr = ctx.match[1];
-  const targetUserId = Number(userIdStr);
-  const lang = userLang[targetUserId] || 'ar';
-
+  const requestId = Number(ctx.match[1]);
   await ctx.answerCbQuery();
 
-  if (action === 'approve') {
-    const propData = global.pendingProperties && global.pendingProperties[targetUserId];
-    if (propData) {
-      if (propData.image_url && propData.image_url.startsWith('tg:') && propData.media_type === 'video') {
-        propData.video_url = propData.image_url;
-        propData.image_url = 'EMPTY';
-      }
-      const { error } = await supabase.from('test_messages').insert([propData]);
-      if (!error) {
-        await ctx.telegram.sendMessage(targetUserId, STRINGS[lang].successPublish, { parse_mode: 'HTML' });
-        delete global.pendingProperties[targetUserId];
-      }
+  try {
+    const { data: pendingItem, error: fetchError } = await supabase
+      .from('pending_properties')
+      .select('*')
+      .eq('id', requestId)
+      .single();
+
+    if (fetchError || !pendingItem) {
+      return ctx.editMessageCaption(`⚠️ <b>تمت معالجة الطلب (#${requestId}) مسبقاً أو لم يعد موجوداً.</b>`, { parse_mode: 'HTML' });
     }
-    await ctx.editMessageCaption(`✅ <b>تم قبول إعلان المستخدم (${targetUserId}) ونشره بنجاح.</b>`, { parse_mode: 'HTML' });
-  } else {
-    await ctx.telegram.sendMessage(targetUserId, STRINGS[lang].rejectPublish, { parse_mode: 'HTML' });
-    if (global.pendingProperties) delete global.pendingProperties[targetUserId];
-    await ctx.editMessageCaption(`❌ <b>تم رفض إعلان المستخدم (${targetUserId}).</b>`, { parse_mode: 'HTML' });
+
+    const targetUserId = pendingItem.user_id;
+
+    if (action === 'approve') {
+      const { error: publishError } = await supabase.from('test_messages').insert([{
+        property_type: pendingItem.property_type,
+        state_name: pendingItem.state_name,
+        price: pendingItem.price,
+        phone: pendingItem.phone,
+        description: pendingItem.description,
+        message: pendingItem.description,
+        image_url: pendingItem.image_url,
+        video_url: pendingItem.video_url
+      }]);
+
+      if (publishError) throw publishError;
+
+      await supabase.from('pending_properties').delete().eq('id', requestId);
+
+      await ctx.telegram.sendMessage(
+        targetUserId,
+        `🎉 <b>تم قبول إعلانك رقم (#${requestId}) ونشره بنجاح في المنصة!</b>`,
+        { parse_mode: 'HTML' }
+      ).catch(() => {});
+
+      await ctx.editMessageCaption(
+        `✅ <b>تم قبول الطلب (#${requestId}) ونشره بنجاح!</b>\n👤 المستخدم: <code>${targetUserId}</code>`,
+        { parse_mode: 'HTML' }
+      );
+    } else {
+      await supabase.from('pending_properties').delete().eq('id', requestId);
+
+      await ctx.telegram.sendMessage(
+        targetUserId,
+        `❌ <b>عذراً، تم رفض وصل الدفع الخاص بطلبك رقم (#${requestId}).</b>`,
+        { parse_mode: 'HTML' }
+      ).catch(() => {});
+
+      await ctx.editMessageCaption(
+        `❌ <b>تم رفض الطلب (#${requestId}) وحذفه.</b>\n👤 المستخدم: <code>${targetUserId}</code>`,
+        { parse_mode: 'HTML' }
+      );
+    }
+  } catch (err) {
+    console.error('Admin action error:', err);
+    await ctx.reply(`⚠️ حدث خطأ أثناء معالجة الطلب #${requestId}: ${err.message}`);
   }
 };
 
-bot.action(/^approve_(.+)$/, (ctx) => handleAdminAction(ctx, 'approve'));
-bot.action(/^reject_(.+)$/, (ctx) => handleAdminAction(ctx, 'reject'));
+bot.action(/^approve_(\d+)$/, (ctx) => handleAdminAction(ctx, 'approve'));
+bot.action(/^reject_(\d+)$/, (ctx) => handleAdminAction(ctx, 'reject'));
 
 const PORT = process.env.PORT || 3000;
 if (WEBHOOK_DOMAIN) {
