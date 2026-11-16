@@ -42,20 +42,13 @@ const STRINGS = {
     authPrompt: (name) => `أهلاً بك يا <b>${name}</b> في <b>منصة عقار الجزائر (Aqar)</b> 🏠\n\n⚠️ <b>تنبيه أمني:</b>\nللاستفادة من خدمات المنصة وتصفح العقارات، يرجى <b>تأكيد رقم هاتفك</b> أولاً بضغطة زر واحدة:`,
     browseTitle: '🔍 <b>اختر الولاية المطلوبة لعرض العقارات من الأزرار أسفل الشاشة:</b>',
     noProperties: '📭 عذراً، لا توجد أي عقارات مسجلة في المنصة حالياً.',
-    paymentMethodPrompt: (points) =>
-      `💰 <b>اختر طريقة إتمام ونشر الإعلان:</b>\n\n` +
-      `1️⃣ <b>الدفع السريع (BaridiMob / CCP):</b> 500 دج (أولوية ومراجعة فورية).\n` +
-      `2️⃣ <b>النشر المجاني بالنقاط:</b> يتطلب <b>${PUBLISH_COST_POINTS} نقطة</b> (رصيدك الحالي: <b>${points} نقطة</b>).`,
     ccpInstructions:
       `💳 <b>الدفع عبر بريدي موب أو CCP:</b>\n\nيرجى تحويل مبلغ <b>500 دج</b> إلى الحساب التالي:\n📌 <b>رقم الحساب (RIP) (اضغط للنسخ 👇):</b>\n<code>00234567890123456789</code>\n\n📸 <b>بعد التحويل، أرسل هنا صورة وصل الدفع (Reçu):</b>`,
     paymentPending: (reqId) => `⏳ <b>تم استلام وصل الدفع وحفظ طلبك برقم (#${reqId})!</b>\n\nالإعلان قيد المراجعة من طرف الإدارة وسيتم نشره فور تأكيد التحويل.`,
     pointsPublishSuccess: `🎉 <b>تم خصم ${PUBLISH_COST_POINTS} نقطة ونشر إعلانك بنجاح في المنصة مجاناً!</b>`,
     notEnoughPoints: (points) => `⚠️ <b>عذراً، رصيدك غير كافٍ!</b>\nرصيدك الحالي: <b>${points} نقطة</b> وتحتاج إلى <b>${PUBLISH_COST_POINTS} نقطة</b>.\n\nاضغط على زر <b>"🎁 رصيدي وجمع النقاط"</b> لمشاهدة إعلانات وربح نقاط مجانية!`,
-    successPublish: (type, state, reqId) => `🎉 <b>تم قبول إعلانك رقم (#${reqId}) ونشره بنجاح في المنصة!</b>\n🏠 <b>العقار:</b> ${type} - ${state}`,
-    rejectPublish: (type, state, reqId) => `❌ <b>عذراً، تم رفض وصل الدفع الخاص بطلبك رقم (#${reqId}) (${type} - ${state}).</b>\nيرجى التأكد من الوصل وإعادة المحاولة.`,
     supportText: '📞 <b>مركز الدعم التقني - منصة عقار الجزائر:</b>\n\nنحن في خدمتك دائماً.',
     aboutText: '🏛 <b>عن منصة عقار الجزائر (Aqar System):</b>\n\nنظام رقمي ذكي ومتطور لإدارة المعاملات العقارية.',
-    langChanged: '✅ تم اعتماد اللغة العربية.',
     errorMsg: '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.',
     contactBtn: '📞 اتصال بالمالك',
     authBtnText: '📱 اضغط هنا لمشاركة رقم هاتفك والبدء'
@@ -136,6 +129,45 @@ async function getUniqueStatesList() {
   } catch (e) {
     return [];
   }
+}
+
+function formatMoney(numStr) {
+  if (!numStr) return '0 دج';
+  const clean = numStr.replace(/\D/g, '');
+  if (!clean) return '0 دج';
+  return Number(clean).toLocaleString('en-US') + ' دج';
+}
+
+// 🎛️ تصميم حقل الإدخال الوهمي (Input Num) ولوحة الأرقام مطابقة 100% للرسمة والترتيب المطلوب
+function getSketchNumpad(displayValue, isPrice = true) {
+  const displayText = displayValue ? (isPrice ? formatMoney(displayValue) : displayValue) : '0';
+  
+  return Markup.inlineKeyboard([
+    [Markup.button.callback(`📥 [ ${displayText} ]`, 'noop_input')],
+    [
+      Markup.button.callback('1', 'n_1'),
+      Markup.button.callback('2', 'n_2'),
+      Markup.button.callback('3', 'n_3')
+    ],
+    [
+      Markup.button.callback('4', 'n_4'),
+      Markup.button.callback('5', 'n_5'),
+      Markup.button.callback('6', 'n_6')
+    ],
+    [
+      Markup.button.callback('7', 'n_7'),
+      Markup.button.callback('8', 'n_8'),
+      Markup.button.callback('9', 'n_9')
+    ],
+    [
+      Markup.button.callback('0', 'n_0'),
+      isPrice ? Markup.button.callback('+مليون', 'n_million') : Markup.button.callback('⌫', 'n_back'),
+      Markup.button.callback('🗑️ مسح', 'n_clear')
+    ],
+    [
+      Markup.button.callback('✅ [ OK ] تأكيد', 'n_confirm')
+    ]
+  ]);
 }
 
 // =========================================================================
@@ -283,8 +315,8 @@ const WIZ = {
     prompts: [
       'اختر <b>نوع العقار</b> من الأزرار أدناه:',
       'اختر <b>الولاية</b> من الأزرار أدناه:',
-      'اضغط على زر <b>⌨️ إدخال السعر والهاتف</b> بالأسفل لفتح نموذج الإدخال:',
-      'اضغط على زر <b>⌨️ إدخال السعر والهاتف</b> بالأسفل لفتح نموذج الإدخال:',
+      'استخدم لوحة الأرقام أدناه لتشكيل السعر، ثم اضغط <b>OK</b>:',
+      'استخدم لوحة الأرقام أدناه لإدخال رقم الهاتف، ثم اضغط <b>OK</b>:',
       'أدخل <b>الوصف التفصيلي</b> للعقار:',
       'أرسل الآن <b>صورة أو فيديو العقار</b>:',
       'اختر طريقة الدفع أدناه:',
@@ -316,7 +348,19 @@ function buildWizardText(userId, state, opts = {}) {
   const bar = '▰'.repeat(filled) + '▱'.repeat(totalSteps - filled);
 
   const desc = d.description ? (d.description.length > 200 ? d.description.slice(0, 200) + '…' : d.description) : null;
-  const values = [d.property_type, d.state_name, d.price, d.phone, desc, d.media_label || null, d.payment_label || null];
+  
+  let currentPriceDisplay = d.price ? formatMoney(d.price) : (state.step === 'waiting_for_price' ? 'قيد التشكيل بالحقل أدناه...' : null);
+  let currentPhoneDisplay = d.phone || (state.step === 'waiting_for_phone' ? 'قيد التشكيل بالحقل أدناه...' : null);
+
+  const values = [
+    d.property_type, 
+    d.state_name, 
+    currentPriceDisplay, 
+    currentPhoneDisplay, 
+    desc, 
+    d.media_label || null, 
+    d.payment_label || null
+  ];
 
   const lines = values.map((val, i) => {
     let mark = val ? '✅' : (i === active ? '👉' : '▫️');
@@ -328,40 +372,48 @@ function buildWizardText(userId, state, opts = {}) {
   return `${head}\n${bar}\n\n${lines.join('\n')}` + (footer ? `\n\n${footer}` : '');
 }
 
-function getWizardKeyboard(userId, state) {
+function getStandardReplyKeyboard(stateStep, currentPoints = 0) {
   const W = WIZ['ar'];
-  const rows = [];
+  const pointsAfter = currentPoints - PUBLISH_COST_POINTS;
 
-  if (state.step === 'waiting_for_type') {
-    rows.push(...chunkButtons(PROPERTY_TYPES.map(tp => `${tp}`), 3));
-    rows.push([W.home]);
-  } else if (state.step === 'waiting_for_state') {
-    rows.push(...chunkButtons(POPULAR_WILAYAS.map(w => `📍 ${w}`), 4));
-    rows.push([W.back, W.home]);
-  } else if (state.step === 'waiting_for_payment_choice') {
-    rows.push(['💳 الدفع عبر BaridiMob / CCP']);
-    rows.push([`🪙 النشر مجاناً (${PUBLISH_COST_POINTS} نقطة)`]);
-    rows.push([W.back, W.home]);
-  } else if ((state.step === 'waiting_for_price' || state.step === 'waiting_for_phone') && WEBHOOK_DOMAIN) {
-    rows.push([Markup.button.webApp('⌨️ إدخال السعر والهاتف', `${WEBHOOK_DOMAIN}/form`)]);
-    rows.push([W.back, W.home]);
-    rows.push([W.cancelBtn]);
+  if (stateStep === 'waiting_for_type') {
+    return Markup.keyboard([
+      ...chunkButtons(PROPERTY_TYPES.map(tp => `${tp}`), 3),
+      [W.home]
+    ]).resize();
+  } else if (stateStep === 'waiting_for_state') {
+    return Markup.keyboard([
+      ...chunkButtons(POPULAR_WILAYAS.map(w => `📍 ${w}`), 4),
+      [W.back, W.home]
+    ]).resize();
+  } else if (stateStep === 'waiting_for_payment_choice') {
+    return Markup.keyboard([
+      ['💳 الدفع عبر BaridiMob / CCP'],
+      [`🪙 النشر مجاناً (${PUBLISH_COST_POINTS} نقطة)`],
+      [W.back, W.home]
+    ]).resize();
   } else {
-    rows.push([W.back, W.home]);
-    rows.push([W.cancelBtn]);
+    return Markup.keyboard([
+      [W.back, W.home],
+      [W.cancelBtn]
+    ]).resize();
   }
-
-  return Markup.keyboard(rows).resize();
 }
-
-// =========================================================================
-// 📝 نموذج الإدخال الذكي (Mini App) للسعر ورقم الهاتف
-// =========================================================================
-async function clearPad() {}
 
 async function renderWizard(ctx, userId, opts = {}) {
   const state = userState[userId];
   if (!state) return;
+
+  const user = await getUserRecord(userId);
+  const currentPoints = user ? (user.points || 0) : 0;
+
+  // إذا كنا في خطوة الدفع، نقوم بعرض رصيد المستخدم والنقاط المطلوبة بوضوح في الرسالة والزر
+  if (state.step === 'waiting_for_payment_choice' && !opts.footer) {
+    opts.footer = 
+      `💰 <b>اختر طريقة إتمام ونشر الإعلان:</b>\n\n` +
+      `1️⃣ <b>الدفع السريع (BaridiMob / CCP):</b> 500 دج (أولوية ومراجعة فورية).\n` +
+      `2️⃣ <b>النشر المجاني بالنقاط:</b> يتطلب <b>${PUBLISH_COST_POINTS} نقطة</b> (رصيدك الحالي: <b>${currentPoints} نقطة</b>).`;
+  }
 
   const text = buildWizardText(userId, state, opts);
 
@@ -372,187 +424,34 @@ async function renderWizard(ctx, userId, opts = {}) {
     return;
   }
 
-  const keyboard = opts.noKeyboard ? getMainMenuKeyboard(userId) : getWizardKeyboard(userId, state);
-  const sent = await ctx.reply(text, { parse_mode: 'HTML', ...keyboard });
+  const replyKeyboard = opts.noKeyboard ? getMainMenuKeyboard(userId) : getStandardReplyKeyboard(state.step, currentPoints);
 
+  let extraMarkup = replyKeyboard;
+  if (state.step === 'waiting_for_price') {
+    extraMarkup = getSketchNumpad(state.tempInput || '', true);
+  } else if (state.step === 'waiting_for_phone') {
+    extraMarkup = getSketchNumpad(state.tempInput || '', false);
+  }
+
+  if (state.wizardMsgId) {
+    try {
+      await ctx.telegram.editMessageText(state.chatId, state.wizardMsgId, undefined, text, {
+        parse_mode: 'HTML',
+        ...extraMarkup
+      });
+      return;
+    } catch (e) {}
+  }
+
+  const sent = await ctx.reply(text, { parse_mode: 'HTML', ...extraMarkup });
   const oldId = state.wizardMsgId;
   state.wizardMsgId = sent.message_id;
   state.chatId = ctx.chat.id;
 
-  if (oldId) {
+  if (oldId && oldId !== sent.message_id) {
     await ctx.telegram.deleteMessage(state.chatId, oldId).catch(() => {});
   }
 }
-
-app.get('/form', (req, res) => {
-  res.send(`<!DOCTYPE html>
-<html lang="ar" dir="rtl">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>إدخال البيانات</title>
-<script src="https://telegram.org/js/telegram-web-app.js"></script>
-<style>
-  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-  body { margin:0; background:#0F172A; color:#F8FAFC; font-family: system-ui,-apple-system,sans-serif; user-select:none; }
-  .wrap { max-width:420px; margin:0 auto; padding:14px; }
-  .field { background:#1E293B; border:2px solid #334155; border-radius:14px; padding:10px 14px; margin-bottom:10px; cursor:pointer; }
-  .field.active { border-color:#D4AF37; box-shadow:0 0 0 3px rgba(212,175,55,.15); }
-  .lbl { font-size:12px; color:#94A3B8; }
-  .val { font-size:26px; font-weight:bold; min-height:36px; direction:ltr; text-align:right; letter-spacing:1px; }
-  .sub { font-size:13px; color:#D4AF37; min-height:16px; }
-  .err { color:#FCA5A5; font-size:13px; font-weight:bold; min-height:18px; margin:2px 4px 8px; }
-  .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-bottom:8px; }
-  .k { background:#1E293B; color:#F8FAFC; border:1px solid #334155; border-radius:12px; font-size:22px; font-weight:bold; padding:14px 0; cursor:pointer; }
-  .k:active { background:#334155; }
-  .x { background:#273449; color:#D4AF37; font-size:17px; }
-  .ok { width:100%; background:#D4AF37; color:#0F172A; border:none; border-radius:12px; font-size:18px; font-weight:bold; padding:15px; margin-top:6px; cursor:pointer; }
-</style>
-</head>
-<body>
-<div class="wrap">
-  <div class="field active" id="fPrice"><div class="lbl">💰 السعر (دج)</div><div class="val" id="vPrice"></div><div class="sub" id="sPrice"></div></div>
-  <div class="field" id="fPhone"><div class="lbl">📞 رقم الهاتف</div><div class="val" id="vPhone"></div><div class="sub" id="sPhone"></div></div>
-  <div class="err" id="err"></div>
-  <div class="grid" id="extra"></div>
-  <div class="grid" id="pad"></div>
-  <button class="ok" id="okBtn"></button>
-</div>
-<script>
-var tg = window.Telegram && window.Telegram.WebApp;
-if (tg) { tg.ready(); tg.expand(); }
-var v = { price: '', phone: '' };
-var active = 'price';
-
-function fmtPrice(d) {
-  if (!d) return '0';
-  var o = '', c = 0;
-  for (var i = d.length - 1; i >= 0; i--) {
-    o = d.charAt(i) + o; c++;
-    if (c % 3 === 0 && i > 0) o = ',' + o;
-  }
-  return o;
-}
-function words(d) {
-  var n = Number(d || 0);
-  function tr(x) { return String(Math.round(x * 100) / 100); }
-  if (n >= 1e9) return tr(n / 1e9) + ' مليار';
-  if (n >= 1e6) return tr(n / 1e6) + ' مليون';
-  if (n >= 1000) return tr(n / 1000) + ' ألف';
-  return '';
-}
-function fmtPhone(d) {
-  if (!d) return '— — — —';
-  var p = [d.substr(0, 4)];
-  if (d.length > 4) p.push(d.substr(4, 2));
-  if (d.length > 6) p.push(d.substr(6, 2));
-  if (d.length > 8) p.push(d.substr(8, 2));
-  return p.join(' ');
-}
-function validPhone(d) {
-  return d.length === 10 && d.charAt(0) === '0' && '567'.indexOf(d.charAt(1)) >= 0;
-}
-function haptic() { try { tg.HapticFeedback.impactOccurred('light'); } catch (e) {} }
-function setErr(m) { document.getElementById('err').textContent = m || ''; }
-
-function mk(label, cls, fn) {
-  var b = document.createElement('button');
-  b.className = 'k ' + cls;
-  b.textContent = label;
-  b.onclick = function () { fn(label); };
-  return b;
-}
-
-function render() {
-  document.getElementById('vPrice').textContent = fmtPrice(v.price) + ' دج';
-  document.getElementById('sPrice').textContent = words(v.price);
-  document.getElementById('vPhone').textContent = fmtPhone(v.phone);
-  document.getElementById('fPrice').className = 'field' + (active === 'price' ? ' active' : '');
-  document.getElementById('fPhone').className = 'field' + (active === 'phone' ? ' active' : '');
-
-  var extra = document.getElementById('extra');
-  var pad = document.getElementById('pad');
-  extra.innerHTML = ''; pad.innerHTML = '';
-
-  var ex = [];
-  if (active === 'price') ex = ['000', 'مليون', 'مسح'];
-  else if (!v.phone) ex = ['05', '06', '07'];
-  for (var i = 0; i < ex.length; i++) extra.appendChild(mk(ex[i], 'x', press));
-  extra.style.display = ex.length ? 'grid' : 'none';
-
-  var keys = ['1','2','3','4','5','6','7','8','9', active === 'price' ? '00' : 'مسح', '0', '⌫'];
-  for (var j = 0; j < keys.length; j++) pad.appendChild(mk(keys[j], '', press));
-
-  document.getElementById('okBtn').textContent =
-    (active === 'price' && !v.phone) ? 'التالي ⬅️' : '✅ تأكيد';
-}
-
-function press(k) {
-  setErr('');
-  if (k === '⌫') {
-    v[active] = v[active].slice(0, -1);
-  } else if (k === 'مسح') {
-    v[active] = '';
-  } else if (k === 'مليون') {
-    if (!v.price || v.price.length + 6 > 12) return;
-    v.price += '000000';
-  } else if (active === 'price') {
-    if (!v.price && k.replace(/0/g, '') === '') return;
-    if (v.price.length + k.length > 12) return;
-    v.price += k;
-  } else {
-    var next = v.phone + k;
-    if (next.length > 10) return;
-    if (next.length === 1 && next !== '0') { setErr('يبدأ الرقم بـ 05 أو 06 أو 07'); return; }
-    if (next.length === 2 && '567'.indexOf(next.charAt(1)) < 0) { setErr('يبدأ الرقم بـ 05 أو 06 أو 07'); return; }
-    v.phone = next;
-  }
-  haptic();
-  render();
-}
-
-document.getElementById('fPrice').onclick = function () { active = 'price'; setErr(''); render(); };
-document.getElementById('fPhone').onclick = function () { active = 'phone'; setErr(''); render(); };
-
-document.getElementById('okBtn').onclick = function () {
-  if (!v.price || Number(v.price) <= 0) { active = 'price'; setErr('⚠️ أدخل السعر أولاً'); render(); return; }
-  if (active === 'price' && !v.phone) { active = 'phone'; render(); return; }
-  if (!validPhone(v.phone)) { active = 'phone'; setErr('⚠️ رقم الهاتف يجب أن يتكون من 10 أرقام ويبدأ بـ 05 أو 06 أو 07'); render(); return; }
-  if (tg) { tg.sendData(JSON.stringify({ price: v.price, phone: v.phone })); }
-  else { alert('افتح الصفحة من داخل تيليغرام'); }
-};
-
-render();
-</script>
-</body>
-</html>`);
-});
-
-// استقبال بيانات النموذج من الـ Mini App
-bot.on('message', async (ctx, next) => {
-  const wad = ctx.message && ctx.message.web_app_data;
-  if (!wad) return next();
-
-  const userId = ctx.from.id;
-  const state = userState[userId];
-  await safeDeleteUserMessage(ctx);
-  if (!state || (state.step !== 'waiting_for_price' && state.step !== 'waiting_for_phone')) return;
-
-  let payload;
-  try { payload = JSON.parse(wad.data); } catch (e) { return; }
-
-  const priceDigits = String(payload.price || '');
-  const phoneDigits = String(payload.phone || '');
-
-  if (!/^[1-9]\d{0,11}$/.test(priceDigits) || !/^0[567]\d{8}$/.test(phoneDigits)) {
-    return ctx.reply('⚠️ البيانات غير صحيحة، يرجى المحاولة مرة أخرى.');
-  }
-
-  state.data.price = `${priceDigits.replace(/\B(?=(\d{3})+(?!\d))/g, ',')} دج`;
-  state.data.phone = phoneDigits;
-  state.step = 'waiting_for_description';
-  await renderWizard(ctx, userId);
-});
 
 bot.hears('🎁 رصيدي وجمع النقاط', async (ctx) => {
   await safeDeleteUserMessage(ctx);
@@ -593,6 +492,7 @@ bot.hears(PROPERTY_TYPES, async (ctx, next) => {
   await safeDeleteUserMessage(ctx);
   state.data.property_type = ctx.message.text;
   state.step = 'waiting_for_state';
+  state.tempInput = '';
   await renderWizard(ctx, userId);
 });
 
@@ -608,13 +508,7 @@ bot.hears('⬅️ رجوع', async (ctx) => {
   const prevKey = WIZ_KEYS[idx - 1];
   if (prevKey) delete state.data[prevKey];
   state.step = WIZ_STEPS[idx - 1];
-  state.input = '';
-
-  if (state.step === 'waiting_for_payment_choice') {
-    const user = await getUserRecord(userId);
-    const pts = user ? (user.points || 0) : 0;
-    return renderWizard(ctx, userId, { footer: t(userId, 'paymentMethodPrompt', pts) });
-  }
+  state.tempInput = '';
 
   await renderWizard(ctx, userId);
 });
@@ -651,11 +545,8 @@ bot.hears(['❌ إلغاء العملية والعودة', '🏠 القائمة 
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   const oldWizard = userState[userId];
-  if (oldWizard) {
-    await clearPad(ctx, oldWizard);
-    if (oldWizard.wizardMsgId) {
-      await ctx.telegram.deleteMessage(oldWizard.chatId, oldWizard.wizardMsgId).catch(() => {});
-    }
+  if (oldWizard && oldWizard.wizardMsgId) {
+    await ctx.telegram.deleteMessage(oldWizard.chatId, oldWizard.wizardMsgId).catch(() => {});
   }
   delete userState[userId];
   delete browsingSession[userId];
@@ -773,6 +664,7 @@ bot.hears(/^📍 (.+)/, async (ctx) => {
   if (state && state.step === 'waiting_for_state') {
     state.data.state_name = selectedState;
     state.step = 'waiting_for_price';
+    state.tempInput = '';
     return renderWizard(ctx, userId);
   }
 
@@ -912,19 +804,16 @@ bot.hears('📞 الدعم والإدارة', async (ctx) => {
 bot.hears('ℹ️ عن المنصة', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
-  ctx.reply(t(userId, 'aboutText'), { parse_mode: 'HTML', ...getMainMenuKeyboard(ctx.from.id) });
+  ctx.reply(t(userId, 'aboutText'), { parse_mode: 'HTML', ...getMainMenuKeyboard(userId) });
 });
 
 bot.hears('➕ إضافة عقار جديد', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   const old = userState[userId];
-  if (old) {
-    await clearPad(ctx, old);
-    if (old.wizardMsgId) await ctx.telegram.deleteMessage(old.chatId, old.wizardMsgId).catch(() => {});
-  }
+  if (old && old.wizardMsgId) await ctx.telegram.deleteMessage(old.chatId, old.wizardMsgId).catch(() => {});
 
-  userState[userId] = { step: 'waiting_for_type', data: {}, chatId: ctx.chat.id, wizardMsgId: null, padMsgId: null, input: '' };
+  userState[userId] = { step: 'waiting_for_type', data: {}, chatId: ctx.chat.id, wizardMsgId: null, tempInput: '' };
   renderWizard(ctx, userId);
 });
 
@@ -939,7 +828,7 @@ bot.hears('💳 الدفع عبر BaridiMob / CCP', async (ctx) => {
   await renderWizard(ctx, userId, { footer: t(userId, 'ccpInstructions') });
 });
 
-bot.hears(`🪙 النشر مجاناً (${PUBLISH_COST_POINTS} نقطة)`, async (ctx) => {
+bot.hears(/^🪙 النشر مجاناً/, async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   const state = userState[userId];
@@ -973,11 +862,14 @@ bot.hears(`🪙 النشر مجاناً (${PUBLISH_COST_POINTS} نقطة)`, asyn
 
     await supabase.from('users').update({ points: currentPoints - PUBLISH_COST_POINTS }).eq('id', userId);
 
+    const cleanPrice = String(state.data.price || '0').replace(/[^\d.]/g, '') || '0';
+    const cleanPhone = String(state.data.phone || '').trim();
+
     await supabase.from('test_messages').insert([{
       property_type: state.data.property_type,
       state_name: state.data.state_name,
-      price: String(state.data.price),
-      phone: String(state.data.phone),
+      price: cleanPrice,
+      phone: cleanPhone,
       description: state.data.description,
       message: state.data.description,
       image_url: isVideo ? 'EMPTY' : mediaUrl,
@@ -997,6 +889,50 @@ bot.hears(`🪙 النشر مجاناً (${PUBLISH_COST_POINTS} نقطة)`, asyn
   }
 });
 
+// ⚡ معالج لوحة المفاتيح الوهمية (Inline Numpad Actions)
+bot.action(/^n_(.+)$/, async (ctx) => {
+  const userId = ctx.from.id;
+  const state = userState[userId];
+  if (!state) return await ctx.answerCbQuery('انتهت الجلسة، ابدأ من جديد.');
+
+  const action = ctx.match[1];
+  state.tempInput = state.tempInput || '';
+
+  if (action >= '0' && action <= '9') {
+    state.tempInput += action;
+  } else if (action === 'million') {
+    state.tempInput += '000000';
+  } else if (action === 'back') {
+    state.tempInput = state.tempInput.slice(0, -1);
+  } else if (action === 'clear') {
+    state.tempInput = '';
+  } else if (action === 'confirm') {
+    if (!state.tempInput || state.tempInput.length === 0) {
+      return await ctx.answerCbQuery('⚠️ يرجى إدخال الرقم في الحقل أولاً!');
+    }
+
+    if (state.step === 'waiting_for_price') {
+      state.data.price = state.tempInput;
+      state.step = 'waiting_for_phone';
+      state.tempInput = ''; 
+    } else if (state.step === 'waiting_for_phone') {
+      if (state.tempInput.length < 9) {
+        return await ctx.answerCbQuery('⚠️ رقم الهاتف قصير جداً!');
+      }
+      state.data.phone = state.tempInput;
+      state.step = 'waiting_for_description';
+      state.tempInput = '';
+    }
+  }
+
+  await ctx.answerCbQuery().catch(() => {});
+  await renderWizard(ctx, userId);
+});
+
+bot.action('noop_input', async (ctx) => {
+  await ctx.answerCbQuery('هذا هو حقل الإدخال الرقمي المؤقت 💡');
+});
+
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const userText = ctx.message.text ? ctx.message.text.trim() : '';
@@ -1007,19 +943,11 @@ bot.on('text', async (ctx) => {
 
   await safeDeleteUserMessage(ctx);
 
-  if (!WEBHOOK_DOMAIN && state.step === 'waiting_for_price') {
-    state.data.price = userText;
-    state.step = 'waiting_for_phone';
-  } else if (!WEBHOOK_DOMAIN && state.step === 'waiting_for_phone') {
-    state.data.phone = userText;
-    state.step = 'waiting_for_description';
-  } else if (state.step === 'waiting_for_description') {
+  if (state.step === 'waiting_for_description') {
     state.data.description = userText;
     state.step = 'waiting_for_media';
-  } else {
-    return;
+    renderWizard(ctx, userId);
   }
-  renderWizard(ctx, userId);
 });
 
 bot.on('photo', async (ctx) => {
@@ -1034,9 +962,7 @@ bot.on('photo', async (ctx) => {
     state.data.media_label = '🖼 تم إرفاق الصورة';
 
     state.step = 'waiting_for_payment_choice';
-    const user = await getUserRecord(userId);
-    const pts = user ? (user.points || 0) : 0;
-    return renderWizard(ctx, userId, { footer: t(userId, 'paymentMethodPrompt', pts) });
+    return renderWizard(ctx, userId);
   }
 
   if (state && state.step === 'waiting_for_payment_receipt') {
@@ -1046,7 +972,6 @@ bot.on('photo', async (ctx) => {
     try {
       await renderWizard(ctx, userId, { footer: WIZ['ar'].publishing });
 
-      // رفع صورة العقار الأساسية إلى Supabase Storage
       let mediaUrl = `tg:${state.data.media_file_id}`;
       try {
         const fileLink = await ctx.telegram.getFileLink(state.data.media_file_id);
@@ -1060,7 +985,6 @@ bot.on('photo', async (ctx) => {
         mediaUrl = pubUrl.publicUrl;
       } catch (e) {}
 
-      // رفع صورة وصل الدفع (Reçu) إلى Supabase Storage ليبقى رابطها دائماً وثابتاً في القاعدة
       let receiptUrl = '';
       try {
         const receiptFileLink = await ctx.telegram.getFileLink(receiptPhoto.file_id);
@@ -1071,20 +995,21 @@ bot.on('photo', async (ctx) => {
         const { data: pubReceiptUrl } = supabase.storage.from('test_media').getPublicUrl(receiptFileName);
         receiptUrl = pubReceiptUrl.publicUrl;
       } catch (e) {
-        receiptUrl = receiptPhoto.file_id; // حل احتياطي إذا فشل الرفع المباشر
+        receiptUrl = receiptPhoto.file_id;
       }
 
       const isVideo = state.data.media_type === 'video';
+      const cleanPrice = String(state.data.price || '0').replace(/[^\d.]/g, '') || '0';
+      const cleanPhone = String(state.data.phone || '').trim();
 
-      // حفظ الطلب في جدول pending_properties مع الحالة 'pending' ورابط الوصل الثابت
       const { data: insertedRow, error: insertError } = await supabase
         .from('pending_properties')
         .insert([{
           user_id: userId,
           property_type: state.data.property_type,
           state_name: state.data.state_name,
-          price: String(state.data.price),
-          phone: String(state.data.phone),
+          price: cleanPrice,
+          phone: cleanPhone,
           description: state.data.description,
           image_url: isVideo ? 'EMPTY' : mediaUrl,
           video_url: isVideo ? mediaUrl : 'EMPTY',
@@ -1103,8 +1028,8 @@ bot.on('photo', async (ctx) => {
         `👤 <b>معرف المستخدم:</b> <code>${userId}</code>\n` +
         `🏠 <b>النوع:</b> ${state.data.property_type}\n` +
         `📍 <b>الولاية:</b> ${state.data.state_name}\n` +
-        `💰 <b>السعر:</b> ${state.data.price}\n` +
-        `📞 <b>الهاتف:</b> ${state.data.phone}\n` +
+        `💰 <b>السعر:</b> ${formatMoney(cleanPrice)}\n` +
+        `📞 <b>الهاتف:</b> ${cleanPhone}\n` +
         `📝 <b>الوصف:</b> ${state.data.description}`;
 
       await ctx.telegram.sendPhoto(ADMIN_ID, receiptPhoto.file_id, {
@@ -1122,7 +1047,7 @@ bot.on('photo', async (ctx) => {
         await ctx.telegram.deleteMessage(state.chatId, state.wizardMsgId).catch(() => {});
       }
 
-      await ctx.reply(t(userId, 'paymentPending', requestId), { parse_mode: 'HTML', ...getMainMenuKeyboard(userId) });
+      await ctx.reply(`⏳ <b>تم استلام وصل الدفع وحفظ طلبك برقم (#${requestId})!</b>\n\nالإعلان قيد المراجعة من طرف الإدارة وسيتم نشره فور تأكيد التحويل.`, { parse_mode: 'HTML', ...getMainMenuKeyboard(userId) });
       delete userState[userId];
     } catch (err) {
       console.error('Receipt submit error:', err);
@@ -1144,13 +1069,10 @@ bot.on('video', async (ctx) => {
     state.data.media_label = '🎥 تم إرفاق الفيديو';
 
     state.step = 'waiting_for_payment_choice';
-    const user = await getUserRecord(userId);
-    const pts = user ? (user.points || 0) : 0;
-    return renderWizard(ctx, userId, { footer: t(userId, 'paymentMethodPrompt', pts) });
+    return renderWizard(ctx, userId);
   }
 });
 
-// 🛠️ أزرار تفاعل الأدمن (تغيير الحالة في القاعدة دون حذف السطر للمراجعة والشكاوى)
 const handleAdminAction = async (ctx, action) => {
   const requestId = Number(ctx.match[1]);
   await ctx.answerCbQuery();
@@ -1169,12 +1091,14 @@ const handleAdminAction = async (ctx, action) => {
     const targetUserId = pendingItem.user_id;
 
     if (action === 'approve') {
-      // 1. نشر العقار في جدول العروض الأساسية test_messages
+      const cleanPrice = String(pendingItem.price || '0').replace(/[^\d.]/g, '') || '0';
+      const cleanPhone = String(pendingItem.phone || '').trim();
+
       const { error: publishError } = await supabase.from('test_messages').insert([{
         property_type: pendingItem.property_type,
         state_name: pendingItem.state_name,
-        price: pendingItem.price,
-        phone: pendingItem.phone,
+        price: cleanPrice,
+        phone: cleanPhone,
         description: pendingItem.description,
         message: pendingItem.description,
         image_url: pendingItem.image_url,
@@ -1183,7 +1107,6 @@ const handleAdminAction = async (ctx, action) => {
 
       if (publishError) throw publishError;
 
-      // 2. تحديث الحالة في جدول pending_properties إلى 'approved' بدلاً من الحذف لتبقى للـ Réclamation
       await supabase
         .from('pending_properties')
         .update({ status: 'approved' })
@@ -1200,7 +1123,6 @@ const handleAdminAction = async (ctx, action) => {
         { parse_mode: 'HTML' }
       );
     } else {
-      // تحديث الحالة في جدول pending_properties إلى 'rejected' لتبقى مرجعاً للشكاوى
       await supabase
         .from('pending_properties')
         .update({ status: 'rejected' })
