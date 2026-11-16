@@ -130,7 +130,7 @@ async function safeDeleteUserMessage(ctx) {
 
 async function getUniqueStatesList() {
   try {
-    The { data } = await supabase.from('test_messages').select('state_name');
+    const { data } = await supabase.from('test_messages').select('state_name');
     if (!data) return [];
     return [...new Set(data.map(item => item.state_name).filter(Boolean))];
   } catch (e) {
@@ -146,20 +146,19 @@ function formatMoney(numStr) {
   return Number(clean).toLocaleString('en-US') + ' دج';
 }
 
-// 🎛️ بناء لوحة الأرقام التفاعلية (Inline Numpad) مع زر شاشة عرض الرقم في الأعلى تماماً فوق الأرقام
-function getInlineNumpad(displayValue, isPrice = true) {
-  const formattedDisplay = isPrice ? formatMoney(displayValue) : (displayValue || 'أدخل الرقم...');
+// 🎛️ تصميم حقل الإدخال الوهمي (Input Num) ولوحة الأتمام طبقاً لرسوماتك تماماً
+function getSketchNumpad(displayValue, isPrice = true) {
+  const displayText = displayValue ? (isPrice ? formatMoney(displayValue) : displayValue) : '0';
   
   return Markup.inlineKeyboard([
-    // الصف الأول: "شاشة العرض الوهمية" (تتحدث تلقائياً ولا تضغط للدردشة بل تعرض القيمة الحالية)
-    [Markup.button.callback(`📥 القيمة: ${formattedDisplay}`, 'noop_screen')],
-    // صفوف الأرقام والاختصارات
+    // 1. حقل الإدخال الوهمي بالأعلى (Input Num) الذي يتغير نصه في الخفاء بلا إرسال
+    [Markup.button.callback(`📥 [ ${displayText} ]`, 'noop_input')],
+    
+    // 2. لوحة الأرقام المرتبة تماماً كما في الرسمة
     [
       Markup.button.callback('1', 'n_1'),
       Markup.button.callback('2', 'n_2'),
-      Markup.button.callback('3', 'n_3')
-    ],
-    [
+      Markup.button.callback('3', 'n_3'),
       Markup.button.callback('4', 'n_4'),
       Markup.button.callback('5', 'n_5'),
       Markup.button.callback('6', 'n_6')
@@ -167,22 +166,17 @@ function getInlineNumpad(displayValue, isPrice = true) {
     [
       Markup.button.callback('7', 'n_7'),
       Markup.button.callback('8', 'n_8'),
-      Markup.button.callback('9', 'n_9')
-    ],
-    [
+      Markup.button.callback('9', 'n_9'),
       Markup.button.callback('0', 'n_0'),
-      Markup.button.callback('000', 'n_000'),
-      isPrice ? Markup.button.callback('+ مليون', 'n_million') : Markup.button.callback('⌫ مسح', 'n_back')
+      isPrice ? Markup.button.callback('+مليون', 'n_million') : Markup.button.callback('⌫', 'n_back'),
+      Markup.button.callback('🗑️ مسح', 'n_clear')
     ],
-    isPrice ? [
-      Markup.button.callback('⌫ مسح حرف', 'n_back'),
-      Markup.button.callback('🗑️ مسح الكل', 'n_clear')
-    ] : [],
-    // زر التأكيد النهائي (الذي يرفد الرقم ويرسله للخطوة الموالية بلا رسائل في الشات)
+    
+    // 3. زر التأكيد الكبير "OK" في الأسفل تماماً مثل الرسمة
     [
-      Markup.button.callback('✅ تأكيد', 'n_confirm')
+      Markup.button.callback('✅ [ OK ] تأكيد', 'n_confirm')
     ]
-  ].filter(row => row.length > 0));
+  ]);
 }
 
 // =========================================================================
@@ -330,8 +324,8 @@ const WIZ = {
     prompts: [
       'اختر <b>نوع العقار</b> من الأزرار أدناه:',
       'اختر <b>الولاية</b> من الأزرار أدناه:',
-      'استخدم <b>لوحة الأرقام التفاعلية أدناه</b> لتشكيل السعر، ثم اضغط <b>تأكيد</b>:',
-      'استخدم <b>لوحة الأرقام التفاعلية أدناه</b> لإدخال رقم الهاتف، ثم اضغط <b>تأكيد</b>:',
+      'استخدم لوحة الأرقام أدناه لتشكيل السعر، ثم اضغط <b>OK</b>:',
+      'استخدم لوحة الأرقام أدناه لإدخال رقم الهاتف، ثم اضغط <b>OK</b>:',
       'أدخل <b>الوصف التفصيلي</b> للعقار:',
       'أرسل الآن <b>صورة أو فيديو العقار</b>:',
       'اختر طريقة الدفع أدناه:',
@@ -364,8 +358,8 @@ function buildWizardText(userId, state, opts = {}) {
 
   const desc = d.description ? (d.description.length > 200 ? d.description.slice(0, 200) + '…' : d.description) : null;
   
-  let currentPriceDisplay = d.price ? formatMoney(d.price) : (state.step === 'waiting_for_price' ? 'قيد التشكيل أدناه...' : null);
-  let currentPhoneDisplay = d.phone || (state.step === 'waiting_for_phone' ? 'قيد التشكيل أدناه...' : null);
+  let currentPriceDisplay = d.price ? formatMoney(d.price) : (state.step === 'waiting_for_price' ? 'قيد التشكيل بالحقل أدناه...' : null);
+  let currentPhoneDisplay = d.phone || (state.step === 'waiting_for_phone' ? 'قيد التشكيل بالحقل أدناه...' : null);
 
   const values = [
     d.property_type, 
@@ -387,7 +381,7 @@ function buildWizardText(userId, state, opts = {}) {
   return `${head}\n${bar}\n\n${lines.join('\n')}` + (footer ? `\n\n${footer}` : '');
 }
 
-// أزرار التنقل العامة في الأسفل (Reply Keyboard) للرجوع والقائمة الرئيسية
+// أزرار القائمة السفلية (Reply Keyboard) للرجوع والقائمة الرئيسية
 function getStandardReplyKeyboard(stateStep) {
   const W = WIZ['ar'];
   if (stateStep === 'waiting_for_type') {
@@ -429,15 +423,14 @@ async function renderWizard(ctx, userId, opts = {}) {
 
   const replyKeyboard = opts.noKeyboard ? getMainMenuKeyboard(userId) : getStandardReplyKeyboard(state.step);
 
-  // إذا كنا في خطوة السعر أو الهاتف، نرفق مع الرسالة لوحة الأرقام التفاعلية (Inline Numpad) وفيها شاشة العرض بالأعلى
+  // إذا كنا في خطوة السعر أو الهاتف، نرفق مع الرسالة لوحة الأرقام المطابقة للرسمة (Input Num + Numpad + OK)
   let extraMarkup = replyKeyboard;
   if (state.step === 'waiting_for_price') {
-    extraMarkup = getInlineNumpad(state.tempInput || '0', true);
+    extraMarkup = getSketchNumpad(state.tempInput || '', true);
   } else if (state.step === 'waiting_for_phone') {
-    extraMarkup = getInlineNumpad(state.tempInput || '', false);
+    extraMarkup = getSketchNumpad(state.tempInput || '', false);
   }
 
-  // إذا كانت الرسالة القديمة موجودة، نقوم بتحديثها لتتغير الشاشة الوهمية فوريًا دون إرسال رسالة جديدة
   if (state.wizardMsgId) {
     try {
       await ctx.telegram.editMessageText(state.chatId, state.wizardMsgId, undefined, text, {
@@ -445,9 +438,7 @@ async function renderWizard(ctx, userId, opts = {}) {
         ...extraMarkup
       });
       return;
-    } catch (e) {
-      // إذا حدث تعديل نوع الكيبورد ولم يقبله تيليجرام، نرسل رسالة جديدة ونحذف القديمة
-    }
+    } catch (e) {}
   }
 
   const sent = await ctx.reply(text, { parse_mode: 'HTML', ...extraMarkup });
@@ -902,7 +893,7 @@ bot.hears(`🪙 النشر مجاناً (${PUBLISH_COST_POINTS} نقطة)`, asyn
   }
 });
 
-// ⚡ معالج أزرار الآلة الحاسبة الخفية (Inline Numpad Actions) بدون أي إزعاج للشارع أو رسائل جديدة
+// ⚡ معالج لوحة المفاتيح الوهمية (Inline Numpad Actions) في الخفاء تماماً
 bot.action(/^n_(.+)$/, async (ctx) => {
   const userId = ctx.from.id;
   const state = userState[userId];
@@ -913,8 +904,6 @@ bot.action(/^n_(.+)$/, async (ctx) => {
 
   if (action >= '0' && action <= '9') {
     state.tempInput += action;
-  } else if (action === '000') {
-    state.tempInput += '000';
   } else if (action === 'million') {
     state.tempInput += '000000';
   } else if (action === 'back') {
@@ -923,13 +912,13 @@ bot.action(/^n_(.+)$/, async (ctx) => {
     state.tempInput = '';
   } else if (action === 'confirm') {
     if (!state.tempInput || state.tempInput.length === 0) {
-      return await ctx.answerCbQuery('⚠️ يرجى إدخال الرقم أولاً!');
+      return await ctx.answerCbQuery('⚠️ يرجى إدخال الرقم في الحقل أولاً!');
     }
 
     if (state.step === 'waiting_for_price') {
       state.data.price = state.tempInput;
       state.step = 'waiting_for_phone';
-      state.tempInput = ''; // تصفير المؤقت للبدء برقم الهاتف
+      state.tempInput = ''; // تصفير للبدء برقم الهاتف
     } else if (state.step === 'waiting_for_phone') {
       if (state.tempInput.length < 9) {
         return await ctx.answerCbQuery('⚠️ رقم الهاتف قصير جداً!');
@@ -944,9 +933,9 @@ bot.action(/^n_(.+)$/, async (ctx) => {
   await renderWizard(ctx, userId);
 });
 
-// زر الشاشة العهمية (لا يفعل شيئاً سوى إظهار الرقم الحالي)
-bot.action('noop_screen', async (ctx) => {
-  await ctx.answerCbQuery('هذه هي شاشة العرض الرقمية الحالية 💡');
+// زر حقل الإدخال الوهمي (عند الضغط عليه لا يفعل شيئاً بل يوضح أنه شاشة العرض)
+bot.action('noop_input', async (ctx) => {
+  await ctx.answerCbQuery('هذا هو حقل الإدخال الرقمي المؤقت 💡');
 });
 
 // 📝 خطوة الوصف (كتابة عادية بالنص)
@@ -1099,7 +1088,7 @@ const handleAdminAction = async (ctx, action) => {
   await ctx.answerCbQuery();
 
   try {
-    const { data: pendingItem, error: fetchError } = await supabase
+    The { data: pendingItem, error: fetchError } = await supabase
       .from('pending_properties')
       .select('*')
       .eq('id', requestId)
