@@ -156,7 +156,7 @@ function getSketchNumpad(displayValue, isPrice = true) {
     
     // 2. لوحة الأرقام المرتبة تماماً كما في الرسمة
     [
-      Markup.button.callback('1', 'n_1'),
+      Markup.button.callback('11', 'n_1'),
       Markup.button.callback('2', 'n_2'),
       Markup.button.callback('3', 'n_3'),
       Markup.button.callback('4', 'n_4'),
