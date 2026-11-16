@@ -283,8 +283,8 @@ const WIZ = {
     prompts: [
       'اختر <b>نوع العقار</b> من الأزرار أدناه:',
       'اختر <b>الولاية</b> من الأزرار أدناه:',
-      'أرسل الآن <b>السعر المطلوب</b>:',
-      'أدخل <b>رقم الهاتف للتواصل</b>:',
+      'أدخل <b>السعر المطلوب</b> عبر لوحة الأرقام أدناه:',
+      'أدخل <b>رقم الهاتف للتواصل</b> عبر لوحة الأرقام أدناه:',
       'أدخل <b>الوصف التفصيلي</b> للعقار:',
       'أرسل الآن <b>صورة أو فيديو العقار</b>:',
       'اختر طريقة الدفع أدناه:',
@@ -316,7 +316,20 @@ function buildWizardText(userId, state, opts = {}) {
   const bar = '▰'.repeat(filled) + '▱'.repeat(totalSteps - filled);
 
   const desc = d.description ? (d.description.length > 200 ? d.description.slice(0, 200) + '…' : d.description) : null;
-  const values = [d.property_type, d.state_name, d.price, d.phone, desc, d.media_label || null, d.payment_label || null];
+  
+  // عرض القيمة المؤقتة للأرقام أثناء كتابتها عبر النمباد التفاعلي
+  let currentPriceDisplay = d.price || (state.step === 'waiting_for_price' ? (state.tempInput || '0') : null);
+  let currentPhoneDisplay = d.phone || (state.step === 'waiting_for_phone' ? (state.tempInput || '0') : null);
+
+  const values = [
+    d.property_type, 
+    d.state_name, 
+    currentPriceDisplay, 
+    currentPhoneDisplay, 
+    desc, 
+    d.media_label || null, 
+    d.payment_label || null
+  ];
 
   const lines = values.map((val, i) => {
     let mark = val ? '✅' : (i === active ? '👉' : '▫️');
@@ -326,6 +339,35 @@ function buildWizardText(userId, state, opts = {}) {
   const stepPromptIdx = Math.max(WIZ_STEPS.indexOf(state.step), 0);
   const footer = opts.footer !== undefined ? opts.footer : W.prompts[stepPromptIdx];
   return `${head}\n${bar}\n\n${lines.join('\n')}` + (footer ? `\n\n${footer}` : '');
+}
+
+// لوحة مفاتيح الأرقام التفاعلية (Inline Numpad) للسعر والهاتف
+function getNumpadInlineKeyboard(currentVal = '') {
+  return Markup.inlineKeyboard([
+    [
+      Markup.button.callback('1', 'num_1'),
+      Markup.button.callback('2', 'num_2'),
+      Markup.button.callback('3', 'num_3')
+    ],
+    [
+      Markup.button.callback('4', 'num_4'),
+      Markup.button.callback('5', 'num_5'),
+      Markup.button.callback('6', 'num_6')
+    ],
+    [
+      Markup.button.callback('7', 'num_7'),
+      Markup.button.callback('8', 'num_8'),
+      Markup.button.callback('9', 'num_9')
+    ],
+    [
+      Markup.button.callback('0', 'num_0'),
+      Markup.button.callback('000 (ألف)', 'num_000'),
+      Markup.button.callback('⌫ مسح', 'num_back')
+    ],
+    [
+      Markup.button.callback('✅ تأكيد وإرسال', 'num_confirm')
+    ]
+  ]);
 }
 
 function getWizardKeyboard(userId, state) {
@@ -363,14 +405,33 @@ async function renderWizard(ctx, userId, opts = {}) {
     return;
   }
 
-  const keyboard = opts.noKeyboard ? getMainMenuKeyboard(userId) : getWizardKeyboard(userId, state);
-  const sent = await ctx.reply(text, { parse_mode: 'HTML', ...keyboard });
+  // إذا كنا في خطوة السعر أو الهاتف، نعرض الـ Inline Numpad تحت الرسالة
+  let extraMarkup = {};
+  if (state.step === 'waiting_for_price' || state.step === 'waiting_for_phone') {
+    extraMarkup = getNumpadInlineKeyboard(state.tempInput);
+  } else {
+    extraMarkup = opts.noKeyboard ? getMainMenuKeyboard(userId) : getWizardKeyboard(userId, state);
+  }
 
+  // إذا كانت الرسالة القديمة موجودة، نقوم بتحديثها لتفادي تراكم الرسائل
+  if (state.wizardMsgId) {
+    try {
+      await ctx.telegram.editMessageText(state.chatId, state.wizardMsgId, undefined, text, {
+        parse_mode: 'HTML',
+        ...extraMarkup
+      });
+      return;
+    } catch (e) {
+      // إذا فشل التحديث (مثلاً تغير نوع الكيبورد من عادي لـ Inline)، نرسل رسالة جديدة ونحذف القديمة
+    }
+  }
+
+  const sent = await ctx.reply(text, { parse_mode: 'HTML', ...extraMarkup });
   const oldId = state.wizardMsgId;
   state.wizardMsgId = sent.message_id;
   state.chatId = ctx.chat.id;
 
-  if (oldId) {
+  if (oldId && oldId !== sent.message_id) {
     await ctx.telegram.deleteMessage(state.chatId, oldId).catch(() => {});
   }
 }
@@ -414,6 +475,7 @@ bot.hears(PROPERTY_TYPES, async (ctx, next) => {
   await safeDeleteUserMessage(ctx);
   state.data.property_type = ctx.message.text;
   state.step = 'waiting_for_state';
+  state.tempInput = ''; // تهيئة الإدخال المؤقت للأرقام
   await renderWizard(ctx, userId);
 });
 
@@ -429,6 +491,7 @@ bot.hears('⬅️ رجوع', async (ctx) => {
   const prevKey = WIZ_KEYS[idx - 1];
   if (prevKey) delete state.data[prevKey];
   state.step = WIZ_STEPS[idx - 1];
+  state.tempInput = '';
 
   if (state.step === 'waiting_for_payment_choice') {
     const user = await getUserRecord(userId);
@@ -590,6 +653,7 @@ bot.hears(/^📍 (.+)/, async (ctx) => {
   if (state && state.step === 'waiting_for_state') {
     state.data.state_name = selectedState;
     state.step = 'waiting_for_price';
+    state.tempInput = '';
     return renderWizard(ctx, userId);
   }
 
@@ -729,7 +793,7 @@ bot.hears('📞 الدعم والإدارة', async (ctx) => {
 bot.hears('ℹ️ عن المنصة', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
-  ctx.reply(t(userId, 'aboutText'), { parse_mode: 'HTML', ...getMainMenuKeyboard(ctx.from.id) });
+  ctx.reply(t(userId, 'aboutText'), { parse_mode: 'HTML', ...getMainMenuKeyboard(userId) });
 });
 
 bot.hears('➕ إضافة عقار جديد', async (ctx) => {
@@ -738,7 +802,7 @@ bot.hears('➕ إضافة عقار جديد', async (ctx) => {
   const old = userState[userId];
   if (old && old.wizardMsgId) await ctx.telegram.deleteMessage(old.chatId, old.wizardMsgId).catch(() => {});
 
-  userState[userId] = { step: 'waiting_for_type', data: {}, chatId: ctx.chat.id, wizardMsgId: null };
+  userState[userId] = { step: 'waiting_for_type', data: {}, chatId: ctx.chat.id, wizardMsgId: null, tempInput: '' };
   renderWizard(ctx, userId);
 });
 
@@ -811,6 +875,45 @@ bot.hears(`🪙 النشر مجاناً (${PUBLISH_COST_POINTS} نقطة)`, asyn
   }
 });
 
+// 🎛️ معالج أزرار لوحة الأرقام الافتراضية (Inline Numpad) للسعر ورقم الهاتف
+bot.action(/^num_(.+)$/, async (ctx) => {
+  const userId = ctx.from.id;
+  const state = userState[userId];
+  if (!state) return await ctx.answerCbQuery('انتهت الجلسة، ابدأ من جديد.');
+
+  const action = ctx.match[1];
+  state.tempInput = state.tempInput || '';
+
+  if (action >= '0' && action <= '9') {
+    state.tempInput += action;
+  } else if (action === '000') {
+    state.tempInput += '000';
+  } else if (action === 'back') {
+    state.tempInput = state.tempInput.slice(0, -1);
+  } else if (action === 'confirm') {
+    if (!state.tempInput || state.tempInput.length === 0) {
+      return await ctx.answerCbQuery('⚠️ يرجى إدخال الرقم أولاً!');
+    }
+
+    if (state.step === 'waiting_for_price') {
+      state.data.price = state.tempInput;
+      state.step = 'waiting_for_phone';
+      state.tempInput = ''; // إعادة تعيين لخطوة الهاتف
+    } else if (state.step === 'waiting_for_phone') {
+      if (state.tempInput.length < 9) {
+        return await ctx.answerCbQuery('⚠️ رقم الهاتف قصير جداً!');
+      }
+      state.data.phone = state.tempInput;
+      state.step = 'waiting_for_description';
+      state.tempInput = '';
+    }
+  }
+
+  await ctx.answerCbQuery().catch(() => {});
+  await renderWizard(ctx, userId);
+});
+
+// 📝 الوصف يكتبه المستخدم بالنص العادي
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const userText = ctx.message.text ? ctx.message.text.trim() : '';
@@ -821,19 +924,11 @@ bot.on('text', async (ctx) => {
 
   await safeDeleteUserMessage(ctx);
 
-  if (state.step === 'waiting_for_price') {
-    state.data.price = userText;
-    state.step = 'waiting_for_phone';
-  } else if (state.step === 'waiting_for_phone') {
-    state.data.phone = userText;
-    state.step = 'waiting_for_description';
-  } else if (state.step === 'waiting_for_description') {
+  if (state.step === 'waiting_for_description') {
     state.data.description = userText;
     state.step = 'waiting_for_media';
-  } else {
-    return;
+    renderWizard(ctx, userId);
   }
-  renderWizard(ctx, userId);
 });
 
 bot.on('photo', async (ctx) => {
@@ -860,7 +955,6 @@ bot.on('photo', async (ctx) => {
     try {
       await renderWizard(ctx, userId, { footer: WIZ['ar'].publishing });
 
-      // رفع صورة العقار الأساسية إلى Supabase Storage
       let mediaUrl = `tg:${state.data.media_file_id}`;
       try {
         const fileLink = await ctx.telegram.getFileLink(state.data.media_file_id);
@@ -874,7 +968,6 @@ bot.on('photo', async (ctx) => {
         mediaUrl = pubUrl.publicUrl;
       } catch (e) {}
 
-      // رفع صورة وصل الدفع (Reçu) إلى Supabase Storage ليبقى رابطها دائماً وثابتاً في القاعدة
       let receiptUrl = '';
       try {
         const receiptFileLink = await ctx.telegram.getFileLink(receiptPhoto.file_id);
@@ -885,12 +978,11 @@ bot.on('photo', async (ctx) => {
         const { data: pubReceiptUrl } = supabase.storage.from('test_media').getPublicUrl(receiptFileName);
         receiptUrl = pubReceiptUrl.publicUrl;
       } catch (e) {
-        receiptUrl = receiptPhoto.file_id; // حل احتياطي إذا فشل الرفع المباشر
+        receiptUrl = receiptPhoto.file_id;
       }
 
       const isVideo = state.data.media_type === 'video';
 
-      // حفظ الطلب في جدول pending_properties مع الحالة 'pending' ورابط الوصل الثابت
       const { data: insertedRow, error: insertError } = await supabase
         .from('pending_properties')
         .insert([{
@@ -964,7 +1056,6 @@ bot.on('video', async (ctx) => {
   }
 });
 
-// 🛠️ أزرار تفاعل الأدمن (تغيير الحالة في القاعدة دون حذف السطر للمراجعة والشكاوى)
 const handleAdminAction = async (ctx, action) => {
   const requestId = Number(ctx.match[1]);
   await ctx.answerCbQuery();
@@ -983,12 +1074,14 @@ const handleAdminAction = async (ctx, action) => {
     const targetUserId = pendingItem.user_id;
 
     if (action === 'approve') {
-      // 1. نشر العقار في جدول العروض الأساسية test_messages
+      const cleanPrice = String(pendingItem.price || '0').replace(/[^\d.]/g, '') || '0';
+      const cleanPhone = String(pendingItem.phone || '').trim();
+
       const { error: publishError } = await supabase.from('test_messages').insert([{
         property_type: pendingItem.property_type,
         state_name: pendingItem.state_name,
-        price: pendingItem.price,
-        phone: pendingItem.phone,
+        price: cleanPrice,
+        phone: cleanPhone,
         description: pendingItem.description,
         message: pendingItem.description,
         image_url: pendingItem.image_url,
@@ -997,7 +1090,6 @@ const handleAdminAction = async (ctx, action) => {
 
       if (publishError) throw publishError;
 
-      // 2. تحديث الحالة في جدول pending_properties إلى 'approved' بدلاً من الحذف لتبقى للـ Réclamation
       await supabase
         .from('pending_properties')
         .update({ status: 'approved' })
@@ -1014,7 +1106,6 @@ const handleAdminAction = async (ctx, action) => {
         { parse_mode: 'HTML' }
       );
     } else {
-      // تحديث الحالة في جدول pending_properties إلى 'rejected' لتبقى مرجعاً للشكاوى
       await supabase
         .from('pending_properties')
         .update({ status: 'rejected' })
