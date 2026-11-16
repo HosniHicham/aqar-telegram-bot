@@ -130,7 +130,7 @@ async function safeDeleteUserMessage(ctx) {
 
 async function getUniqueStatesList() {
   try {
-    const { data } = await supabase.from('test_messages').select('state_name');
+    The { data } = await supabase.from('test_messages').select('state_name');
     if (!data) return [];
     return [...new Set(data.map(item => item.state_name).filter(Boolean))];
   } catch (e) {
@@ -138,18 +138,51 @@ async function getUniqueStatesList() {
   }
 }
 
-// 📱 لوحة الأرقام الذكية السفلية مع اختصارات الملايين والمليارات
-function getNumpadKeyboard() {
-  return Markup.keyboard([
-    ['1', '2', '3'],
-    ['4', '5', '6'],
-    ['7', '8', '9'],
-    ['0', '000 (ألف)', '➕ مليون (000000)'],
-    ['⌫ مسح حرف', '🗑️ مسح الكل'],
-    ['✅ تأكيد وإرسال الرقم'],
-    ['⬅️ رجوع', '🏠 القائمة الرئيسية'],
-    ['❌ إلغاء العملية والعودة']
-  ]).resize();
+// تنسيق الأرقام بوضع الفواصل المالية
+function formatMoney(numStr) {
+  if (!numStr) return '0 دج';
+  const clean = numStr.replace(/\D/g, '');
+  if (!clean) return '0 دج';
+  return Number(clean).toLocaleString('en-US') + ' دج';
+}
+
+// 🎛️ بناء لوحة الأرقام التفاعلية (Inline Numpad) مع زر شاشة عرض الرقم في الأعلى تماماً فوق الأرقام
+function getInlineNumpad(displayValue, isPrice = true) {
+  const formattedDisplay = isPrice ? formatMoney(displayValue) : (displayValue || 'أدخل الرقم...');
+  
+  return Markup.inlineKeyboard([
+    // الصف الأول: "شاشة العرض الوهمية" (تتحدث تلقائياً ولا تضغط للدردشة بل تعرض القيمة الحالية)
+    [Markup.button.callback(`📥 القيمة: ${formattedDisplay}`, 'noop_screen')],
+    // صفوف الأرقام والاختصارات
+    [
+      Markup.button.callback('1', 'n_1'),
+      Markup.button.callback('2', 'n_2'),
+      Markup.button.callback('3', 'n_3')
+    ],
+    [
+      Markup.button.callback('4', 'n_4'),
+      Markup.button.callback('5', 'n_5'),
+      Markup.button.callback('6', 'n_6')
+    ],
+    [
+      Markup.button.callback('7', 'n_7'),
+      Markup.button.callback('8', 'n_8'),
+      Markup.button.callback('9', 'n_9')
+    ],
+    [
+      Markup.button.callback('0', 'n_0'),
+      Markup.button.callback('000', 'n_000'),
+      isPrice ? Markup.button.callback('+ مليون', 'n_million') : Markup.button.callback('⌫ مسح', 'n_back')
+    ],
+    isPrice ? [
+      Markup.button.callback('⌫ مسح حرف', 'n_back'),
+      Markup.button.callback('🗑️ مسح الكل', 'n_clear')
+    ] : [],
+    // زر التأكيد النهائي (الذي يرفد الرقم ويرسله للخطوة الموالية بلا رسائل في الشات)
+    [
+      Markup.button.callback('✅ تأكيد', 'n_confirm')
+    ]
+  ].filter(row => row.length > 0));
 }
 
 // =========================================================================
@@ -297,8 +330,8 @@ const WIZ = {
     prompts: [
       'اختر <b>نوع العقار</b> من الأزرار أدناه:',
       'اختر <b>الولاية</b> من الأزرار أدناه:',
-      'اكتب <b>السعر المطلوب</b> عبر لوحة الأرقام (مع ميزة زر المليون لتسريع الإدخال):',
-      'اكتب <b>رقم الهاتف للتواصل</b>:',
+      'استخدم <b>لوحة الأرقام التفاعلية أدناه</b> لتشكيل السعر، ثم اضغط <b>تأكيد</b>:',
+      'استخدم <b>لوحة الأرقام التفاعلية أدناه</b> لإدخال رقم الهاتف، ثم اضغط <b>تأكيد</b>:',
       'أدخل <b>الوصف التفصيلي</b> للعقار:',
       'أرسل الآن <b>صورة أو فيديو العقار</b>:',
       'اختر طريقة الدفع أدناه:',
@@ -313,14 +346,6 @@ const WIZ = {
 
 function escapeHtml(str) {
   return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-// تنسيق الأرقام بوضع فاصل الآلاف ليقرأها المستخدم بوضوح (مثلاً: 1,500,000 دج)
-function formatMoney(numStr) {
-  if (!numStr) return '0 دج';
-  const clean = numStr.replace(/\D/g, '');
-  if (!clean) return '0 دج';
-  return Number(clean).toLocaleString('en-US') + ' دج';
 }
 
 function buildWizardText(userId, state, opts = {}) {
@@ -339,9 +364,8 @@ function buildWizardText(userId, state, opts = {}) {
 
   const desc = d.description ? (d.description.length > 200 ? d.description.slice(0, 200) + '…' : d.description) : null;
   
-  // عرض الرقم المؤقت في الذاكرة أثناء كتابته بذكاء
-  let currentPriceDisplay = d.price ? formatMoney(d.price) : (state.step === 'waiting_for_price' ? `<b>${formatMoney(state.tempInput || '0')}</b> ✍️ (قيد الكتابة...)` : null);
-  let currentPhoneDisplay = d.phone || (state.step === 'waiting_for_phone' ? `<b>${state.tempInput || ''}</b> ✍️ (قيد الكتابة...)` : null);
+  let currentPriceDisplay = d.price ? formatMoney(d.price) : (state.step === 'waiting_for_price' ? 'قيد التشكيل أدناه...' : null);
+  let currentPhoneDisplay = d.phone || (state.step === 'waiting_for_phone' ? 'قيد التشكيل أدناه...' : null);
 
   const values = [
     d.property_type, 
@@ -355,7 +379,7 @@ function buildWizardText(userId, state, opts = {}) {
 
   const lines = values.map((val, i) => {
     let mark = val ? '✅' : (i === active ? '👉' : '▫️');
-    return `${mark} ${W.labels[i]}: ${val ? val : '…'}`;
+    return `${mark} ${W.labels[i]}: ${val ? '<b>' + escapeHtml(val) + '</b>' : '…'}`;
   });
 
   const stepPromptIdx = Math.max(WIZ_STEPS.indexOf(state.step), 0);
@@ -363,28 +387,31 @@ function buildWizardText(userId, state, opts = {}) {
   return `${head}\n${bar}\n\n${lines.join('\n')}` + (footer ? `\n\n${footer}` : '');
 }
 
-function getWizardKeyboard(userId, state) {
+// أزرار التنقل العامة في الأسفل (Reply Keyboard) للرجوع والقائمة الرئيسية
+function getStandardReplyKeyboard(stateStep) {
   const W = WIZ['ar'];
-  const rows = [];
-
-  if (state.step === 'waiting_for_type') {
-    rows.push(...chunkButtons(PROPERTY_TYPES.map(tp => `${tp}`), 3));
-    rows.push([W.home]);
-  } else if (state.step === 'waiting_for_state') {
-    rows.push(...chunkButtons(POPULAR_WILAYAS.map(w => `📍 ${w}`), 4));
-    rows.push([W.back, W.home]);
-  } else if (state.step === 'waiting_for_price' || state.step === 'waiting_for_phone') {
-    return getNumpadKeyboard();
-  } else if (state.step === 'waiting_for_payment_choice') {
-    rows.push(['💳 الدفع عبر BaridiMob / CCP']);
-    rows.push([`🪙 النشر مجاناً (${PUBLISH_COST_POINTS} نقطة)`]);
-    rows.push([W.back, W.home]);
+  if (stateStep === 'waiting_for_type') {
+    return Markup.keyboard([
+      ...chunkButtons(PROPERTY_TYPES.map(tp => `${tp}`), 3),
+      [W.home]
+    ]).resize();
+  } else if (stateStep === 'waiting_for_state') {
+    return Markup.keyboard([
+      ...chunkButtons(POPULAR_WILAYAS.map(w => `📍 ${w}`), 4),
+      [W.back, W.home]
+    ]).resize();
+  } else if (stateStep === 'waiting_for_payment_choice') {
+    return Markup.keyboard([
+      ['💳 الدفع عبر BaridiMob / CCP'],
+      [`🪙 النشر مجاناً (${PUBLISH_COST_POINTS} نقطة)`],
+      [W.back, W.home]
+    ]).resize();
   } else {
-    rows.push([W.back, W.home]);
-    rows.push([W.cancelBtn]);
+    return Markup.keyboard([
+      [W.back, W.home],
+      [W.cancelBtn]
+    ]).resize();
   }
-
-  return Markup.keyboard(rows).resize();
 }
 
 async function renderWizard(ctx, userId, opts = {}) {
@@ -400,9 +427,30 @@ async function renderWizard(ctx, userId, opts = {}) {
     return;
   }
 
-  const keyboard = opts.noKeyboard ? getMainMenuKeyboard(userId) : getWizardKeyboard(userId, state);
-  const sent = await ctx.reply(text, { parse_mode: 'HTML', ...keyboard });
+  const replyKeyboard = opts.noKeyboard ? getMainMenuKeyboard(userId) : getStandardReplyKeyboard(state.step);
 
+  // إذا كنا في خطوة السعر أو الهاتف، نرفق مع الرسالة لوحة الأرقام التفاعلية (Inline Numpad) وفيها شاشة العرض بالأعلى
+  let extraMarkup = replyKeyboard;
+  if (state.step === 'waiting_for_price') {
+    extraMarkup = getInlineNumpad(state.tempInput || '0', true);
+  } else if (state.step === 'waiting_for_phone') {
+    extraMarkup = getInlineNumpad(state.tempInput || '', false);
+  }
+
+  // إذا كانت الرسالة القديمة موجودة، نقوم بتحديثها لتتغير الشاشة الوهمية فوريًا دون إرسال رسالة جديدة
+  if (state.wizardMsgId) {
+    try {
+      await ctx.telegram.editMessageText(state.chatId, state.wizardMsgId, undefined, text, {
+        parse_mode: 'HTML',
+        ...extraMarkup
+      });
+      return;
+    } catch (e) {
+      // إذا حدث تعديل نوع الكيبورد ولم يقبله تيليجرام، نرسل رسالة جديدة ونحذف القديمة
+    }
+  }
+
+  const sent = await ctx.reply(text, { parse_mode: 'HTML', ...extraMarkup });
   const oldId = state.wizardMsgId;
   state.wizardMsgId = sent.message_id;
   state.chatId = ctx.chat.id;
@@ -854,7 +902,54 @@ bot.hears(`🪙 النشر مجاناً (${PUBLISH_COST_POINTS} نقطة)`, asyn
   }
 });
 
-// 🧠 الذكاء البرمجي لتخزين الأرقام في الخفاء وتحديث الشاشة دفعة واحدة دون إزعاج
+// ⚡ معالج أزرار الآلة الحاسبة الخفية (Inline Numpad Actions) بدون أي إزعاج للشارع أو رسائل جديدة
+bot.action(/^n_(.+)$/, async (ctx) => {
+  const userId = ctx.from.id;
+  const state = userState[userId];
+  if (!state) return await ctx.answerCbQuery('انتهت الجلسة، ابدأ من جديد.');
+
+  const action = ctx.match[1];
+  state.tempInput = state.tempInput || '';
+
+  if (action >= '0' && action <= '9') {
+    state.tempInput += action;
+  } else if (action === '000') {
+    state.tempInput += '000';
+  } else if (action === 'million') {
+    state.tempInput += '000000';
+  } else if (action === 'back') {
+    state.tempInput = state.tempInput.slice(0, -1);
+  } else if (action === 'clear') {
+    state.tempInput = '';
+  } else if (action === 'confirm') {
+    if (!state.tempInput || state.tempInput.length === 0) {
+      return await ctx.answerCbQuery('⚠️ يرجى إدخال الرقم أولاً!');
+    }
+
+    if (state.step === 'waiting_for_price') {
+      state.data.price = state.tempInput;
+      state.step = 'waiting_for_phone';
+      state.tempInput = ''; // تصفير المؤقت للبدء برقم الهاتف
+    } else if (state.step === 'waiting_for_phone') {
+      if (state.tempInput.length < 9) {
+        return await ctx.answerCbQuery('⚠️ رقم الهاتف قصير جداً!');
+      }
+      state.data.phone = state.tempInput;
+      state.step = 'waiting_for_description';
+      state.tempInput = '';
+    }
+  }
+
+  await ctx.answerCbQuery().catch(() => {});
+  await renderWizard(ctx, userId);
+});
+
+// زر الشاشة العهمية (لا يفعل شيئاً سوى إظهار الرقم الحالي)
+bot.action('noop_screen', async (ctx) => {
+  await ctx.answerCbQuery('هذه هي شاشة العرض الرقمية الحالية 💡');
+});
+
+// 📝 خطوة الوصف (كتابة عادية بالنص)
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const userText = ctx.message.text ? ctx.message.text.trim() : '';
@@ -864,47 +959,7 @@ bot.on('text', async (ctx) => {
   if (!state) return;
 
   await safeDeleteUserMessage(ctx);
-  state.tempInput = state.tempInput || '';
 
-  // معالجة خطوة السعر أو الهاتف عبر لوحة الأرقام الذكية
-  if (state.step === 'waiting_for_price' || state.step === 'waiting_for_phone') {
-    if (/^[0-9]$/.test(userText)) {
-      state.tempInput += userText;
-      return renderWizard(ctx, userId);
-    } else if (userText.includes('000 (ألف)')) {
-      state.tempInput += '000';
-      return renderWizard(ctx, userId);
-    } else if (userText.includes('مليون')) {
-      state.tempInput += '000000';
-      return renderWizard(ctx, userId);
-    } else if (userText.includes('مسح حرف')) {
-      state.tempInput = state.tempInput.slice(0, -1);
-      return renderWizard(ctx, userId);
-    } else if (userText.includes('مسح الكل')) {
-      state.tempInput = '';
-      return renderWizard(ctx, userId);
-    } else if (userText.includes('تأكيد وإرسال الرقم')) {
-      if (!state.tempInput || state.tempInput.length === 0) {
-        return ctx.reply('⚠️ يرجى إدخال الرقم عبر الأزرار السفلية أولاً!');
-      }
-
-      if (state.step === 'waiting_for_price') {
-        state.data.price = state.tempInput;
-        state.step = 'waiting_for_phone';
-        state.tempInput = ''; // تصفير المؤقت لخطوة الهاتف
-      } else if (state.step === 'waiting_for_phone') {
-        if (state.tempInput.length < 9) {
-          return ctx.reply('⚠️ رقم الهاتف قصير جداً، يرجى إدخال رقم صحيح عبر الأزرار السفلية:');
-        }
-        state.data.phone = state.tempInput;
-        state.step = 'waiting_for_description';
-        state.tempInput = '';
-      }
-      return renderWizard(ctx, userId);
-    }
-  }
-
-  // خطوة الوصف (كتابة عادية)
   if (state.step === 'waiting_for_description') {
     state.data.description = userText;
     state.step = 'waiting_for_media';
