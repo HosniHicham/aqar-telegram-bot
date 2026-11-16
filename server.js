@@ -4,16 +4,15 @@ const { Telegraf, Markup } = require('telegraf');
 const express = require('express');
 const { createClient } = require('@supabase/supabase-js');
 
+// 🔒 المتطلبات الأساسية حصراً من البيئة (لا شيء جامد في الكود)
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const WEBHOOK_DOMAIN = process.env.WEBHOOK_DOMAIN;
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_KEY;
+const ADMIN_ID = Number(process.env.ADMIN_ID);
 
-const SUPABASE_URL = process.env.SUPABASE_URL || 'https://jjrisfyotyryanhbsvlz.supabase.co';
-const SUPABASE_KEY = process.env.SUPABASE_KEY || 'sb_publishable_t7kVxzmOtz16C95U_B52FA_AJl_WK-h';
-
-const ADMIN_ID = process.env.ADMIN_ID ? Number(process.env.ADMIN_ID) : 5883330772;
-
-if (!BOT_TOKEN) {
-  console.error('Error: BOT_TOKEN environment variable is missing!');
+if (!BOT_TOKEN || !SUPABASE_URL || !SUPABASE_KEY || !ADMIN_ID) {
+  console.error('Error: Required environment variables are missing!');
   process.exit(1);
 }
 
@@ -28,9 +27,9 @@ const userLang = {};
 const browsingSession = {};
 
 // =========================================================================
-// 🔄 دوال الجلب الديناميكي من قاعدة البيانات (Supabase)
+// 🔄 دوال الجلب الديناميكي البحتة من Supabase
 // =========================================================================
-async function getSetting(key, defaultValue) {
+async function getSetting(key, defaultValue = '') {
   try {
     const { data } = await supabase.from('app_settings').select('value').eq('key', key).single();
     return data ? data.value : defaultValue;
@@ -42,11 +41,9 @@ async function getSetting(key, defaultValue) {
 async function getDynamicWilayas() {
   try {
     const { data } = await supabase.from('wilayas').select('name').eq('is_active', true);
-    if (data && data.length > 0) {
-      return data.map(item => item.name);
-    }
+    if (data && data.length > 0) return data.map(item => item.name);
   } catch (e) {}
-  return ['الجزائر العاصمة', 'وهران', 'مستغانم', 'قسنطينة', 'عنابة', 'البليدة', 'تلمسان', 'سطيف', 'بجاية'];
+  return [];
 }
 
 async function getDynamicPropertyTypes() {
@@ -65,14 +62,7 @@ async function getDynamicPropertyTypes() {
 
 async function getDynamicPropertyTypesKeyboard() {
   const data = await getDynamicPropertyTypes();
-
-  if (!data || data.length === 0) {
-    return Markup.keyboard([
-      ['شقة', 'فيلا', 'منزل'],
-      ['قطعة أرض', 'محل تجاري'],
-      ['🏠 القائمة الرئيسية']
-    ]).resize();
-  }
+  if (!data || data.length === 0) return Markup.keyboard([['🏠 القائمة الرئيسية']]).resize();
 
   const rows = {};
   for (const item of data) {
@@ -89,27 +79,8 @@ async function getDynamicPropertyTypesKeyboard() {
 }
 
 // =========================================================================
-// 📝 النصوص والأدوات المساعدة
+// 📝 الأدوات ومساعدات واجهة المستخدم
 // =========================================================================
-const STRINGS = {
-  ar: {
-    welcome: (name) => `أهلاً بك يا <b>${name}</b> في <b>منصة عقار الجزائر (Aqar)</b> 🏠\n\nنظام رقمي احترافي لإدارة وعروض العقارات. اختر من القائمة أدناه:`,
-    authPrompt: (name) => `أهلاً بك يا <b>${name}</b> في <b>منصة عقار الجزائر (Aqar)</b> 🏠\n\n⚠️ <b>تنبيه أمني:</b>\nللاستفادة من خدمات المنصة وتصفح العقارات، يرجى <b>تأكيد رقم هاتفك</b> أولاً بضغطة زر واحدة:`,
-    browseTitle: '🔍 <b>اختر الولاية المطلوبة لعرض العقارات من الأزرار أسفل الشاشة:</b>',
-    noProperties: '📭 عذراً، لا توجد أي عقارات مسجلة في المنصة حالياً.',
-    supportText: '📞 <b>مركز الدعم التقني - منصة عقار الجزائر:</b>\n\nنحن في خدمتك دائماً.',
-    aboutText: '🏛 <b>عن منصة عقار الجزائر (Aqar System):</b>\n\nنظام رقمي ذكي ومتطور لإدارة المعاملات العقارية.',
-    errorMsg: '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.',
-    contactBtn: '📞 اتصال بالمالك'
-  }
-};
-
-function t(userId, key, ...args) {
-  const lang = userLang[userId] || 'ar';
-  const val = STRINGS[lang][key] || STRINGS['ar'][key];
-  return typeof val === 'function' ? val(...args) : val;
-}
-
 function chunkButtons(buttonsArray, chunkSize = 4) {
   const chunked = [];
   for (let i = 0; i < buttonsArray.length; i += chunkSize) {
@@ -181,7 +152,6 @@ function formatMoney(numStr) {
   return Number(clean).toLocaleString('en-US') + ' دج';
 }
 
-// 🎛️ لوحة الأرقام الوهمية (Input Num + 1..9 + OK)
 function getSketchNumpad(displayValue, isPrice = true) {
   const displayText = displayValue ? (isPrice ? formatMoney(displayValue) : displayValue) : '0';
 
@@ -339,41 +309,35 @@ const WIZ_STEPS = [
 ];
 const WIZ_KEYS = ['property_type', 'state_name', 'price', 'phone', 'description', 'media_label', null, null];
 
-const WIZ = {
-  ar: {
-    title: '🏢 <b>نشر عقار جديد</b>',
-    step: (n, total) => `الخطوة ${n} من ${total}`,
-    labels: ['🏠 النوع', '📍 الولاية', '💰 السعر', '📞 الهاتف', '📝 الوصف', '📸 الوسائط', '💳 الدفع'],
-    prompts: [
-      'اختر <b>نوع العقار</b> من الأزرار أدناه:',
-      'اختر <b>الولاية</b> من الأزرار أدناه:',
-      'استخدم لوحة الأرقام أدناه لتشكيل السعر، ثم اضغط <b>OK</b>:',
-      'استخدم لوحة الأرقام أدناه لإدخال رقم الهاتف، ثم اضغط <b>OK</b>:',
-      'أدخل <b>الوصف التفصيلي</b> للعقار:',
-      'أرسل الآن <b>صورة أو فيديو العقار</b>:',
-      'اختر طريقة الدفع أدناه:',
-      'أرسل الآن <b>صورة وصل الدفع (BaridiMob / CCP)</b>:'
-    ],
-    back: '⬅️ رجوع',
-    home: '🏠 القائمة الرئيسية',
-    cancelBtn: '❌ إلغاء العملية والعودة',
-    publishing: '⏳ جاري المعالجة والحفظ...'
-  }
-};
+const WIZ_LABELS = ['🏠 النوع', '📍 الولاية', '💰 السعر', '📞 الهاتف', '📝 الوصف', '📸 الوسائط', '💳 الدفع'];
+
+async function getWizardPrompt(stepIndex) {
+  const prompts = [
+    'اختر <b>نوع العقار</b> من الأزرار أدناه:',
+    'اختر <b>الولاية</b> من الأزرار أدناه:',
+    'استخدم لوحة الأرقام أدناه لتشكيل السعر، ثم اضغط <b>OK</b>:',
+    'استخدم لوحة الأرقام أدناه لإدخال رقم الهاتف، ثم اضغط <b>OK</b>:',
+    'أدخل <b>الوصف التفصيلي</b> للعقار:',
+    'أرسل الآن <b>صورة أو فيديو العقار</b>:',
+    'اختر طريقة الدفع أدناه:',
+    'أرسل الآن <b>صورة وصل الدفع (BaridiMob / CCP)</b>:'
+  ];
+  return prompts[stepIndex] || '';
+}
 
 function escapeHtml(str) {
   return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-function buildWizardText(state, opts = {}) {
-  const W = WIZ['ar'];
+async function buildWizardText(state, opts = {}) {
   const totalSteps = 7;
   let active = WIZ_STEPS.indexOf(state.step);
   if (active >= 6 || state.step === 'publishing') active = 6;
   if (active < 0) active = 0;
 
   const d = state.data;
-  const head = opts.header || `${W.title}  •  ${W.step(active + 1, totalSteps)}`;
+  const titleText = await getSetting('wizard_title', '🏢 <b>نشر عقار جديد</b>');
+  const head = opts.header || `${titleText}  •  الخطوة ${active + 1} من ${totalSteps}`;
   if (opts.onlyHeader) return head;
 
   const filled = opts.complete ? totalSteps : active + 1;
@@ -395,35 +359,39 @@ function buildWizardText(state, opts = {}) {
 
   const lines = values.map((val, i) => {
     const mark = val ? '✅' : (i === active ? '👉' : '▫️');
-    return `${mark} ${W.labels[i]}: ${val ? '<b>' + escapeHtml(val) + '</b>' : '…'}`;
+    return `${mark} ${WIZ_LABELS[i]}: ${val ? '<b>' + escapeHtml(val) + '</b>' : '…'}`;
   });
 
   const stepPromptIdx = Math.max(WIZ_STEPS.indexOf(state.step), 0);
-  const footer = opts.footer !== undefined ? opts.footer : W.prompts[stepPromptIdx];
+  const defaultPrompt = await getWizardPrompt(stepPromptIdx);
+  const footer = opts.footer !== undefined ? opts.footer : defaultPrompt;
   return `${head}\n${bar}\n\n${lines.join('\n')}` + (footer ? `\n\n${footer}` : '');
 }
 
 async function getStandardReplyKeyboard(stateStep) {
-  const W = WIZ['ar'];
+  const backText = '⬅️ رجوع';
+  const homeText = '🏠 القائمة الرئيسية';
+  const cancelText = '❌ إلغاء العملية والعودة';
+
   if (stateStep === 'waiting_for_type') {
     return await getDynamicPropertyTypesKeyboard();
   } else if (stateStep === 'waiting_for_state') {
     const dynamicWilayas = await getDynamicWilayas();
     return Markup.keyboard([
       ...chunkButtons(dynamicWilayas.map(w => `📍 ${w}`), 4),
-      [W.back, W.home]
+      [backText, homeText]
     ]).resize();
   } else if (stateStep === 'waiting_for_payment_choice') {
     const publishCost = await getSetting('publish_cost_points', '100');
     return Markup.keyboard([
       ['💳 الدفع عبر BaridiMob / CCP'],
       [`🪙 النشر مجاناً (${publishCost} نقطة)`],
-      [W.back, W.home]
+      [backText, homeText]
     ]).resize();
   } else {
     return Markup.keyboard([
-      [W.back, W.home],
-      [W.cancelBtn]
+      [backText, homeText],
+      [cancelText]
     ]).resize();
   }
 }
@@ -444,7 +412,7 @@ async function renderWizard(ctx, userId, opts = {}) {
       `🪙 <b>رصيدك الحالي:</b> <b>${currentPoints} نقطة</b>`;
   }
 
-  const text = buildWizardText(state, opts);
+  const text = await buildWizardText(state, opts);
 
   if (state.step === 'publishing' && !opts.noKeyboard && state.wizardMsgId) {
     try {
@@ -483,7 +451,7 @@ async function renderWizard(ctx, userId, opts = {}) {
 }
 
 // =========================================================================
-// 🎯 الأوامر ومعالجات الأحداث (Handlers)
+// 🎯 الأوامر ومعالجات الأحداث
 // =========================================================================
 bot.start(async (ctx) => {
   await safeDeleteUserMessage(ctx);
@@ -505,11 +473,15 @@ bot.start(async (ctx) => {
   userLang[userId] = 'ar';
 
   const verified = await isUserVerified(userId);
+  const rawWelcomeTpl = await getSetting('welcome_msg_template', 'أهلاً بك يا <b>{name}</b> في <b>منصة عقار الجزائر (Aqar)</b> 🏠\n\nنظام رقمي احترافي لإدارة وعروض العقارات. اختر من القائمة أدناه:');
+  const welcomeText = rawWelcomeTpl.replace('{name}', userName);
+
   if (verified) {
     delete userState[userId];
-    ctx.reply(t(userId, 'welcome', userName), { parse_mode: 'HTML', ...getMainMenuKeyboard() });
+    ctx.reply(welcomeText, { parse_mode: 'HTML', ...getMainMenuKeyboard() });
   } else {
-    ctx.reply(t(userId, 'authPrompt', userName), { parse_mode: 'HTML', ...getAuthKeyboard() });
+    const authText = await getSetting('auth_prompt_template', `أهلاً بك يا <b>${userName}</b> في <b>منصة عقار الجزائر (Aqar)</b> 🏠\n\n⚠️ <b>تنبيه أمني:</b>\nللاستفادة من خدمات المنصة وتصفح العقارات، يرجى <b>تأكيد رقم هاتفك</b> أولاً بضغطة زر واحدة:`);
+    ctx.reply(authText, { parse_mode: 'HTML', ...getAuthKeyboard() });
   }
 });
 
@@ -547,7 +519,7 @@ bot.on('contact', async (ctx) => {
       ...getMainMenuKeyboard()
     });
   } catch (err) {
-    ctx.reply(t(userId, 'errorMsg'));
+    ctx.reply('⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.');
   }
 });
 
@@ -643,32 +615,34 @@ bot.hears('🌐 تصفح الموقع الرسمي (البروزر)', async (ctx
 
 bot.hears('📞 الدعم والإدارة', async (ctx) => {
   await safeDeleteUserMessage(ctx);
-  ctx.reply(t(ctx.from.id, 'supportText'), { parse_mode: 'HTML', ...getMainMenuKeyboard() });
+  const supportMsg = await getSetting('support_text', '📞 <b>مركز الدعم التقني - منصة عقار الجزائر:</b>\n\nنحن في خدمتك دائماً.');
+  ctx.reply(supportMsg, { parse_mode: 'HTML', ...getMainMenuKeyboard() });
 });
 
 bot.hears('ℹ️ عن المنصة', async (ctx) => {
   await safeDeleteUserMessage(ctx);
-  const userId = ctx.from.id;
-  ctx.reply(t(userId, 'aboutText'), { parse_mode: 'HTML', ...getMainMenuKeyboard() });
+  const aboutMsg = await getSetting('about_text', '🏛 <b>عن منصة عقار الجزائر (Aqar System):</b>\n\nنظام رقمي ذكي ومتطور لإدارة المعاملات العقارية.');
+  ctx.reply(aboutMsg, { parse_mode: 'HTML', ...getMainMenuKeyboard() });
 });
 
 // =========================================================================
-// 🔍 قسم تصفح العقارات
+// 🔍 تصفح العقارات
 // =========================================================================
 async function showStatesMenu(ctx) {
   const userId = ctx.from.id;
   try {
     const { data } = await supabase.from('test_messages').select('state_name');
-    if (!data || data.length === 0) return ctx.reply(t(userId, 'noProperties'), getMainMenuKeyboard());
+    if (!data || data.length === 0) return ctx.reply('📭 عذراً، لا توجد أي عقارات مسجلة في المنصة حالياً.', getMainMenuKeyboard());
 
     const uniqueStates = [...new Set(data.map(item => item.state_name).filter(Boolean))];
     const stateButtons = uniqueStates.map(state => `📍 ${state}`);
     const chunkedStates = chunkButtons(stateButtons, 4);
     chunkedStates.push(['🌐 الكل'], ['🏠 القائمة الرئيسية']);
 
-    ctx.reply(t(userId, 'browseTitle'), { parse_mode: 'HTML', ...Markup.keyboard(chunkedStates).resize() });
+    const browseTitle = await getSetting('browse_title', '🔍 <b>اختر الولاية المطلوبة لعرض العقارات من الأزرار أسفل الشاشة:</b>');
+    ctx.reply(browseTitle, { parse_mode: 'HTML', ...Markup.keyboard(chunkedStates).resize() });
   } catch (err) {
-    ctx.reply(t(userId, 'errorMsg'));
+    ctx.reply('⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.');
   }
 }
 
@@ -731,7 +705,8 @@ async function renderPropertyPage(ctx, userId, pageIndex) {
     const item = data[pageIndex];
     const caption = `🏛 <b>الولاية:</b> ${item.state_name} (${pageIndex + 1}/${data.length})\n\n🏠 <b>العقار:</b> ${item.property_type}\n💰 <b>السعر:</b> ${item.price}\n📞 <b>الهاتف:</b> <code>${item.phone}</code>\n📝 <b>الوصف:</b> ${item.description || item.message}`;
 
-    const inlineKb = Markup.inlineKeyboard([[Markup.button.callback(t(userId, 'contactBtn'), 'contact_admin')]]);
+    const contactBtnText = await getSetting('contact_btn_text', '📞 اتصال بالمالك');
+    const inlineKb = Markup.inlineKeyboard([[Markup.button.callback(contactBtnText, 'contact_admin')]]);
     const replyKb = getBrowsingKeyboard(pageIndex, data.length);
 
     if (session.lastMessageId) await ctx.telegram.deleteMessage(ctx.chat.id, session.lastMessageId).catch(() => {});
@@ -747,7 +722,7 @@ async function renderPropertyPage(ctx, userId, pageIndex) {
     }
     if (sentMsg) session.lastMessageId = sentMsg.message_id;
   } catch (err) {
-    ctx.reply(t(userId, 'errorMsg'));
+    ctx.reply('⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.');
   }
 }
 
@@ -826,7 +801,7 @@ bot.hears('التالي ➡️', async (ctx) => {
 });
 
 // =========================================================================
-// ➕ قسم إضافة عقار والدفع
+// ➕ إضافة عقار والدفع
 // =========================================================================
 bot.hears('➕ إضافة عقار جديد', async (ctx) => {
   await safeDeleteUserMessage(ctx);
@@ -879,7 +854,8 @@ bot.hears(/^🪙 النشر مجاناً/, async (ctx) => {
 
   state.step = 'publishing';
   try {
-    await renderWizard(ctx, userId, { footer: WIZ['ar'].publishing });
+    const publishingText = await getSetting('publishing_text', '⏳ جاري المعالجة والحفظ...');
+    await renderWizard(ctx, userId, { footer: publishingText });
 
     let mediaUrl = `tg:${state.data.media_file_id}`;
     try {
@@ -922,13 +898,12 @@ bot.hears(/^🪙 النشر مجاناً/, async (ctx) => {
     );
     delete userState[userId];
   } catch (err) {
-    console.error('Points publish error:', err);
-    ctx.reply(t(userId, 'errorMsg'), getMainMenuKeyboard());
+    ctx.reply('⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getMainMenuKeyboard());
     delete userState[userId];
   }
 });
 
-// ⚡ معالج لوحة المفاتيح الوهمية (Inline Numpad Actions)
+// ⚡ معالج لوحة الأرقام (Numpad)
 bot.action(/^n_(.+)$/, async (ctx) => {
   const userId = ctx.from.id;
   const state = userState[userId];
@@ -972,7 +947,6 @@ bot.action('noop_input', async (ctx) => {
   await ctx.answerCbQuery('هذا هو حقل الإدخال الرقمي المؤقت 💡');
 });
 
-// 📝 معالج النصوص الديناميكي (اختيار نوع العقار من الجدول + إدخال الوصف)
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const userText = ctx.message.text ? ctx.message.text.trim() : '';
@@ -983,9 +957,7 @@ bot.on('text', async (ctx) => {
 
   if (state.step === 'waiting_for_type') {
     const validTypes = await getDynamicPropertyTypes();
-    const allowedTitles = validTypes.length > 0
-      ? validTypes.map(item => item.title)
-      : ['شقة', 'فيلا', 'منزل', 'قطعة أرض', 'محل تجاري'];
+    const allowedTitles = validTypes.map(item => item.title);
 
     if (allowedTitles.includes(userText)) {
       await safeDeleteUserMessage(ctx);
@@ -1025,7 +997,8 @@ bot.on('photo', async (ctx) => {
     state.step = 'publishing';
 
     try {
-      await renderWizard(ctx, userId, { footer: WIZ['ar'].publishing });
+      const publishingText = await getSetting('publishing_text', '⏳ جاري المعالجة والحفظ...');
+      await renderWizard(ctx, userId, { footer: publishingText });
 
       let mediaUrl = `tg:${state.data.media_file_id}`;
       try {
@@ -1108,8 +1081,7 @@ bot.on('photo', async (ctx) => {
       );
       delete userState[userId];
     } catch (err) {
-      console.error('Receipt submit error:', err);
-      ctx.reply(t(userId, 'errorMsg'), getMainMenuKeyboard());
+      ctx.reply('⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getMainMenuKeyboard());
       delete userState[userId];
     }
   }
@@ -1195,7 +1167,6 @@ const handleAdminAction = async (ctx, action) => {
       );
     }
   } catch (err) {
-    console.error('Admin action error:', err);
     await ctx.reply(`⚠️ حدث خطأ أثناء معالجة الطلب #${requestId}: ${err.message}`);
   }
 };
@@ -1204,7 +1175,7 @@ bot.action(/^approve_(\d+)$/, (ctx) => handleAdminAction(ctx, 'approve'));
 bot.action(/^reject_(\d+)$/, (ctx) => handleAdminAction(ctx, 'reject'));
 
 // =========================================================================
-// 🚀 تشغيل السيرفر والـ Webhook
+// 🚀 تشغيل السيرفر
 // =========================================================================
 const PORT = process.env.PORT || 3000;
 if (WEBHOOK_DOMAIN) {
