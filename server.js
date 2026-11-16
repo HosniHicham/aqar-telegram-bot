@@ -11,8 +11,6 @@ const SUPABASE_URL = process.env.SUPABASE_URL || 'https://jjrisfyotyryanhbsvlz.s
 const SUPABASE_KEY = process.env.SUPABASE_KEY || 'sb_publishable_t7kVxzmOtz16C95U_B52FA_AJl_WK-h';
 
 const ADMIN_ID = process.env.ADMIN_ID ? Number(process.env.ADMIN_ID) : 5883330772;
-const AD_REWARD_POINTS = 25; 
-const PUBLISH_COST_POINTS = 100; 
 
 if (!BOT_TOKEN) {
   console.error('Error: BOT_TOKEN environment variable is missing!');
@@ -29,12 +27,29 @@ const userState = {};
 const userLang = {};
 const browsingSession = {};
 
-const POPULAR_WILAYAS = [
-  'الجزائر العاصمة', 'وهران', 'مستغانم', 'قسنطينة',
-  'عنابة', 'البليدة', 'تلمسان', 'سطيف', 'بجاية'
-];
-
 const PROPERTY_TYPES = ['شقة', 'فيلا', 'منزل', 'قطعة أرض', 'محل تجاري'];
+
+// 🔄 دالة لجلب الإعدادات ديناميكياً من Supabase مع قيم افتراضية احتياطية
+async function getSetting(key, defaultValue) {
+  try {
+    const { data } = await supabase.from('app_settings').select('value').eq('key', key).single();
+    return data ? data.value : defaultValue;
+  } catch (e) {
+    return defaultValue;
+  }
+}
+
+// 🔄 دالة لجلب قائمة الولايات النشطة ديناميكياً من جدول wilayas
+async function getDynamicWilayas() {
+  try {
+    const { data } = await supabase.from('wilayas').select('name').eq('is_active', true);
+    if (data && data.length > 0) {
+      return data.map(item => item.name);
+    }
+  } catch (e) {}
+  // احتياطي في حال حدوث خطأ بالاتصال
+  return ['الجزائر العاصمة', 'وهران', 'مستغانم', 'قسنطينة', 'عنابة', 'البليدة', 'تلمسان', 'سطيف', 'بجاية'];
+}
 
 const STRINGS = {
   ar: {
@@ -42,11 +57,6 @@ const STRINGS = {
     authPrompt: (name) => `أهلاً بك يا <b>${name}</b> في <b>منصة عقار الجزائر (Aqar)</b> 🏠\n\n⚠️ <b>تنبيه أمني:</b>\nللاستفادة من خدمات المنصة وتصفح العقارات، يرجى <b>تأكيد رقم هاتفك</b> أولاً بضغطة زر واحدة:`,
     browseTitle: '🔍 <b>اختر الولاية المطلوبة لعرض العقارات من الأزرار أسفل الشاشة:</b>',
     noProperties: '📭 عذراً، لا توجد أي عقارات مسجلة في المنصة حالياً.',
-    ccpInstructions:
-      `💳 <b>الدفع عبر بريدي موب أو CCP:</b>\n\nيرجى تحويل مبلغ <b>500 دج</b> إلى الحساب التالي:\n📌 <b>رقم الحساب (RIP) (اضغط للنسخ 👇):</b>\n<code>00234567890123456789</code>\n\n📸 <b>بعد التحويل، أرسل هنا صورة وصل الدفع (Reçu):</b>`,
-    paymentPending: (reqId) => `⏳ <b>تم استلام وصل الدفع وحفظ طلبك برقم (#${reqId})!</b>\n\nالإعلان قيد المراجعة من طرف الإدارة وسيتم نشره فور تأكيد التحويل.`,
-    pointsPublishSuccess: `🎉 <b>تم خصم ${PUBLISH_COST_POINTS} نقطة ونشر إعلانك بنجاح في المنصة مجاناً!</b>`,
-    notEnoughPoints: (points) => `⚠️ <b>عذراً، رصيدك غير كافٍ!</b>\nرصيدك الحالي: <b>${points} نقطة</b> وتحتاج إلى <b>${PUBLISH_COST_POINTS} نقطة</b>.\n\nاضغط على زر <b>"🎁 رصيدي وجمع النقاط"</b> لمشاهدة إعلانات وربح نقاط مجانية!`,
     supportText: '📞 <b>مركز الدعم التقني - منصة عقار الجزائر:</b>\n\nنحن في خدمتك دائماً.',
     aboutText: '🏛 <b>عن منصة عقار الجزائر (Aqar System):</b>\n\nنظام رقمي ذكي ومتطور لإدارة المعاملات العقارية.',
     errorMsg: '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.',
@@ -138,43 +148,31 @@ function formatMoney(numStr) {
   return Number(clean).toLocaleString('en-US') + ' دج';
 }
 
-// 🎛️ تصميم حقل الإدخال الوهمي (Input Num) ولوحة الأرقام مطابقة 100% للرسمة والترتيب المطلوب
+// 🎛️ تصميم لوحة الأرقام الوهمية
 function getSketchNumpad(displayValue, isPrice = true) {
   const displayText = displayValue ? (isPrice ? formatMoney(displayValue) : displayValue) : '0';
   
   return Markup.inlineKeyboard([
     [Markup.button.callback(`📥 [ ${displayText} ]`, 'noop_input')],
-    [
-      Markup.button.callback('1', 'n_1'),
-      Markup.button.callback('2', 'n_2'),
-      Markup.button.callback('3', 'n_3')
-    ],
-    [
-      Markup.button.callback('4', 'n_4'),
-      Markup.button.callback('5', 'n_5'),
-      Markup.button.callback('6', 'n_6')
-    ],
-    [
-      Markup.button.callback('7', 'n_7'),
-      Markup.button.callback('8', 'n_8'),
-      Markup.button.callback('9', 'n_9')
-    ],
+    [Markup.button.callback('1', 'n_1'), Markup.button.callback('2', 'n_2'), Markup.button.callback('3', 'n_3')],
+    [Markup.button.callback('4', 'n_4'), Markup.button.callback('5', 'n_5'), Markup.button.callback('6', 'n_6')],
+    [Markup.button.callback('7', 'n_7'), Markup.button.callback('8', 'n_8'), Markup.button.callback('9', 'n_9')],
     [
       Markup.button.callback('0', 'n_0'),
       isPrice ? Markup.button.callback('+مليون', 'n_million') : Markup.button.callback('⌫', 'n_back'),
       Markup.button.callback('🗑️ مسح', 'n_clear')
     ],
-    [
-      Markup.button.callback('✅ [ OK ] تأكيد', 'n_confirm')
-    ]
+    [Markup.button.callback('✅ [ OK ] تأكيد', 'n_confirm')]
   ]);
 }
 
 // =========================================================================
-// 🎬 صفحة الويب المصغرة لربح النقاط
+// 🎬 صفحة الويب المصغرة لربح النقاط (ديناميكية القيمة)
 // =========================================================================
-app.get('/watch-ad', (req, res) => {
+app.get('/watch-ad', async (req, res) => {
   const userId = req.query.uid || '';
+  const rewardPoints = await getSetting('ad_reward_points', '25');
+
   res.send(`<!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
@@ -209,7 +207,7 @@ app.get('/watch-ad', (req, res) => {
 <body>
   <div class="card">
     <h2>🎁 ربح نقاط عقار الجزائر</h2>
-    <p style="color:#94A3B8; font-size:14px;">اضغط على الزر أدناه لبدء مشاهدة الإعلان وربح +${AD_REWARD_POINTS} نقطة.</p>
+    <p style="color:#94A3B8; font-size:14px;">اضغط على الزر أدناه لبدء مشاهدة الإعلان وربح +${rewardPoints} نقطة.</p>
     <div id="alertBox" class="alert-box">
       ⚠️ <b>تنبيه هام جداً:</b><br>يرجى الانتظار وعدم إغلاق الصفحة حتى ينتهي الإعلان بالكامل لكي يتم احتساب نقاطك تلقائياً!
     </div>
@@ -277,12 +275,13 @@ app.post('/api/claim-ad-reward', async (req, res) => {
     const user = await getUserRecord(userId);
     if (!user) return res.status(404).json({ ok: false });
 
-    const newPoints = (user.points || 0) + AD_REWARD_POINTS;
+    const rewardPoints = Number(await getSetting('ad_reward_points', '25'));
+    const newPoints = (user.points || 0) + rewardPoints;
     await supabase.from('users').update({ points: newPoints }).eq('id', userId);
 
     await bot.telegram.sendMessage(
       userId,
-      `🎉 <b>مبروك! تمت إضافة +${AD_REWARD_POINTS} نقطة إلى رصيدك بعد مشاهدة الإعلان.</b>\n🪙 <b>رصيدك الحالي:</b> ${newPoints} نقطة.`,
+      `🎉 <b>مبروك! تمت إضافة +${rewardPoints} نقطة إلى رصيدك بعد مشاهدة الإعلان.</b>\n🪙 <b>رصيدك الحالي:</b> ${newPoints} نقطة.`,
       { parse_mode: 'HTML' }
     ).catch(() => {});
 
@@ -293,7 +292,7 @@ app.post('/api/claim-ad-reward', async (req, res) => {
 });
 
 // =========================================================================
-// 🏢 معالج نشر العقار
+// 🏢 معالج نشر العقار (ديناميكي بالكامل)
 // =========================================================================
 const WIZ_STEPS = [
   'waiting_for_type',
@@ -372,24 +371,25 @@ function buildWizardText(userId, state, opts = {}) {
   return `${head}\n${bar}\n\n${lines.join('\n')}` + (footer ? `\n\n${footer}` : '');
 }
 
-function getStandardReplyKeyboard(stateStep, currentPoints = 0) {
+async function getStandardReplyKeyboard(stateStep, userId) {
   const W = WIZ['ar'];
-  const pointsAfter = currentPoints - PUBLISH_COST_POINTS;
-
   if (stateStep === 'waiting_for_type') {
     return Markup.keyboard([
       ...chunkButtons(PROPERTY_TYPES.map(tp => `${tp}`), 3),
       [W.home]
     ]).resize();
   } else if (stateStep === 'waiting_for_state') {
+    // جلب الولايات ديناميكياً من قاعدة البيانات للخطوة الخاصة بإضافة عقار
+    const dynamicWilayas = await getDynamicWilayas();
     return Markup.keyboard([
-      ...chunkButtons(POPULAR_WILAYAS.map(w => `📍 ${w}`), 4),
+      ...chunkButtons(dynamicWilayas.map(w => `📍 ${w}`), 4),
       [W.back, W.home]
     ]).resize();
   } else if (stateStep === 'waiting_for_payment_choice') {
+    const publishCost = await getSetting('publish_cost_points', '100');
     return Markup.keyboard([
       ['💳 الدفع عبر BaridiMob / CCP'],
-      [`🪙 النشر مجاناً (${PUBLISH_COST_POINTS} نقطة)`],
+      [`🪙 النشر مجاناً (${publishCost} نقطة)`],
       [W.back, W.home]
     ]).resize();
   } else {
@@ -406,13 +406,13 @@ async function renderWizard(ctx, userId, opts = {}) {
 
   const user = await getUserRecord(userId);
   const currentPoints = user ? (user.points || 0) : 0;
+  const publishCost = await getSetting('publish_cost_points', '100');
 
-  // إذا كنا في خطوة الدفع، نقوم بعرض رصيد المستخدم والنقاط المطلوبة بوضوح في الرسالة والزر
   if (state.step === 'waiting_for_payment_choice' && !opts.footer) {
     opts.footer = 
       `💰 <b>اختر طريقة إتمام ونشر الإعلان:</b>\n\n` +
       `1️⃣ <b>الدفع السريع (BaridiMob / CCP):</b> 500 دج (أولوية ومراجعة فورية).\n` +
-      `2️⃣ <b>النشر المجاني بالنقاط:</b> يتطلب <b>${PUBLISH_COST_POINTS} نقطة</b> (رصيدك الحالي: <b>${currentPoints} نقطة</b>).`;
+      `2️⃣ <b>النشر المجاني بالنقاط:</b> يتطلب <b>${publishCost} نقطة</b> (رصيدك الحالي: <b>${currentPoints} نقطة</b>).`;
   }
 
   const text = buildWizardText(userId, state, opts);
@@ -424,7 +424,7 @@ async function renderWizard(ctx, userId, opts = {}) {
     return;
   }
 
-  const replyKeyboard = opts.noKeyboard ? getMainMenuKeyboard(userId) : getStandardReplyKeyboard(state.step, currentPoints);
+  const replyKeyboard = opts.noKeyboard ? getMainMenuKeyboard(userId) : await getStandardReplyKeyboard(state.step, userId);
 
   let extraMarkup = replyKeyboard;
   if (state.step === 'waiting_for_price') {
@@ -458,6 +458,8 @@ bot.hears('🎁 رصيدي وجمع النقاط', async (ctx) => {
   const userId = ctx.from.id;
   const user = await getUserRecord(userId);
   const points = user ? (user.points || 0) : 0;
+  const rewardPoints = await getSetting('ad_reward_points', '25');
+  const publishCost = await getSetting('publish_cost_points', '100');
 
   const botUsername = ctx.botInfo?.username || 'AqarDZ_bot';
   const refLink = `https://t.me/${botUsername}?start=ref_${userId}`;
@@ -465,8 +467,8 @@ bot.hears('🎁 رصيدي وجمع النقاط', async (ctx) => {
   const msg =
     `🎁 <b>محفظة النقاط والمكافآت:</b>\n\n` +
     `🪙 <b>رصيدك الحالي:</b> <b>${points} نقطة</b>\n` +
-    `📌 <b>تكلفة نشر عقار مجاناً:</b> ${PUBLISH_COST_POINTS} نقطة\n\n` +
-    `🎬 <b>الطريقة 1: مشاهدة إعلان (+${AD_REWARD_POINTS} نقطة)</b>\n` +
+    `📌 <b>تكلفة نشر عقار مجاناً:</b> ${publishCost} نقطة\n\n` +
+    `🎬 <b>الطريقة 1: مشاهدة إعلان (+${rewardPoints} نقطة)</b>\n` +
     `اضغط على الزر أدناه لمشاهدة إعلان الفيديو وربح النقاط فوراً.\n\n` +
     `👥 <b>الطريقة 2: دعوة الأصدقاء (+50 نقطة لكل صديق)</b>\n` +
     `شارك رابطك الخاص:\n<code>${refLink}</code>`;
@@ -474,7 +476,7 @@ bot.hears('🎁 رصيدي وجمع النقاط', async (ctx) => {
   const inlineButtons = [];
   if (WEBHOOK_DOMAIN) {
     inlineButtons.push([
-      Markup.button.webApp(`🎬 مشاهدة إعلان الفيديو (+${AD_REWARD_POINTS} نقطة)`, `${WEBHOOK_DOMAIN}/watch-ad?uid=${userId}`)
+      Markup.button.webApp(`🎬 مشاهدة إعلان الفيديو (+${rewardPoints} نقطة)`, `${WEBHOOK_DOMAIN}/watch-ad?uid=${userId}`)
     ]);
   }
 
@@ -568,13 +570,7 @@ bot.on('contact', async (ctx) => {
 
   try {
     const { error: insertError } = await supabase.from('users').insert([
-      {
-        id: userId,
-        first_name: firstName,
-        phone_number: phoneNumber,
-        points: 0,
-        referred_by: referrerId
-      }
+      { id: userId, first_name: firstName, phone_number: phoneNumber, points: 0, referred_by: referrerId }
     ]);
     if (insertError) throw insertError;
 
@@ -597,7 +593,6 @@ bot.on('contact', async (ctx) => {
       ...getMainMenuKeyboard(userId)
     });
   } catch (err) {
-    console.error('User verification insert error:', err);
     ctx.reply(t(userId, 'errorMsg'));
   }
 });
@@ -626,6 +621,7 @@ bot.use(async (ctx, next) => {
   return next();
 });
 
+// 📌 تصفح العقارات المتاحة (يبقى يعمل كما هو وبثبات تام)
 async function showStatesMenu(ctx) {
   const userId = ctx.from.id;
   try {
@@ -823,9 +819,12 @@ bot.hears('💳 الدفع عبر BaridiMob / CCP', async (ctx) => {
   const state = userState[userId];
   if (!state || state.step !== 'waiting_for_payment_choice') return;
 
+  const ccpRip = await getSetting('ccp_rip', '00234567890123456789');
+  const ccpInstructions = `💳 <b>الدفع عبر بريدي موب أو CCP:</b>\n\nيرجى تحويل مبلغ <b>500 دج</b> إلى الحساب التالي:\n📌 <b>رقم الحساب (RIP) (اضغط للنسخ 👇):</b>\n<code>${ccpRip}</code>\n\n📸 <b>بعد التحويل، أرسل هنا صورة وصل الدفع (Reçu):</b>`;
+
   state.data.payment_label = '💳 تحويل بريدي موب / CCP';
   state.step = 'waiting_for_payment_receipt';
-  await renderWizard(ctx, userId, { footer: t(userId, 'ccpInstructions') });
+  await renderWizard(ctx, userId, { footer: ccpInstructions });
 });
 
 bot.hears(/^🪙 النشر مجاناً/, async (ctx) => {
@@ -836,9 +835,10 @@ bot.hears(/^🪙 النشر مجاناً/, async (ctx) => {
 
   const user = await getUserRecord(userId);
   const currentPoints = user ? (user.points || 0) : 0;
+  const publishCost = Number(await getSetting('publish_cost_points', '100'));
 
-  if (currentPoints < PUBLISH_COST_POINTS) {
-    return ctx.reply(t(userId, 'notEnoughPoints', currentPoints), { parse_mode: 'HTML' });
+  if (currentPoints < publishCost) {
+    return ctx.reply(`⚠️ <b>عذراً، رصيدك غير كافٍ!</b>\nرصيدك الحالي: <b>${currentPoints} نقطة</b> وتحتاج إلى <b>${publishCost} نقطة</b>.\n\nاضغط على زر <b>"🎁 رصيدي وجمع النقاط"</b> لمشاهدة إعلانات وربح نقاط مجانية!`, { parse_mode: 'HTML' });
   }
 
   state.step = 'publishing';
@@ -860,7 +860,7 @@ bot.hears(/^🪙 النشر مجاناً/, async (ctx) => {
 
     const isVideo = state.data.media_type === 'video';
 
-    await supabase.from('users').update({ points: currentPoints - PUBLISH_COST_POINTS }).eq('id', userId);
+    await supabase.from('users').update({ points: currentPoints - publishCost }).eq('id', userId);
 
     const cleanPrice = String(state.data.price || '0').replace(/[^\d.]/g, '') || '0';
     const cleanPhone = String(state.data.phone || '').trim();
@@ -880,7 +880,7 @@ bot.hears(/^🪙 النشر مجاناً/, async (ctx) => {
       await ctx.telegram.deleteMessage(state.chatId, state.wizardMsgId).catch(() => {});
     }
 
-    await ctx.reply(t(userId, 'pointsPublishSuccess'), { parse_mode: 'HTML', ...getMainMenuKeyboard(userId) });
+    await ctx.reply(`🎉 <b>تم خصم ${publishCost} نقطة ونشر إعلانك بنجاح في المنصة مجاناً!</b>`, { parse_mode: 'HTML', ...getMainMenuKeyboard(userId) });
     delete userState[userId];
   } catch (err) {
     console.error('Points publish error:', err);
@@ -1107,10 +1107,7 @@ const handleAdminAction = async (ctx, action) => {
 
       if (publishError) throw publishError;
 
-      await supabase
-        .from('pending_properties')
-        .update({ status: 'approved' })
-        .eq('id', requestId);
+      await supabase.from('pending_properties').update({ status: 'approved' }).eq('id', requestId);
 
       await ctx.telegram.sendMessage(
         targetUserId,
@@ -1123,10 +1120,7 @@ const handleAdminAction = async (ctx, action) => {
         { parse_mode: 'HTML' }
       );
     } else {
-      await supabase
-        .from('pending_properties')
-        .update({ status: 'rejected' })
-        .eq('id', requestId);
+      await supabase.from('pending_properties').update({ status: 'rejected' }).eq('id', requestId);
 
       await ctx.telegram.sendMessage(
         targetUserId,
