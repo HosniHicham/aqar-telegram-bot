@@ -11,8 +11,8 @@ const SUPABASE_URL = process.env.SUPABASE_URL || 'https://jjrisfyotyryanhbsvlz.s
 const SUPABASE_KEY = process.env.SUPABASE_KEY || 'sb_publishable_t7kVxzmOtz16C95U_B52FA_AJl_WK-h';
 
 const ADMIN_ID = process.env.ADMIN_ID ? Number(process.env.ADMIN_ID) : 5883330772;
-const AD_REWARD_POINTS = 25; // عدد النقاط لكل مشاهدة إعلان
-const PUBLISH_COST_POINTS = 100; // تكلفة نشر إعلان واحد بالنقاط
+const AD_REWARD_POINTS = 25; 
+const PUBLISH_COST_POINTS = 100; 
 
 if (!BOT_TOKEN) {
   console.error('Error: BOT_TOKEN environment variable is missing!');
@@ -139,7 +139,7 @@ async function getUniqueStatesList() {
 }
 
 // =========================================================================
-// 🎬 صفحة الويب المصغرة مع رسالة تنبيه صارمة وإخفاء واجهة البوت أثناء الإعلان
+// 🎬 صفحة الويب المصغرة لربح النقاط
 // =========================================================================
 app.get('/watch-ad', (req, res) => {
   const userId = req.query.uid || '';
@@ -150,10 +150,7 @@ app.get('/watch-ad', (req, res) => {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>مشاهدة إعلان وربح نقاط</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  
-  <!-- سكربت إعلانات Monetag SDK الحقيقي -->
   <script src='//libtl.com/sdk.js' data-zone='12268522' data-sdk='show_12268522'></script>
-
   <style>
     body {
       background: #0F172A; color: #F8FAFC; font-family: system-ui, -apple-system, sans-serif;
@@ -181,15 +178,11 @@ app.get('/watch-ad', (req, res) => {
   <div class="card">
     <h2>🎁 ربح نقاط عقار الجزائر</h2>
     <p style="color:#94A3B8; font-size:14px;">اضغط على الزر أدناه لبدء مشاهدة الإعلان وربح +${AD_REWARD_POINTS} نقطة.</p>
-    
-    <!-- رسالة التحذير والتنبيه الصارمة -->
     <div id="alertBox" class="alert-box">
       ⚠️ <b>تنبيه هام جداً:</b><br>يرجى الانتظار وعدم إغلاق الصفحة حتى ينتهي الإعلان بالكامل لكي يتم احتساب نقاطك تلقائياً!
     </div>
-
     <button id="adBtn" onclick="triggerAd()">▶️ عرض الإعلان الآن</button>
   </div>
-
   <script>
     const tg = window.Telegram.WebApp;
     tg.expand();
@@ -211,9 +204,7 @@ app.get('/watch-ad', (req, res) => {
           alertBox.style.display = 'none';
         });
       } else {
-        setTimeout(() => {
-          claimReward();
-        }, 4000);
+        setTimeout(() => { claimReward(); }, 4000);
       }
     }
 
@@ -246,7 +237,6 @@ app.get('/watch-ad', (req, res) => {
 </html>`);
 });
 
-// 🎯 نقطة نهاية (API) لإضافة النقاط بعد إتمام مشاهدة الإعلان
 app.post('/api/claim-ad-reward', async (req, res) => {
   const userId = Number(req.body.userId);
   if (!userId) return res.status(400).json({ ok: false });
@@ -385,7 +375,6 @@ async function renderWizard(ctx, userId, opts = {}) {
   }
 }
 
-// 🎁 قائمة رصيدي وجمع النقاط
 bot.hears('🎁 رصيدي وجمع النقاط', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
@@ -740,7 +729,7 @@ bot.hears('📞 الدعم والإدارة', async (ctx) => {
 bot.hears('ℹ️ عن المنصة', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
-  ctx.reply(t(userId, 'aboutText'), { parse_mode: 'HTML', ...getMainMenuKeyboard(userId) });
+  ctx.reply(t(userId, 'aboutText'), { parse_mode: 'HTML', ...getMainMenuKeyboard(ctx.from.id) });
 });
 
 bot.hears('➕ إضافة عقار جديد', async (ctx) => {
@@ -871,6 +860,7 @@ bot.on('photo', async (ctx) => {
     try {
       await renderWizard(ctx, userId, { footer: WIZ['ar'].publishing });
 
+      // رفع صورة العقار الأساسية إلى Supabase Storage
       let mediaUrl = `tg:${state.data.media_file_id}`;
       try {
         const fileLink = await ctx.telegram.getFileLink(state.data.media_file_id);
@@ -884,8 +874,23 @@ bot.on('photo', async (ctx) => {
         mediaUrl = pubUrl.publicUrl;
       } catch (e) {}
 
+      // رفع صورة وصل الدفع (Reçu) إلى Supabase Storage ليبقى رابطها دائماً وثابتاً في القاعدة
+      let receiptUrl = '';
+      try {
+        const receiptFileLink = await ctx.telegram.getFileLink(receiptPhoto.file_id);
+        const resReceipt = await fetch(receiptFileLink.href);
+        const bufReceipt = Buffer.from(await resReceipt.arrayBuffer());
+        const receiptFileName = `${Date.now()}_receipt_${userId}.jpg`;
+        await supabase.storage.from('test_media').upload(receiptFileName, bufReceipt, { contentType: 'image/jpeg', upsert: true });
+        const { data: pubReceiptUrl } = supabase.storage.from('test_media').getPublicUrl(receiptFileName);
+        receiptUrl = pubReceiptUrl.publicUrl;
+      } catch (e) {
+        receiptUrl = receiptPhoto.file_id; // حل احتياطي إذا فشل الرفع المباشر
+      }
+
       const isVideo = state.data.media_type === 'video';
 
+      // حفظ الطلب في جدول pending_properties مع الحالة 'pending' ورابط الوصل الثابت
       const { data: insertedRow, error: insertError } = await supabase
         .from('pending_properties')
         .insert([{
@@ -897,7 +902,8 @@ bot.on('photo', async (ctx) => {
           description: state.data.description,
           image_url: isVideo ? 'EMPTY' : mediaUrl,
           video_url: isVideo ? mediaUrl : 'EMPTY',
-          receipt_file_id: receiptPhoto.file_id
+          receipt_url: receiptUrl,
+          status: 'pending'
         }])
         .select()
         .single();
@@ -958,6 +964,7 @@ bot.on('video', async (ctx) => {
   }
 });
 
+// 🛠️ أزرار تفاعل الأدمن (تغيير الحالة في القاعدة دون حذف السطر للمراجعة والشكاوى)
 const handleAdminAction = async (ctx, action) => {
   const requestId = Number(ctx.match[1]);
   await ctx.answerCbQuery();
@@ -970,12 +977,13 @@ const handleAdminAction = async (ctx, action) => {
       .single();
 
     if (fetchError || !pendingItem) {
-      return ctx.editMessageCaption(`⚠️ <b>تمت معالجة الطلب (#${requestId}) مسبقاً أو لم يعد موجوداً.</b>`, { parse_mode: 'HTML' });
+      return ctx.editMessageCaption(`⚠️ <b>الطلب (#${requestId}) غير موجود أو تم التعامل معه مسبقاً.</b>`, { parse_mode: 'HTML' });
     }
 
     const targetUserId = pendingItem.user_id;
 
     if (action === 'approve') {
+      // 1. نشر العقار في جدول العروض الأساسية test_messages
       const { error: publishError } = await supabase.from('test_messages').insert([{
         property_type: pendingItem.property_type,
         state_name: pendingItem.state_name,
@@ -989,7 +997,11 @@ const handleAdminAction = async (ctx, action) => {
 
       if (publishError) throw publishError;
 
-      await supabase.from('pending_properties').delete().eq('id', requestId);
+      // 2. تحديث الحالة في جدول pending_properties إلى 'approved' بدلاً من الحذف لتبقى للـ Réclamation
+      await supabase
+        .from('pending_properties')
+        .update({ status: 'approved' })
+        .eq('id', requestId);
 
       await ctx.telegram.sendMessage(
         targetUserId,
@@ -998,11 +1010,15 @@ const handleAdminAction = async (ctx, action) => {
       ).catch(() => {});
 
       await ctx.editMessageCaption(
-        `✅ <b>تم قبول الطلب (#${requestId}) ونشره بنجاح!</b>\n👤 المستخدم: <code>${targetUserId}</code>`,
+        `✅ <b>تم قبول الطلب (#${requestId}) ونشره بنجاح!</b>\n👤 المستخدم: <code>${targetUserId}</code>\n📌 الحالة: <b>مقبول (مُحفظ في السجل)</b>`,
         { parse_mode: 'HTML' }
       );
     } else {
-      await supabase.from('pending_properties').delete().eq('id', requestId);
+      // تحديث الحالة في جدول pending_properties إلى 'rejected' لتبقى مرجعاً للشكاوى
+      await supabase
+        .from('pending_properties')
+        .update({ status: 'rejected' })
+        .eq('id', requestId);
 
       await ctx.telegram.sendMessage(
         targetUserId,
@@ -1011,7 +1027,7 @@ const handleAdminAction = async (ctx, action) => {
       ).catch(() => {});
 
       await ctx.editMessageCaption(
-        `❌ <b>تم رفض الطلب (#${requestId}) وحذفه.</b>\n👤 المستخدم: <code>${targetUserId}</code>`,
+        `❌ <b>تم رفض الطلب (#${requestId}).</b>\n👤 المستخدم: <code>${targetUserId}</code>\n📌 الحالة: <b>مرفوض (مُحفظ في السجل)</b>`,
         { parse_mode: 'HTML' }
       );
     }
@@ -1031,7 +1047,7 @@ if (WEBHOOK_DOMAIN) {
     if (req.body && req.body.update_id) bot.handleUpdate(req.body);
   });
   bot.telegram.setWebhook(`${WEBHOOK_DOMAIN}/bot${BOT_TOKEN}`);
-  app.get('/', (req, res) => res.send('Aqar Algeria Complete System is online 🚀'));
+  app.get('/', (req, res) => res.send('Aqar Algeria Permanent Logs System is online 🚀'));
   app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
 } else {
   bot.launch();
