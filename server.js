@@ -138,7 +138,6 @@ async function getUniqueStatesList() {
   }
 }
 
-// تنسيق الأرقام بوضع الفواصل المالية
 function formatMoney(numStr) {
   if (!numStr) return '0 دج';
   const clean = numStr.replace(/\D/g, '');
@@ -146,17 +145,14 @@ function formatMoney(numStr) {
   return Number(clean).toLocaleString('en-US') + ' دج';
 }
 
-// 🎛️ تصميم حقل الإدخال الوهمي (Input Num) ولوحة الأتمام طبقاً لرسوماتك تماماً
+// 🎛️ تصميم حقل الإدخال الوهمي (Input Num) ولوحة الأرقام مطابقة تماماً للرسمة
 function getSketchNumpad(displayValue, isPrice = true) {
   const displayText = displayValue ? (isPrice ? formatMoney(displayValue) : displayValue) : '0';
   
   return Markup.inlineKeyboard([
-    // 1. حقل الإدخال الوهمي بالأعلى (Input Num) الذي يتغير نصه في الخفاء بلا إرسال
     [Markup.button.callback(`📥 [ ${displayText} ]`, 'noop_input')],
-    
-    // 2. لوحة الأرقام المرتبة تماماً كما في الرسمة
     [
-      Markup.button.callback('11', 'n_1'),
+      Markup.button.callback('1', 'n_1'),
       Markup.button.callback('2', 'n_2'),
       Markup.button.callback('3', 'n_3'),
       Markup.button.callback('4', 'n_4'),
@@ -171,8 +167,6 @@ function getSketchNumpad(displayValue, isPrice = true) {
       isPrice ? Markup.button.callback('+مليون', 'n_million') : Markup.button.callback('⌫', 'n_back'),
       Markup.button.callback('🗑️ مسح', 'n_clear')
     ],
-    
-    // 3. زر التأكيد الكبير "OK" في الأسفل تماماً مثل الرسمة
     [
       Markup.button.callback('✅ [ OK ] تأكيد', 'n_confirm')
     ]
@@ -381,7 +375,6 @@ function buildWizardText(userId, state, opts = {}) {
   return `${head}\n${bar}\n\n${lines.join('\n')}` + (footer ? `\n\n${footer}` : '');
 }
 
-// أزرار القائمة السفلية (Reply Keyboard) للرجوع والقائمة الرئيسية
 function getStandardReplyKeyboard(stateStep) {
   const W = WIZ['ar'];
   if (stateStep === 'waiting_for_type') {
@@ -423,7 +416,6 @@ async function renderWizard(ctx, userId, opts = {}) {
 
   const replyKeyboard = opts.noKeyboard ? getMainMenuKeyboard(userId) : getStandardReplyKeyboard(state.step);
 
-  // إذا كنا في خطوة السعر أو الهاتف، نرفق مع الرسالة لوحة الأرقام المطابقة للرسمة (Input Num + Numpad + OK)
   let extraMarkup = replyKeyboard;
   if (state.step === 'waiting_for_price') {
     extraMarkup = getSketchNumpad(state.tempInput || '', true);
@@ -893,7 +885,7 @@ bot.hears(`🪙 النشر مجاناً (${PUBLISH_COST_POINTS} نقطة)`, asyn
   }
 });
 
-// ⚡ معالج لوحة المفاتيح الوهمية (Inline Numpad Actions) في الخفاء تماماً
+// ⚡ معالج لوحة المفاتيح الوهمية (Inline Numpad Actions)
 bot.action(/^n_(.+)$/, async (ctx) => {
   const userId = ctx.from.id;
   const state = userState[userId];
@@ -918,7 +910,7 @@ bot.action(/^n_(.+)$/, async (ctx) => {
     if (state.step === 'waiting_for_price') {
       state.data.price = state.tempInput;
       state.step = 'waiting_for_phone';
-      state.tempInput = ''; // تصفير للبدء برقم الهاتف
+      state.tempInput = ''; 
     } else if (state.step === 'waiting_for_phone') {
       if (state.tempInput.length < 9) {
         return await ctx.answerCbQuery('⚠️ رقم الهاتف قصير جداً!');
@@ -933,12 +925,10 @@ bot.action(/^n_(.+)$/, async (ctx) => {
   await renderWizard(ctx, userId);
 });
 
-// زر حقل الإدخال الوهمي (عند الضغط عليه لا يفعل شيئاً بل يوضح أنه شاشة العرض)
 bot.action('noop_input', async (ctx) => {
   await ctx.answerCbQuery('هذا هو حقل الإدخال الرقمي المؤقت 💡');
 });
 
-// 📝 خطوة الوصف (كتابة عادية بالنص)
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const userText = ctx.message.text ? ctx.message.text.trim() : '';
@@ -1088,7 +1078,7 @@ const handleAdminAction = async (ctx, action) => {
   await ctx.answerCbQuery();
 
   try {
-    The { data: pendingItem, error: fetchError } = await supabase
+    const { data: pendingItem, error: fetchError } = await supabase
       .from('pending_properties')
       .select('*')
       .eq('id', requestId)
