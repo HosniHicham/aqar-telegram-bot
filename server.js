@@ -29,7 +29,7 @@ const browsingSession = {};
 
 const PROPERTY_TYPES = ['شقة', 'فيلا', 'منزل', 'قطعة أرض', 'محل تجاري'];
 
-// 🔄 دالة لجلب الإعدادات ديناميكياً من Supabase مع قيم افتراضية احتياطية
+// 🔄 دوال الجلب الديناميكي من Supabase
 async function getSetting(key, defaultValue) {
   try {
     const { data } = await supabase.from('app_settings').select('value').eq('key', key).single();
@@ -39,7 +39,6 @@ async function getSetting(key, defaultValue) {
   }
 }
 
-// 🔄 دالة لجلب قائمة الولايات النشطة ديناميكياً من جدول wilayas
 async function getDynamicWilayas() {
   try {
     const { data } = await supabase.from('wilayas').select('name').eq('is_active', true);
@@ -47,7 +46,6 @@ async function getDynamicWilayas() {
       return data.map(item => item.name);
     }
   } catch (e) {}
-  // احتياطي في حال حدوث خطأ بالاتصال
   return ['الجزائر العاصمة', 'وهران', 'مستغانم', 'قسنطينة', 'عنابة', 'البليدة', 'تلمسان', 'سطيف', 'بجاية'];
 }
 
@@ -148,7 +146,7 @@ function formatMoney(numStr) {
   return Number(clean).toLocaleString('en-US') + ' دج';
 }
 
-// 🎛️ تصميم لوحة الأرقام الوهمية
+// 🎛️ تصميم حقل الإدخال الوهمي (Input Num) ولوحة الأرقام
 function getSketchNumpad(displayValue, isPrice = true) {
   const displayText = displayValue ? (isPrice ? formatMoney(displayValue) : displayValue) : '0';
   
@@ -167,7 +165,7 @@ function getSketchNumpad(displayValue, isPrice = true) {
 }
 
 // =========================================================================
-// 🎬 صفحة الويب المصغرة لربح النقاط (ديناميكية القيمة)
+// 🎬 صفحة الويب المصغرة لربح النقاط (تعمل بـ API إضافة الرصيد بانتظام)
 // =========================================================================
 app.get('/watch-ad', async (req, res) => {
   const userId = req.query.uid || '';
@@ -292,7 +290,7 @@ app.post('/api/claim-ad-reward', async (req, res) => {
 });
 
 // =========================================================================
-// 🏢 معالج نشر العقار (ديناميكي بالكامل)
+// 🏢 معالج نشر العقار
 // =========================================================================
 const WIZ_STEPS = [
   'waiting_for_type',
@@ -379,7 +377,6 @@ async function getStandardReplyKeyboard(stateStep, userId) {
       [W.home]
     ]).resize();
   } else if (stateStep === 'waiting_for_state') {
-    // جلب الولايات ديناميكياً من قاعدة البيانات للخطوة الخاصة بإضافة عقار
     const dynamicWilayas = await getDynamicWilayas();
     return Markup.keyboard([
       ...chunkButtons(dynamicWilayas.map(w => `📍 ${w}`), 4),
@@ -621,7 +618,6 @@ bot.use(async (ctx, next) => {
   return next();
 });
 
-// 📌 تصفح العقارات المتاحة (يبقى يعمل كما هو وبثبات تام)
 async function showStatesMenu(ctx) {
   const userId = ctx.from.id;
   try {
