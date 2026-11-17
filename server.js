@@ -37,10 +37,16 @@ async function getSetting(key, defaultValue = '') {
   }
 }
 
-// 🛡️ جلب معرف المشرف (Admin ID) ديناميكياً من جدول app_settings
-async function getAdminId() {
-  const val = await getSetting('admin_id', '5883330772');
-  return Number(val);
+// 🛡️ جلب معرفات المدراء من جدول app_settings (سواء كان رقماً واحداً أو عدة أرقام مفصولة بفاصلة)
+async function getAdminIds() {
+  try {
+    const { data } = await supabase.from('app_settings').select('value').eq('key', 'admin_id').single();
+    if (!data || !data.value) return [5883330772]; // قيمة افتراضية احتياطية
+    
+    return data.value.split(/[,،\s]+/).map(id => Number(id.trim())).filter(Boolean);
+  } catch (e) {
+    return [5883330772];
+  }
 }
 
 async function getDynamicWilayas() {
@@ -1203,19 +1209,21 @@ bot.on('photo', async (ctx) => {
         `📞 <b>الهاتف:</b> ${cleanPhone}\n` +
         `📝 <b>الوصف:</b> ${state.data.description}`;
 
-      // جلب معرف المشرف ديناميكياً من قاعدة البيانات
-      const currentAdminId = await getAdminId();
+      // جلب قائمة المدراء (سواء مدير واحد أو عدة مدراء) وإرسال الإشعار لهم جماعياً
+      const adminIds = await getAdminIds();
 
-      await ctx.telegram.sendPhoto(currentAdminId, receiptPhoto.file_id, {
-        caption: adminCaption + `\n\n👇 <b>يرجى مراجعة وصل الدفع أعلاه واتخاذ قرار:</b>`,
-        parse_mode: 'HTML',
-        ...Markup.inlineKeyboard([
-          [
-            Markup.button.callback(`✅ قبول ونشر (#${requestId})`, `approve_${requestId}`),
-            Markup.button.callback(`❌ رفض (#${requestId})`, `reject_${requestId}`)
-          ]
-        ])
-      });
+      for (const currentAdminId of adminIds) {
+        await ctx.telegram.sendPhoto(currentAdminId, receiptPhoto.file_id, {
+          caption: adminCaption + `\n\n👇 <b>يرجى مراجعة وصل الدفع أعلاه واتخاذ قرار:</b>`,
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([
+            [
+              Markup.button.callback(`✅ قبول ونشر (#${requestId})`, `approve_${requestId}`),
+              Markup.button.callback(`❌ رفض (#${requestId})`, `reject_${requestId}`)
+            ]
+          ])
+        }).catch(() => {});
+      }
 
       if (state.wizardMsgId) {
         await ctx.telegram.deleteMessage(state.chatId, state.wizardMsgId).catch(() => {});
