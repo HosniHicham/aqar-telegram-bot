@@ -12,7 +12,7 @@ const SUPABASE_KEY = process.env.SUPABASE_KEY || 'sb_publishable_t7kVxzmOtz16C95
 const ADMIN_ID = process.env.ADMIN_ID ? Number(process.env.ADMIN_ID) : 5883330772;
 
 if (!BOT_TOKEN) {
-  console.error('Error: BOT_TOKEN environment variable is missing!');
+  console.error('Error: Required environment variables are missing!');
   process.exit(1);
 }
 
@@ -98,18 +98,14 @@ async function getDynamicFeatures() {
   }
 }
 
+// 🛠️ التعديل هنا: عرض المزايا بشكل عمودي (ميزة تحت ميزة)
 async function getDynamicDescriptionKeyboard() {
   const data = await getDynamicFeatures();
-  const rows = {};
+  const keyboard = [];
 
   for (const item of data) {
-    if (!rows[item.row_num]) rows[item.row_num] = [];
-    rows[item.row_num].push(item.title);
+    keyboard.push([item.title]);
   }
-
-  const keyboard = Object.keys(rows)
-    .sort((a, b) => Number(a) - Number(b))
-    .map(r => rows[r]);
 
   // أزرار التحكم الخاصة ببناء الوصف
   keyboard.push(['✅ تأكيد الوصف والانتقال']);
@@ -413,7 +409,6 @@ async function buildWizardText(state, opts = {}) {
   const filled = opts.complete ? totalSteps : active + 1;
   const bar = '▰'.repeat(filled) + '▱'.repeat(totalSteps - filled);
 
-  // معاينة حية للوصف أثناء البناء التفاعلي أو بعد التأكيد
   let descPreview = null;
   if (d.description) {
     descPreview = d.description.length > 200 ? d.description.slice(0, 200) + '…' : d.description;
@@ -1091,7 +1086,6 @@ bot.on('text', async (ctx) => {
     const allowedFeatures = validFeatures.map(f => f.title);
 
     if (allowedFeatures.includes(userText)) {
-      // منع التكرار لنفس الميزة
       if (!state.data.features_list.includes(userText)) {
         state.data.features_list.push(userText);
       }
