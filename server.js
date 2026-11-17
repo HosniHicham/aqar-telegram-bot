@@ -4,7 +4,7 @@ const { Telegraf, Markup } = require('telegraf');
 const express = require('express');
 const { createClient } = require('@supabase/supabase-js');
 
-// 🔒 المتطلبات الأساسية مع قيم احتياطية لتجنب أي توقف على Render
+// 🔒 المتطلبات الأساسية مع قيم احتياطية لضمان عدم توقف السيرفر على Render
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const WEBHOOK_DOMAIN = process.env.WEBHOOK_DOMAIN;
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://jjrisfyotyryanhbsvlz.supabase.co';
@@ -174,6 +174,29 @@ function getSketchNumpad(displayValue, isPrice = true) {
     [Markup.button.callback('✅ [ OK ] تأكيد', 'n_confirm')]
   ]);
 }
+
+// =========================================================================
+// ⏳ مديولوير استجابة فورية لحل مشكلة وضع النوم (Cold Start)
+// =========================================================================
+bot.use(async (ctx, next) => {
+  let waitMsgId = null;
+  if (ctx.message && ctx.message.text) {
+    try {
+      const waitMsg = await ctx.reply('⏳ <b>جاري الاتصال بالخادم... يرجى الانتظار لحظة.</b>', { parse_mode: 'HTML' });
+      waitMsgId = waitMsg.message_id;
+    } catch (e) {}
+  }
+
+  // تنفيذ الطلب الأساسي
+  await next();
+
+  // حذف رسالة الانتظار فور استجابة السيرفر لتبقى المحادثة نظيفة
+  if (waitMsgId) {
+    try {
+      await ctx.telegram.deleteMessage(ctx.chat.id, waitMsgId).catch(() => {});
+    } catch (e) {}
+  }
+});
 
 // =========================================================================
 // 🎬 صفحة الويب المصغرة لربح النقاط
