@@ -84,6 +84,41 @@ async function getDynamicPropertyTypesKeyboard() {
   return Markup.keyboard(keyboard).resize();
 }
 
+async function getDynamicFeatures() {
+  try {
+    const { data } = await supabase
+      .from('property_features')
+      .select('title, row_num, col_num')
+      .eq('is_active', true)
+      .order('row_num', { ascending: true })
+      .order('col_num', { ascending: true });
+    return data || [];
+  } catch (e) {
+    return [];
+  }
+}
+
+async function getDynamicDescriptionKeyboard() {
+  const data = await getDynamicFeatures();
+  const rows = {};
+
+  for (const item of data) {
+    if (!rows[item.row_num]) rows[item.row_num] = [];
+    rows[item.row_num].push(item.title);
+  }
+
+  const keyboard = Object.keys(rows)
+    .sort((a, b) => Number(a) - Number(b))
+    .map(r => rows[r]);
+
+  // أزرار التحكم الخاصة ببناء الوصف
+  keyboard.push(['✅ تأكيد الوصف والانتقال']);
+  keyboard.push(['↩️ تراجع عن الأخيرة', '🗑️ مسح الكل']);
+  keyboard.push(['⬅️ رجوع', '🏠 القائمة الرئيسية']);
+
+  return Markup.keyboard(keyboard).resize();
+}
+
 // =========================================================================
 // 📝 الأدوات ومساعدات واجهة المستخدم
 // =========================================================================
@@ -176,25 +211,32 @@ function getSketchNumpad(displayValue, isPrice = true) {
 }
 
 // =========================================================================
-// ⏳ مديولوير استجابة فورية لحل مشكلة وضع النوم (Cold Start)
+// ⏳ مديولوير ذكي: لا يظهر رسالة "جاري الاتصال" إلا إذا تأخر السيرفر فعلاً (Cold Start)
 // =========================================================================
 bot.use(async (ctx, next) => {
   let waitMsgId = null;
-  if (ctx.message && ctx.message.text) {
-    try {
-      const waitMsg = await ctx.reply('⏳ <b>جاري الاتصال بالخادم... يرجى الانتظار لحظة.</b>', { parse_mode: 'HTML' });
-      waitMsgId = waitMsg.message_id;
-    } catch (e) {}
-  }
+  let isResponded = false;
 
-  // تنفيذ الطلب الأساسي
-  await next();
+  const timer = setTimeout(async () => {
+    if (!isResponded && ctx.message && ctx.message.text) {
+      try {
+        const waitMsg = await ctx.reply('⏳ <b>جاري إيقاظ الخادم والاتصال... يرجى الانتظار لحظة.</b>', { parse_mode: 'HTML' });
+        waitMsgId = waitMsg.message_id;
+      } catch (e) {}
+    }
+  }, 1500);
 
-  // حذف رسالة الانتظار فور استجابة السيرفر لتبقى المحادثة نظيفة
-  if (waitMsgId) {
-    try {
-      await ctx.telegram.deleteMessage(ctx.chat.id, waitMsgId).catch(() => {});
-    } catch (e) {}
+  try {
+    await next();
+  } finally {
+    isResponded = true;
+    clearTimeout(timer);
+
+    if (waitMsgId) {
+      try {
+        await ctx.telegram.deleteMessage(ctx.chat.id, waitMsgId).catch(() => {});
+      } catch (e) {}
+    }
   }
 });
 
@@ -345,7 +387,7 @@ async function getWizardPrompt(stepIndex) {
     'اختر <b>الولاية</b> من الأزرار أدناه:',
     'استخدم لوحة الأرقام أدناه لتشكيل السعر، ثم اضغط <b>OK</b>:',
     'استخدم لوحة الأرقام أدناه لإدخال رقم الهاتف، ثم اضغط <b>OK</b>:',
-    'أدخل <b>الوصف التفصيلي</b> للعقار:',
+    'اختر <b>مزايا ومواصفات العقار</b> من الأزرار أدناه (يمكنك اختيار أكثر من ميزة)، ثم اضغط <b>✅ تأكيد الوصف والانتقال</b>:',
     'أرسل الآن <b>صورة أو فيديو العقار</b>:',
     'اختر طريقة الدفع أدناه:',
     'أرسل الآن <b>صورة وصل الدفع (BaridiMob / CCP)</b>:'
@@ -371,7 +413,14 @@ async function buildWizardText(state, opts = {}) {
   const filled = opts.complete ? totalSteps : active + 1;
   const bar = '▰'.repeat(filled) + '▱'.repeat(totalSteps - filled);
 
-  const desc = d.description ? (d.description.length > 200 ? d.description.slice(0, 200) + '…' : d.description) : null;
+  // معاينة حية للوصف أثناء البناء التفاعلي أو بعد التأكيد
+  let descPreview = null;
+  if (d.description) {
+    descPreview = d.description.length > 200 ? d.description.slice(0, 200) + '…' : d.description;
+  } else if (state.step === 'waiting_for_description' && d.features_list && d.features_list.length > 0) {
+    descPreview = d.features_list.join(' | ') + ' (قيد التعديل...)';
+  }
+
   const currentPriceDisplay = d.price ? formatMoney(d.price) : (state.step === 'waiting_for_price' ? 'قيد التشكيل بالحقل أدناه...' : null);
   const currentPhoneDisplay = d.phone || (state.step === 'waiting_for_phone' ? 'قيد التشكيل بالحقل أدناه...' : null);
 
@@ -380,7 +429,7 @@ async function buildWizardText(state, opts = {}) {
     d.state_name,
     currentPriceDisplay,
     currentPhoneDisplay,
-    desc,
+    descPreview,
     d.media_label || null,
     d.payment_label || null
   ];
@@ -409,6 +458,8 @@ async function getStandardReplyKeyboard(stateStep) {
       ...chunkButtons(dynamicWilayas.map(w => `📍 ${w}`), 4),
       [backText, homeText]
     ]).resize();
+  } else if (stateStep === 'waiting_for_description') {
+    return await getDynamicDescriptionKeyboard();
   } else if (stateStep === 'waiting_for_payment_choice') {
     const publishCost = await getSetting('publish_cost_points', '100');
     return Markup.keyboard([
@@ -589,6 +640,9 @@ bot.hears('⬅️ رجوع', async (ctx) => {
 
   const prevKey = WIZ_KEYS[idx - 1];
   if (prevKey) delete state.data[prevKey];
+  if (WIZ_STEPS[idx - 1] === 'waiting_for_description') {
+    delete state.data.description;
+  }
   state.step = WIZ_STEPS[idx - 1];
   state.tempInput = '';
 
@@ -837,7 +891,7 @@ bot.hears('➕ إضافة عقار جديد', async (ctx) => {
   const old = userState[userId];
   if (old && old.wizardMsgId) await ctx.telegram.deleteMessage(old.chatId, old.wizardMsgId).catch(() => {});
 
-  userState[userId] = { step: 'waiting_for_type', data: {}, chatId: ctx.chat.id, wizardMsgId: null, tempInput: '' };
+  userState[userId] = { step: 'waiting_for_type', data: { features_list: [] }, chatId: ctx.chat.id, wizardMsgId: null, tempInput: '' };
   renderWizard(ctx, userId);
 });
 
@@ -963,6 +1017,7 @@ bot.action(/^n_(.+)$/, async (ctx) => {
       }
       state.data.phone = state.tempInput;
       state.step = 'waiting_for_description';
+      state.data.features_list = state.data.features_list || [];
       state.tempInput = '';
     }
   }
@@ -975,6 +1030,7 @@ bot.action('noop_input', async (ctx) => {
   await ctx.answerCbQuery('هذا هو حقل الإدخال الرقمي المؤقت 💡');
 });
 
+// 📝 معالج النصوص: اختيار النوع + بناء الوصف التفاعلي (إضافة، تراجع، مسح، تأكيد)
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const userText = ctx.message.text ? ctx.message.text.trim() : '';
@@ -983,6 +1039,7 @@ bot.on('text', async (ctx) => {
   const state = userState[userId];
   if (!state) return;
 
+  // الخطوة 1: اختيار نوع العقار
   if (state.step === 'waiting_for_type') {
     const validTypes = await getDynamicPropertyTypes();
     const allowedTitles = validTypes.map(item => item.title);
@@ -997,11 +1054,49 @@ bot.on('text', async (ctx) => {
     return;
   }
 
+  // الخطوة 5: بناء الوصف العقاري التفاعلي
   if (state.step === 'waiting_for_description') {
     await safeDeleteUserMessage(ctx);
-    state.data.description = userText;
-    state.step = 'waiting_for_media';
-    return renderWizard(ctx, userId);
+    state.data.features_list = state.data.features_list || [];
+
+    // 1. زر التراجع عن آخر ميزة
+    if (userText === '↩️ تراجع عن الأخيرة') {
+      if (state.data.features_list.length > 0) {
+        state.data.features_list.pop();
+        return renderWizard(ctx, userId);
+      }
+      return;
+    }
+
+    // 2. زر مسح كل المزايا
+    if (userText === '🗑️ مسح الكل') {
+      state.data.features_list = [];
+      return renderWizard(ctx, userId);
+    }
+
+    // 3. زر تأكيد الوصف والانتقال للخطوة الموالية
+    if (userText === '✅ تأكيد الوصف والانتقال') {
+      if (state.data.features_list.length === 0) {
+        const warnMsg = await ctx.reply('⚠️ <b>يرجى اختيار ميزة واحدة على الأقل قبل التأكيد!</b>', { parse_mode: 'HTML' });
+        setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warnMsg.message_id).catch(() => {}), 2500);
+        return;
+      }
+      state.data.description = state.data.features_list.join(' | ');
+      state.step = 'waiting_for_media';
+      return renderWizard(ctx, userId);
+    }
+
+    // 4. إضافة ميزة جديدة من الجدول (أو أي ميزة يضغطها المستخدم من الأزرار)
+    const validFeatures = await getDynamicFeatures();
+    const allowedFeatures = validFeatures.map(f => f.title);
+
+    if (allowedFeatures.includes(userText)) {
+      // منع التكرار لنفس الميزة
+      if (!state.data.features_list.includes(userText)) {
+        state.data.features_list.push(userText);
+      }
+      return renderWizard(ctx, userId);
+    }
   }
 });
 
