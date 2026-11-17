@@ -86,19 +86,24 @@ async function getDynamicPropertyTypesKeyboard() {
 
 async function getDynamicFeatures() {
   try {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('property_features')
-      .select('title, row_num, col_num')
+      .select('title, category, row_num, col_num')
       .eq('is_active', true)
       .order('row_num', { ascending: true })
       .order('col_num', { ascending: true });
+
+    if (error) {
+      console.error('Supabase feature fetch error:', error.message);
+      return [];
+    }
     return data || [];
   } catch (e) {
+    console.error('Feature fetch exception:', e);
     return [];
   }
 }
 
-// 🛠️ عرض المزايا بشكل عمودي (ميزة تحت ميزة)
 async function getDynamicDescriptionKeyboard() {
   const data = await getDynamicFeatures();
   const keyboard = [];
@@ -107,7 +112,6 @@ async function getDynamicDescriptionKeyboard() {
     keyboard.push([item.title]);
   }
 
-  // أزرار التحكم الخاصة ببناء الوصف
   keyboard.push(['✅ تأكيد الوصف والانتقال']);
   keyboard.push(['↩️ تراجع عن الأخيرة', '🗑️ مسح الكل']);
   keyboard.push(['⬅️ رجوع', '🏠 القائمة الرئيسية']);
@@ -174,7 +178,7 @@ async function safeDeleteUserMessage(ctx) {
 
 async function getUniqueStatesList() {
   try {
-    const { data } = await supabase.from('test_messages').select('state_name');
+    const { data } = await supabase.from('properties').select('state_name');
     if (!data) return [];
     return [...new Set(data.map(item => item.state_name).filter(Boolean))];
   } catch (e) {
@@ -184,7 +188,7 @@ async function getUniqueStatesList() {
 
 function formatMoney(numStr) {
   if (!numStr) return '0 دج';
-  const clean = numStr.replace(/\D/g, '');
+  const clean = String(numStr).replace(/\D/g, '');
   if (!clean) return '0 دج';
   return Number(clean).toLocaleString('en-US') + ' دج';
 }
@@ -636,7 +640,6 @@ bot.hears('⬅️ رجوع', async (ctx) => {
   const prevKey = WIZ_KEYS[idx - 1];
   if (prevKey) delete state.data[prevKey];
   
-  // 🛠️ تهيئة نظيفة لمصفوفة المزايا عند الرجوع للخطوة
   if (WIZ_STEPS[idx - 1] === 'waiting_for_description') {
     state.data.description = null;
     state.data.features_list = [];
@@ -707,12 +710,11 @@ bot.hears('ℹ️ عن المنصة', async (ctx) => {
 });
 
 // =========================================================================
-// 🔍 تصفح العقارات
+// 🔍 تصفح العقارات (من الجدول الجديد properties)
 // =========================================================================
 async function showStatesMenu(ctx) {
-  const userId = ctx.from.id;
   try {
-    const { data } = await supabase.from('test_messages').select('state_name');
+    const { data } = await supabase.from('properties').select('state_name');
     if (!data || data.length === 0) return ctx.reply('📭 عذراً، لا توجد أي عقارات مسجلة في المنصة حالياً.', getMainMenuKeyboard());
 
     const uniqueStates = [...new Set(data.map(item => item.state_name).filter(Boolean))];
@@ -761,8 +763,9 @@ bot.hears(/^📍 (.+)/, async (ctx) => {
 
 bot.hears('🌐 الكل', async (ctx) => {
   await safeDeleteUserMessage(ctx);
-  browsingSession[ctx.from.id] = { state: 'ALL', page: 0 };
-  renderPropertyPage(ctx, ctx.from.id, 0);
+  const userId = ctx.from.id;
+  browsingSession[userId] = { state: 'ALL', page: 0 };
+  renderPropertyPage(ctx, userId, 0);
 });
 
 async function renderPropertyPage(ctx, userId, pageIndex) {
@@ -773,7 +776,7 @@ async function renderPropertyPage(ctx, userId, pageIndex) {
   session.selectingPage = false;
 
   try {
-    let query = supabase.from('test_messages').select('*').order('id', { ascending: false });
+    let query = supabase.from('properties').select('*').order('id', { ascending: false });
     if (session.state !== 'ALL') query = query.eq('state_name', session.state);
 
     const { data } = await query;
@@ -784,7 +787,8 @@ async function renderPropertyPage(ctx, userId, pageIndex) {
     session.page = pageIndex;
 
     const item = data[pageIndex];
-    const caption = `🏛 <b>الولاية:</b> ${item.state_name} (${pageIndex + 1}/${data.length})\n\n🏠 <b>العقار:</b> ${item.property_type}\n💰 <b>السعر:</b> ${item.price}\n📞 <b>الهاتف:</b> <code>${item.phone}</code>\n📝 <b>الوصف:</b> ${item.description || item.message}`;
+    const formattedPrice = formatMoney(item.price);
+    const caption = `🏛 <b>الولاية:</b> ${item.state_name} (${pageIndex + 1}/${data.length})\n\n🏠 <b>العقار:</b> ${item.property_type}\n💰 <b>السعر:</b> ${formattedPrice}\n📞 <b>الهاتف:</b> <code>${item.phone}</code>\n📝 <b>الوصف:</b> ${item.description}`;
 
     const contactBtnText = await getSetting('contact_btn_text', '📞 اتصال بالمالك');
     const inlineKb = Markup.inlineKeyboard([[Markup.button.callback(contactBtnText, 'contact_admin')]]);
@@ -813,7 +817,7 @@ bot.hears(/^📄 \d+ \/ \d+$/, async (ctx) => {
   const session = browsingSession[userId];
   if (!session) return;
 
-  let query = supabase.from('test_messages').select('*').order('id', { ascending: false });
+  let query = supabase.from('properties').select('*').order('id', { ascending: false });
   if (session.state !== 'ALL') query = query.eq('state_name', session.state);
   const { data } = await query;
   const totalCount = data ? data.length : 0;
@@ -882,7 +886,7 @@ bot.hears('التالي ➡️', async (ctx) => {
 });
 
 // =========================================================================
-// ➕ إضافة عقار والدفع
+// ➕ إضافة عقار والدفع (الإدراج في جدول properties الجديد)
 // =========================================================================
 bot.hears('➕ إضافة عقار جديد', async (ctx) => {
   await safeDeleteUserMessage(ctx);
@@ -890,7 +894,6 @@ bot.hears('➕ إضافة عقار جديد', async (ctx) => {
   const old = userState[userId];
   if (old && old.wizardMsgId) await ctx.telegram.deleteMessage(old.chatId, old.wizardMsgId).catch(() => {});
 
-  // 🛠️ تهيئة دقيقة ونظيفة للبيانات مع مصفوفة المزايا
   userState[userId] = { 
     step: 'waiting_for_type', 
     data: { features_list: [] }, 
@@ -965,14 +968,13 @@ bot.hears(/^🪙 النشر مجاناً/, async (ctx) => {
     const cleanPrice = String(state.data.price || '0').replace(/[^\d.]/g, '') || '0';
     const cleanPhone = String(state.data.phone || '').trim();
 
-    // 📌 إرسال الوصف المؤكد (النص المدمج) إلى Supabase بنفس الطريقة السابقة
-    await supabase.from('test_messages').insert([{
+    await supabase.from('properties').insert([{
+      user_id: userId,
       property_type: state.data.property_type,
       state_name: state.data.state_name,
       price: cleanPrice,
       phone: cleanPhone,
       description: state.data.description,
-      message: state.data.description,
       image_url: isVideo ? 'EMPTY' : mediaUrl,
       video_url: isVideo ? mediaUrl : 'EMPTY'
     }]);
@@ -1046,7 +1048,6 @@ bot.on('text', async (ctx) => {
   const state = userState[userId];
   if (!state) return;
 
-  // الخطوة 1: اختيار نوع العقار
   if (state.step === 'waiting_for_type') {
     const validTypes = await getDynamicPropertyTypes();
     const allowedTitles = validTypes.map(item => item.title);
@@ -1061,12 +1062,10 @@ bot.on('text', async (ctx) => {
     return;
   }
 
-  // الخطوة 5: بناء الوصف العقاري التفاعلي
   if (state.step === 'waiting_for_description') {
     await safeDeleteUserMessage(ctx);
     state.data.features_list = state.data.features_list || [];
 
-    // 1. زر التراجع عن آخر ميزة
     if (userText === '↩️ تراجع عن الأخيرة') {
       if (state.data.features_list.length > 0) {
         state.data.features_list.pop();
@@ -1075,26 +1074,22 @@ bot.on('text', async (ctx) => {
       return;
     }
 
-    // 2. زر مسح كل المزايا
     if (userText === '🗑️ مسح الكل') {
       state.data.features_list = [];
       return renderWizard(ctx, userId);
     }
 
-    // 3. زر تأكيد الوصف والانتقال للخطوة الموالية
     if (userText === '✅ تأكيد الوصف والانتقال') {
       if (state.data.features_list.length === 0) {
         const warnMsg = await ctx.reply('⚠️ <b>يرجى اختيار ميزة واحدة على الأقل قبل التأكيد!</b>', { parse_mode: 'HTML' });
         setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warnMsg.message_id).catch(() => {}), 2500);
         return;
       }
-      // 📌 تحويل المصفوفة إلى نص موحد تماماً مثلما يُتوقع في قاعدة البيانات
       state.data.description = state.data.features_list.join(' | ');
       state.step = 'waiting_for_media';
       return renderWizard(ctx, userId);
     }
 
-    // 4. إضافة ميزة جديدة من الجدول الديناميكي
     const validFeatures = await getDynamicFeatures();
     const allowedFeatures = validFeatures.map(f => f.title);
 
@@ -1234,7 +1229,7 @@ bot.on('video', async (ctx) => {
 });
 
 // =========================================================================
-// 🛡️ معالج موافقة أو رفض الإدارة
+// 🛡️ معالج موافقة أو رفض الإدارة (النشر في جدول properties الجديد)
 // =========================================================================
 const handleAdminAction = async (ctx, action) => {
   const requestId = Number(ctx.match[1]);
@@ -1257,13 +1252,13 @@ const handleAdminAction = async (ctx, action) => {
       const cleanPrice = String(pendingItem.price || '0').replace(/[^\d.]/g, '') || '0';
       const cleanPhone = String(pendingItem.phone || '').trim();
 
-      const { error: publishError } = await supabase.from('test_messages').insert([{
+      const { error: publishError } = await supabase.from('properties').insert([{
+        user_id: targetUserId,
         property_type: pendingItem.property_type,
         state_name: pendingItem.state_name,
         price: cleanPrice,
         phone: cleanPhone,
         description: pendingItem.description,
-        message: pendingItem.description,
         image_url: pendingItem.image_url,
         video_url: pendingItem.video_url
       }]);
@@ -1279,7 +1274,7 @@ const handleAdminAction = async (ctx, action) => {
       ).catch(() => {});
 
       await ctx.editMessageCaption(
-        `✅ <b>تم قبول الطلب (#${requestId}) ونشره بنجاح!</b>\n👤 المستخدم: <code>${targetUserId}</code>\n📌 الحالة: <b>مقبول (مُحفظ في السجل)</b>`,
+        `✅ <b>تم قبول الطلب (#${requestId}) ونشره بنجاح!</b>\n👤 المستخدم: <code>${targetUserId}</code>\n📌 الحالة: <b>مقبول (مُحفظ في جدول properties)</b>`,
         { parse_mode: 'HTML' }
       );
     } else {
@@ -1292,7 +1287,7 @@ const handleAdminAction = async (ctx, action) => {
       ).catch(() => {});
 
       await ctx.editMessageCaption(
-        `❌ <b>تم رفض الطلب (#${requestId}).</b>\n👤 المستخدم: <code>${targetUserId}</code>\n📌 الحالة: <b>مرفوض (مُحفظ في السجل)</b>`,
+        `❌ <b>تم رفض الطلب (#${requestId}).</b>\n👤 المستخدم: <code>${targetUserId}</code>\n📌 الحالة: <b>مرفوض</b>`,
         { parse_mode: 'HTML' }
       );
     }
@@ -1314,7 +1309,7 @@ if (WEBHOOK_DOMAIN) {
     if (req.body && req.body.update_id) bot.handleUpdate(req.body);
   });
   bot.telegram.setWebhook(`${WEBHOOK_DOMAIN}/bot${BOT_TOKEN}`);
-  app.get('/', (req, res) => res.send('Aqar Algeria Dynamic System is online 🚀'));
+  app.get('/', (req, res) => res.send('Aqar Algeria Production System is online 🚀'));
   app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
 } else {
   bot.launch();
