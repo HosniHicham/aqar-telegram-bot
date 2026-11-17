@@ -12,7 +12,7 @@ const SUPABASE_KEY = process.env.SUPABASE_KEY || 'sb_publishable_t7kVxzmOtz16C95
 const ADMIN_ID = process.env.ADMIN_ID ? Number(process.env.ADMIN_ID) : 5883330772;
 
 if (!BOT_TOKEN) {
-  console.error('Error: BOT_TOKEN environment variable is missing!');
+  console.error('Error: Required environment variables are missing!');
   process.exit(1);
 }
 
@@ -81,6 +81,37 @@ async function getDynamicPropertyTypesKeyboard() {
     .map(r => rows[r]);
 
   keyboard.push(['🏠 القائمة الرئيسية']);
+  return Markup.keyboard(keyboard).resize();
+}
+
+async function getDynamicFeatures() {
+  try {
+    const { data } = await supabase
+      .from('property_features')
+      .select('title, row_num, col_num')
+      .eq('is_active', true)
+      .order('row_num', { ascending: true })
+      .order('col_num', { ascending: true });
+    return data || [];
+  } catch (e) {
+    return [];
+  }
+}
+
+// 🛠️ عرض المزايا بشكل عمودي (ميزة تحت ميزة)
+async function getDynamicDescriptionKeyboard() {
+  const data = await getDynamicFeatures();
+  const keyboard = [];
+
+  for (const item of data) {
+    keyboard.push([item.title]);
+  }
+
+  // أزرار التحكم الخاصة ببناء الوصف
+  keyboard.push(['✅ تأكيد الوصف والانتقال']);
+  keyboard.push(['↩️ تراجع عن الأخيرة', '🗑️ مسح الكل']);
+  keyboard.push(['⬅️ رجوع', '🏠 القائمة الرئيسية']);
+
   return Markup.keyboard(keyboard).resize();
 }
 
@@ -176,13 +207,12 @@ function getSketchNumpad(displayValue, isPrice = true) {
 }
 
 // =========================================================================
-// ⏳ مديولوير ذكي: لا يظهر رسالة "جاري الاتصال" إلا إذا تأخر السيرفر فعلاً (Cold Start)
+// ⏳ مديولوير ذكي لحل مشكلة وضع النوم (Cold Start)
 // =========================================================================
 bot.use(async (ctx, next) => {
   let waitMsgId = null;
   let isResponded = false;
 
-  // مؤقت زمني (مثلاً 1.5 ثانية): إذا رد السيرفر بسرعة فلا نفعل شيئاً
   const timer = setTimeout(async () => {
     if (!isResponded && ctx.message && ctx.message.text) {
       try {
@@ -198,7 +228,6 @@ bot.use(async (ctx, next) => {
     isResponded = true;
     clearTimeout(timer);
 
-    // إذا ظهرت رسالة الانتظار بسبب نوم السيرفر، نحذفها فوراً فور استجابة الطلب
     if (waitMsgId) {
       try {
         await ctx.telegram.deleteMessage(ctx.chat.id, waitMsgId).catch(() => {});
@@ -354,7 +383,7 @@ async function getWizardPrompt(stepIndex) {
     'اختر <b>الولاية</b> من الأزرار أدناه:',
     'استخدم لوحة الأرقام أدناه لتشكيل السعر، ثم اضغط <b>OK</b>:',
     'استخدم لوحة الأرقام أدناه لإدخال رقم الهاتف، ثم اضغط <b>OK</b>:',
-    'أدخل <b>الوصف التفصيلي</b> للعقار:',
+    'اختر <b>مزايا ومواصفات العقار</b> من الأزرار أدناه (يمكنك اختيار أكثر من ميزة)، ثم اضغط <b>✅ تأكيد الوصف والانتقال</b>:',
     'أرسل الآن <b>صورة أو فيديو العقار</b>:',
     'اختر طريقة الدفع أدناه:',
     'أرسل الآن <b>صورة وصل الدفع (BaridiMob / CCP)</b>:'
@@ -380,16 +409,22 @@ async function buildWizardText(state, opts = {}) {
   const filled = opts.complete ? totalSteps : active + 1;
   const bar = '▰'.repeat(filled) + '▱'.repeat(totalSteps - filled);
 
-  const desc = d.description ? (d.description.length > 200 ? d.description.slice(0, 200) + '…' : d.description) : null;
-  const currentPriceDisplay = d.price ? formatMoney(d.price) : (state.step === 'waiting_for_price' ? 'قيد التشكل بالحقل أدناه...' : null);
-  const currentPhoneDisplay = d.phone || (state.step === 'waiting_for_phone' ? 'قيد التشكل بالحقل أدناه...' : null);
+  let descPreview = null;
+  if (d.description) {
+    descPreview = d.description.length > 200 ? d.description.slice(0, 200) + '…' : d.description;
+  } else if (state.step === 'waiting_for_description' && d.features_list && d.features_list.length > 0) {
+    descPreview = d.features_list.join(' | ') + ' (قيد التعديل...)';
+  }
+
+  const currentPriceDisplay = d.price ? formatMoney(d.price) : (state.step === 'waiting_for_price' ? 'قيد التشكيل بالحقل أدناه...' : null);
+  const currentPhoneDisplay = d.phone || (state.step === 'waiting_for_phone' ? 'قيد التشكيل بالحقل أدناه...' : null);
 
   const values = [
     d.property_type,
     d.state_name,
     currentPriceDisplay,
     currentPhoneDisplay,
-    desc,
+    descPreview,
     d.media_label || null,
     d.payment_label || null
   ];
@@ -418,6 +453,8 @@ async function getStandardReplyKeyboard(stateStep) {
       ...chunkButtons(dynamicWilayas.map(w => `📍 ${w}`), 4),
       [backText, homeText]
     ]).resize();
+  } else if (stateStep === 'waiting_for_description') {
+    return await getDynamicDescriptionKeyboard();
   } else if (stateStep === 'waiting_for_payment_choice') {
     const publishCost = await getSetting('publish_cost_points', '100');
     return Markup.keyboard([
@@ -598,6 +635,13 @@ bot.hears('⬅️ رجوع', async (ctx) => {
 
   const prevKey = WIZ_KEYS[idx - 1];
   if (prevKey) delete state.data[prevKey];
+  
+  // 🛠️ تهيئة نظيفة لمصفوفة المزايا عند الرجوع للخطوة
+  if (WIZ_STEPS[idx - 1] === 'waiting_for_description') {
+    state.data.description = null;
+    state.data.features_list = [];
+  }
+
   state.step = WIZ_STEPS[idx - 1];
   state.tempInput = '';
 
@@ -846,7 +890,14 @@ bot.hears('➕ إضافة عقار جديد', async (ctx) => {
   const old = userState[userId];
   if (old && old.wizardMsgId) await ctx.telegram.deleteMessage(old.chatId, old.wizardMsgId).catch(() => {});
 
-  userState[userId] = { step: 'waiting_for_type', data: {}, chatId: ctx.chat.id, wizardMsgId: null, tempInput: '' };
+  // 🛠️ تهيئة دقيقة ونظيفة للبيانات مع مصفوفة المزايا
+  userState[userId] = { 
+    step: 'waiting_for_type', 
+    data: { features_list: [] }, 
+    chatId: ctx.chat.id, 
+    wizardMsgId: null, 
+    tempInput: '' 
+  };
   renderWizard(ctx, userId);
 });
 
@@ -914,6 +965,7 @@ bot.hears(/^🪙 النشر مجاناً/, async (ctx) => {
     const cleanPrice = String(state.data.price || '0').replace(/[^\d.]/g, '') || '0';
     const cleanPhone = String(state.data.phone || '').trim();
 
+    // 📌 إرسال الوصف المؤكد (النص المدمج) إلى Supabase بنفس الطريقة السابقة
     await supabase.from('test_messages').insert([{
       property_type: state.data.property_type,
       state_name: state.data.state_name,
@@ -972,6 +1024,7 @@ bot.action(/^n_(.+)$/, async (ctx) => {
       }
       state.data.phone = state.tempInput;
       state.step = 'waiting_for_description';
+      state.data.features_list = state.data.features_list || [];
       state.tempInput = '';
     }
   }
@@ -984,6 +1037,7 @@ bot.action('noop_input', async (ctx) => {
   await ctx.answerCbQuery('هذا هو حقل الإدخال الرقمي المؤقت 💡');
 });
 
+// 📝 معالج النصوص: اختيار النوع + بناء الوصف التفاعلي
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const userText = ctx.message.text ? ctx.message.text.trim() : '';
@@ -992,6 +1046,7 @@ bot.on('text', async (ctx) => {
   const state = userState[userId];
   if (!state) return;
 
+  // الخطوة 1: اختيار نوع العقار
   if (state.step === 'waiting_for_type') {
     const validTypes = await getDynamicPropertyTypes();
     const allowedTitles = validTypes.map(item => item.title);
@@ -1006,11 +1061,49 @@ bot.on('text', async (ctx) => {
     return;
   }
 
+  // الخطوة 5: بناء الوصف العقاري التفاعلي
   if (state.step === 'waiting_for_description') {
     await safeDeleteUserMessage(ctx);
-    state.data.description = userText;
-    state.step = 'waiting_for_media';
-    return renderWizard(ctx, userId);
+    state.data.features_list = state.data.features_list || [];
+
+    // 1. زر التراجع عن آخر ميزة
+    if (userText === '↩️ تراجع عن الأخيرة') {
+      if (state.data.features_list.length > 0) {
+        state.data.features_list.pop();
+        return renderWizard(ctx, userId);
+      }
+      return;
+    }
+
+    // 2. زر مسح كل المزايا
+    if (userText === '🗑️ مسح الكل') {
+      state.data.features_list = [];
+      return renderWizard(ctx, userId);
+    }
+
+    // 3. زر تأكيد الوصف والانتقال للخطوة الموالية
+    if (userText === '✅ تأكيد الوصف والانتقال') {
+      if (state.data.features_list.length === 0) {
+        const warnMsg = await ctx.reply('⚠️ <b>يرجى اختيار ميزة واحدة على الأقل قبل التأكيد!</b>', { parse_mode: 'HTML' });
+        setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warnMsg.message_id).catch(() => {}), 2500);
+        return;
+      }
+      // 📌 تحويل المصفوفة إلى نص موحد تماماً مثلما يُتوقع في قاعدة البيانات
+      state.data.description = state.data.features_list.join(' | ');
+      state.step = 'waiting_for_media';
+      return renderWizard(ctx, userId);
+    }
+
+    // 4. إضافة ميزة جديدة من الجدول الديناميكي
+    const validFeatures = await getDynamicFeatures();
+    const allowedFeatures = validFeatures.map(f => f.title);
+
+    if (allowedFeatures.includes(userText)) {
+      if (!state.data.features_list.includes(userText)) {
+        state.data.features_list.push(userText);
+      }
+      return renderWizard(ctx, userId);
+    }
   }
 });
 
