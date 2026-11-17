@@ -9,7 +9,6 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const WEBHOOK_DOMAIN = process.env.WEBHOOK_DOMAIN;
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://jjrisfyotyryanhbsvlz.supabase.co';
 const SUPABASE_KEY = process.env.SUPABASE_KEY || 'sb_publishable_t7kVxzmOtz16C95U_B52FA_AJl_WK-h';
-const ADMIN_ID = process.env.ADMIN_ID ? Number(process.env.ADMIN_ID) : 5883330772;
 
 if (!BOT_TOKEN) {
   console.error('Error: Required environment variables are missing!');
@@ -36,6 +35,12 @@ async function getSetting(key, defaultValue = '') {
   } catch (e) {
     return defaultValue;
   }
+}
+
+// 🛡️ جلب معرف المشرف (Admin ID) ديناميكياً من جدول app_settings
+async function getAdminId() {
+  const val = await getSetting('admin_id', '5883330772');
+  return Number(val);
 }
 
 async function getDynamicWilayas() {
@@ -100,7 +105,6 @@ async function getDynamicFeatures() {
   }
 }
 
-// 🛠️ عرض المزايا مرتبة حصرياً حسب row_num و col_num تماماً مثل أنواع العقارات
 async function getDynamicDescriptionKeyboard() {
   const data = await getDynamicFeatures();
   
@@ -1199,7 +1203,10 @@ bot.on('photo', async (ctx) => {
         `📞 <b>الهاتف:</b> ${cleanPhone}\n` +
         `📝 <b>الوصف:</b> ${state.data.description}`;
 
-      await ctx.telegram.sendPhoto(ADMIN_ID, receiptPhoto.file_id, {
+      // جلب معرف المشرف ديناميكياً من قاعدة البيانات
+      const currentAdminId = await getAdminId();
+
+      await ctx.telegram.sendPhoto(currentAdminId, receiptPhoto.file_id, {
         caption: adminCaption + `\n\n👇 <b>يرجى مراجعة وصل الدفع أعلاه واتخاذ قرار:</b>`,
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard([
