@@ -86,28 +86,47 @@ async function getDynamicPropertyTypesKeyboard() {
 
 async function getDynamicFeatures() {
   try {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('property_features')
-      .select('title, row_num, col_num')
+      .select('title, category, row_num, col_num')
       .eq('is_active', true)
       .order('row_num', { ascending: true })
       .order('col_num', { ascending: true });
+
+    if (error) return [];
     return data || [];
   } catch (e) {
     return [];
   }
 }
 
-// 🛠️ التعديل هنا: عرض المزايا بشكل عمودي (ميزة تحت ميزة)
+// 🛠️ عرض المزايا مرتبة حصرياً حسب row_num و col_num تماماً مثل أنواع العقارات
 async function getDynamicDescriptionKeyboard() {
   const data = await getDynamicFeatures();
-  const keyboard = [];
-
-  for (const item of data) {
-    keyboard.push([item.title]);
+  
+  if (!data || data.length === 0) {
+    return Markup.keyboard([
+      ['✅ تأكيد الوصف والانتقال'],
+      ['↩️ تراجع عن الأخيرة', '🗑️ مسح الكل'],
+      ['⬅️ رجوع', '🏠 القائمة الرئيسية']
+    ]).resize();
   }
 
-  // أزرار التحكم الخاصة ببناء الوصف
+  const rows = {};
+  for (const item of data) {
+    const rNum = item.row_num || 1;
+    if (!rows[rNum]) rows[rNum] = [];
+    rows[rNum].push(item);
+  }
+
+  const keyboard = [];
+  const sortedRowKeys = Object.keys(rows).sort((a, b) => Number(a) - Number(b));
+
+  for (const rKey of sortedRowKeys) {
+    const sortedRowItems = rows[rKey].sort((a, b) => (a.col_num || 1) - (b.col_num || 1));
+    keyboard.push(sortedRowItems.map(i => i.title));
+  }
+
   keyboard.push(['✅ تأكيد الوصف والانتقال']);
   keyboard.push(['↩️ تراجع عن الأخيرة', '🗑️ مسح الكل']);
   keyboard.push(['⬅️ رجوع', '🏠 القائمة الرئيسية']);
@@ -184,7 +203,7 @@ async function getUniqueStatesList() {
 
 function formatMoney(numStr) {
   if (!numStr) return '0 دج';
-  const clean = numStr.replace(/\D/g, '');
+  const clean = String(numStr).replace(/\D/g, '');
   if (!clean) return '0 دج';
   return Number(clean).toLocaleString('en-US') + ' دج';
 }
@@ -207,7 +226,7 @@ function getSketchNumpad(displayValue, isPrice = true) {
 }
 
 // =========================================================================
-// ⏳ مديولوير ذكي: لا يظهر رسالة "جاري الاتصال" إلا إذا تأخر السيرفر فعلاً (Cold Start)
+// ⏳ مديولوير ذكي لحل مشكلة وضع النوم (Cold Start)
 // =========================================================================
 bot.use(async (ctx, next) => {
   let waitMsgId = null;
@@ -635,9 +654,12 @@ bot.hears('⬅️ رجوع', async (ctx) => {
 
   const prevKey = WIZ_KEYS[idx - 1];
   if (prevKey) delete state.data[prevKey];
+  
   if (WIZ_STEPS[idx - 1] === 'waiting_for_description') {
-    delete state.data.description;
+    state.data.description = null;
+    state.data.features_list = [];
   }
+
   state.step = WIZ_STEPS[idx - 1];
   state.tempInput = '';
 
@@ -703,10 +725,9 @@ bot.hears('ℹ️ عن المنصة', async (ctx) => {
 });
 
 // =========================================================================
-// 🔍 تصفح العقارات
+// 🔍 تصفح العقارات (من جدول test_messages)
 // =========================================================================
 async function showStatesMenu(ctx) {
-  const userId = ctx.from.id;
   try {
     const { data } = await supabase.from('test_messages').select('state_name');
     if (!data || data.length === 0) return ctx.reply('📭 عذراً، لا توجد أي عقارات مسجلة في المنصة حالياً.', getMainMenuKeyboard());
@@ -757,8 +778,9 @@ bot.hears(/^📍 (.+)/, async (ctx) => {
 
 bot.hears('🌐 الكل', async (ctx) => {
   await safeDeleteUserMessage(ctx);
-  browsingSession[ctx.from.id] = { state: 'ALL', page: 0 };
-  renderPropertyPage(ctx, ctx.from.id, 0);
+  const userId = ctx.from.id;
+  browsingSession[userId] = { state: 'ALL', page: 0 };
+  renderPropertyPage(ctx, userId, 0);
 });
 
 async function renderPropertyPage(ctx, userId, pageIndex) {
@@ -878,7 +900,7 @@ bot.hears('التالي ➡️', async (ctx) => {
 });
 
 // =========================================================================
-// ➕ إضافة عقار والدفع
+// ➕ إضافة عقار والدفع (الإدراج في جدول test_messages)
 // =========================================================================
 bot.hears('➕ إضافة عقار جديد', async (ctx) => {
   await safeDeleteUserMessage(ctx);
@@ -886,7 +908,13 @@ bot.hears('➕ إضافة عقار جديد', async (ctx) => {
   const old = userState[userId];
   if (old && old.wizardMsgId) await ctx.telegram.deleteMessage(old.chatId, old.wizardMsgId).catch(() => {});
 
-  userState[userId] = { step: 'waiting_for_type', data: { features_list: [] }, chatId: ctx.chat.id, wizardMsgId: null, tempInput: '' };
+  userState[userId] = { 
+    step: 'waiting_for_type', 
+    data: { features_list: [] }, 
+    chatId: ctx.chat.id, 
+    wizardMsgId: null, 
+    tempInput: '' 
+  };
   renderWizard(ctx, userId);
 });
 
@@ -1025,7 +1053,7 @@ bot.action('noop_input', async (ctx) => {
   await ctx.answerCbQuery('هذا هو حقل الإدخال الرقمي المؤقت 💡');
 });
 
-// 📝 معالج النصوص: اختيار النوع + بناء الوصف التفاعلي (إضافة، تراجع، مسح، تأكيد)
+// 📝 معالج النصوص: اختيار النوع + بناء الوصف التفاعلي
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const userText = ctx.message.text ? ctx.message.text.trim() : '';
@@ -1034,7 +1062,6 @@ bot.on('text', async (ctx) => {
   const state = userState[userId];
   if (!state) return;
 
-  // الخطوة 1: اختيار نوع العقار
   if (state.step === 'waiting_for_type') {
     const validTypes = await getDynamicPropertyTypes();
     const allowedTitles = validTypes.map(item => item.title);
@@ -1049,12 +1076,10 @@ bot.on('text', async (ctx) => {
     return;
   }
 
-  // الخطوة 5: بناء الوصف العقاري التفاعلي
   if (state.step === 'waiting_for_description') {
     await safeDeleteUserMessage(ctx);
     state.data.features_list = state.data.features_list || [];
 
-    // 1. زر التراجع عن آخر ميزة
     if (userText === '↩️ تراجع عن الأخيرة') {
       if (state.data.features_list.length > 0) {
         state.data.features_list.pop();
@@ -1063,13 +1088,11 @@ bot.on('text', async (ctx) => {
       return;
     }
 
-    // 2. زر مسح كل المزايا
     if (userText === '🗑️ مسح الكل') {
       state.data.features_list = [];
       return renderWizard(ctx, userId);
     }
 
-    // 3. زر تأكيد الوصف والانتقال للخطوة الموالية
     if (userText === '✅ تأكيد الوصف والانتقال') {
       if (state.data.features_list.length === 0) {
         const warnMsg = await ctx.reply('⚠️ <b>يرجى اختيار ميزة واحدة على الأقل قبل التأكيد!</b>', { parse_mode: 'HTML' });
@@ -1081,7 +1104,6 @@ bot.on('text', async (ctx) => {
       return renderWizard(ctx, userId);
     }
 
-    // 4. إضافة ميزة جديدة من الجدول (أو أي ميزة يضغطها المستخدم من الأزرار)
     const validFeatures = await getDynamicFeatures();
     const allowedFeatures = validFeatures.map(f => f.title);
 
@@ -1221,7 +1243,7 @@ bot.on('video', async (ctx) => {
 });
 
 // =========================================================================
-// 🛡️ معالج موافقة أو رفض الإدارة
+// 🛡️ معالج موافقة أو رفض الإدارة (النشر في جدول test_messages)
 // =========================================================================
 const handleAdminAction = async (ctx, action) => {
   const requestId = Number(ctx.match[1]);
@@ -1266,7 +1288,7 @@ const handleAdminAction = async (ctx, action) => {
       ).catch(() => {});
 
       await ctx.editMessageCaption(
-        `✅ <b>تم قبول الطلب (#${requestId}) ونشره بنجاح!</b>\n👤 المستخدم: <code>${targetUserId}</code>\n📌 الحالة: <b>مقبول (مُحفظ في السجل)</b>`,
+        `✅ <b>تم قبول الطلب (#${requestId}) ونشره بنجاح!</b>\n👤 المستخدم: <code>${targetUserId}</code>\n📌 الحالة: <b>مقبول (مُحفظ في جدول test_messages)</b>`,
         { parse_mode: 'HTML' }
       );
     } else {
@@ -1279,7 +1301,7 @@ const handleAdminAction = async (ctx, action) => {
       ).catch(() => {});
 
       await ctx.editMessageCaption(
-        `❌ <b>تم رفض الطلب (#${requestId}).</b>\n👤 المستخدم: <code>${targetUserId}</code>\n📌 الحالة: <b>مرفوض (مُحفظ في السجل)</b>`,
+        `❌ <b>تم رفض الطلب (#${requestId}).</b>\n👤 المستخدم: <code>${targetUserId}</code>\n📌 الحالة: <b>مرفوض</b>`,
         { parse_mode: 'HTML' }
       );
     }
@@ -1301,7 +1323,7 @@ if (WEBHOOK_DOMAIN) {
     if (req.body && req.body.update_id) bot.handleUpdate(req.body);
   });
   bot.telegram.setWebhook(`${WEBHOOK_DOMAIN}/bot${BOT_TOKEN}`);
-  app.get('/', (req, res) => res.send('Aqar Algeria Dynamic System is online 🚀'));
+  app.get('/', (req, res) => res.send('Aqar Algeria Production System is online 🚀'));
   app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
 } else {
   bot.launch();
