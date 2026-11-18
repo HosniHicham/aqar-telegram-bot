@@ -37,12 +37,11 @@ async function getSetting(key, defaultValue = '') {
   }
 }
 
-// 🛡️ جلب معرفات المدراء من جدول app_settings (سواء كان رقماً واحداً أو عدة أرقام مفصولة بفاصلة)
+// 🛡️ جلب معرفات المدراء من جدول app_settings
 async function getAdminIds() {
   try {
     const { data } = await supabase.from('app_settings').select('value').eq('key', 'admin_id').single();
-    if (!data || !data.value) return [5883330772]; // قيمة افتراضية احتياطية
-    
+    if (!data || !data.value) return [5883330772];
     return data.value.split(/[,،\s]+/).map(id => Number(id.trim())).filter(Boolean);
   } catch (e) {
     return [5883330772];
@@ -218,23 +217,20 @@ function formatMoney(numStr) {
   return Number(clean).toLocaleString('en-US') + ' دج';
 }
 
+// 🔢 لوحة أرقام تظهر في أسفل شاشة الدردشة (Reply Keyboard)
 function getSketchNumpad(displayValue, isPrice = true) {
   const displayText = displayValue ? (isPrice ? formatMoney(displayValue) : displayValue) : '0';
 
-  return Markup.inlineKeyboard([
-    [Markup.button.callback(`📥 [ ${displayText} ]`, 'noop_input')],
-    [Markup.button.callback('1', 'n_1'), Markup.button.callback('2', 'n_2'), Markup.button.callback('3', 'n_3')],
-    [Markup.button.callback('4', 'n_4'), Markup.button.callback('5', 'n_5'), Markup.button.callback('6', 'n_6')],
-    [Markup.button.callback('7', 'n_7'), Markup.button.callback('8', 'n_8'), Markup.button.callback('9', 'n_9')],
-    [
-      Markup.button.callback('0', 'n_0'),
-      isPrice ? Markup.button.callback('+مليون', 'n_million') : Markup.button.callback('⌫', 'n_back'),
-      Markup.button.callback('🗑️ مسح', 'n_clear')
-    ],
-    [Markup.button.callback('✅ [ OK ] تأكيد', 'n_confirm')],
-    [Markup.button.callback('⬅️ رجوع', 'wiz_back'), Markup.button.callback('🏠 القائمة الرئيسية', 'wiz_home')],
-    [Markup.button.callback('❌ إلغاء العملية', 'wiz_cancel')]
-  ]);
+  return Markup.keyboard([
+    [`📥 القيمة الحالية: [ ${displayText} ]`],
+    ['1', '2', '3'],
+    ['4', '5', '6'],
+    ['7', '8', '9'],
+    ['0', isPrice ? '+مليون' : '⌫', '🗑️ مسح'],
+    ['✅ [ OK ] تأكيد'],
+    ['⬅️ رجوع', '🏠 القائمة الرئيسية'],
+    ['❌ إلغاء العملية']
+  ]).resize();
 }
 
 // =========================================================================
@@ -247,7 +243,7 @@ bot.use(async (ctx, next) => {
   const timer = setTimeout(async () => {
     if (!isResponded && ctx.message && ctx.message.text) {
       try {
-        const waitMsg = await ctx.reply('⏳ <b>جاري إيقاظ الخادم والاتصال... يرجى الانتظار لحظة.</b>', { parse_mode: 'HTML' });
+        const waitMsg = await ctx.reply('⏳ <b>جاري الاتصال بالخادم... يرجى الانتظار لحظة.</b>', { parse_mode: 'HTML' });
         waitMsgId = waitMsg.message_id;
       } catch (e) {}
     }
@@ -412,8 +408,8 @@ async function getWizardPrompt(stepIndex) {
   const prompts = [
     'اختر <b>نوع العقار</b> من الأزرار أدناه:',
     'اختر <b>الولاية</b> من الأزرار أدناه:',
-    'استخدم لوحة الأرقام أدناه لتشكيل السعر، ثم اضغط <b>OK</b>:',
-    'استخدم لوحة الأرقام أدناه لإدخال رقم الهاتف، ثم اضغط <b>OK</b>:',
+    'استخدم لوحة الأرقام أدناه لتشكيل السعر، ثم اضغط <b>[ OK ] تأكيد</b>:',
+    'استخدم لوحة الأرقام أدناه لإدخال رقم الهاتف، ثم اضغط <b>[ OK ] تأكيد</b>:',
     'اختر <b>مزايا ومواصفات العقار</b> من الأزرار أدناه (يمكنك اختيار أكثر من ميزة)، ثم اضغط <b>✅ تأكيد الوصف والانتقال</b>:',
     'أرسل الآن <b>صورة أو فيديو العقار</b>:',
     'اختر طريقة الدفع أدناه:',
@@ -447,8 +443,8 @@ async function buildWizardText(state, opts = {}) {
     descPreview = d.features_list.join(' | ') + ' (قيد التعديل...)';
   }
 
-  const currentPriceDisplay = d.price ? formatMoney(d.price) : (state.step === 'waiting_for_price' ? 'قيد التشكيل بالحقل أدناه...' : null);
-  const currentPhoneDisplay = d.phone || (state.step === 'waiting_for_phone' ? 'قيد التشكيل بالحقل أدناه...' : null);
+  const currentPriceDisplay = d.price ? formatMoney(d.price) : (state.step === 'waiting_for_price' ? 'قيد التشكيل بالأسفل...' : null);
+  const currentPhoneDisplay = d.phone || (state.step === 'waiting_for_phone' ? 'قيد التشكيل بالأسفل...' : null);
 
   const values = [
     d.property_type,
@@ -471,7 +467,7 @@ async function buildWizardText(state, opts = {}) {
   return `${head}\n${bar}\n\n${lines.join('\n')}` + (footer ? `\n\n${footer}` : '');
 }
 
-async function getStandardReplyKeyboard(stateStep) {
+async function getStandardReplyKeyboard(stateStep, tempInput = '', isPrice = true) {
   const backText = '⬅️ رجوع';
   const homeText = '🏠 القائمة الرئيسية';
   const cancelText = '❌ إلغاء العملية والعودة';
@@ -484,6 +480,10 @@ async function getStandardReplyKeyboard(stateStep) {
       ...chunkButtons(dynamicWilayas.map(w => `📍 ${w}`), 4),
       [backText, homeText]
     ]).resize();
+  } else if (stateStep === 'waiting_for_price') {
+    return getSketchNumpad(tempInput, true);
+  } else if (stateStep === 'waiting_for_phone') {
+    return getSketchNumpad(tempInput, false);
   } else if (stateStep === 'waiting_for_description') {
     return await getDynamicDescriptionKeyboard();
   } else if (stateStep === 'waiting_for_payment_choice') {
@@ -526,26 +526,16 @@ async function renderWizard(ctx, userId, opts = {}) {
     return;
   }
 
-  const replyKeyboard = opts.noKeyboard ? getMainMenuKeyboard() : await getStandardReplyKeyboard(state.step);
-
-  let extraMarkup = replyKeyboard;
-  if (state.step === 'waiting_for_price') {
-    extraMarkup = getSketchNumpad(state.tempInput || '', true);
-  } else if (state.step === 'waiting_for_phone') {
-    extraMarkup = getSketchNumpad(state.tempInput || '', false);
-  }
+  const isPriceStep = state.step === 'waiting_for_price';
+  const replyKeyboard = opts.noKeyboard ? getMainMenuKeyboard() : await getStandardReplyKeyboard(state.step, state.tempInput || '', isPriceStep);
 
   if (state.wizardMsgId) {
     try {
-      await ctx.telegram.editMessageText(state.chatId, state.wizardMsgId, undefined, text, {
-        parse_mode: 'HTML',
-        ...extraMarkup
-      });
-      return;
+      await ctx.telegram.editMessageText(state.chatId, state.wizardMsgId, undefined, text, { parse_mode: 'HTML' }).catch(() => {});
     } catch (e) {}
   }
 
-  const sent = await ctx.reply(text, { parse_mode: 'HTML', ...extraMarkup });
+  const sent = await ctx.reply(text, { parse_mode: 'HTML', ...replyKeyboard });
   const oldId = state.wizardMsgId;
   state.wizardMsgId = sent.message_id;
   state.chatId = ctx.chat.id;
@@ -639,7 +629,7 @@ bot.use(async (ctx, next) => {
   return next();
 });
 
-bot.hears(['❌ إلغاء العملية والعودة', '🏠 القائمة الرئيسية'], async (ctx) => {
+bot.hears(['❌ إلغاء العملية والعودة', '❌ إلغاء العملية'], async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   const oldWizard = userState[userId];
@@ -1020,102 +1010,9 @@ bot.hears(/^🪙 النشر مجاناً/, async (ctx) => {
   }
 });
 
-// ⚡ معالج لوحة الأرقام (Numpad) والأزرار المدمجة بها
-bot.action(/^n_(.+)$/, async (ctx) => {
-  const userId = ctx.from.id;
-  const state = userState[userId];
-  if (!state) return await ctx.answerCbQuery('انتهت الجلسة، ابدأ من جديد.');
-
-  const action = ctx.match[1];
-  state.tempInput = state.tempInput || '';
-
-  if (action >= '0' && action <= '9') {
-    state.tempInput += action;
-  } else if (action === 'million') {
-    state.tempInput += '000000';
-  } else if (action === 'back') {
-    state.tempInput = state.tempInput.slice(0, -1);
-  } else if (action === 'clear') {
-    state.tempInput = '';
-  } else if (action === 'confirm') {
-    if (!state.tempInput || state.tempInput.length === 0) {
-      return await ctx.answerCbQuery('⚠️ يرجى إدخال الرقم في الحقل أولاً!');
-    }
-
-    if (state.step === 'waiting_for_price') {
-      state.data.price = state.tempInput;
-      state.step = 'waiting_for_phone';
-      state.tempInput = '';
-    } else if (state.step === 'waiting_for_phone') {
-      if (state.tempInput.length < 9) {
-        return await ctx.answerCbQuery('⚠️ رقم الهاتف قصير جداً!');
-      }
-      state.data.phone = state.tempInput;
-      state.step = 'waiting_for_description';
-      state.data.features_list = state.data.features_list || [];
-      state.tempInput = '';
-    }
-  }
-
-  await ctx.answerCbQuery().catch(() => {});
-  await renderWizard(ctx, userId);
-});
-
-// 🎛️ معالج أزرار التحكم المدمجة داخل لوحة الأرقام
-bot.action('wiz_back', async (ctx) => {
-  await ctx.answerCbQuery();
-  const userId = ctx.from.id;
-  const state = userState[userId];
-  if (!state) return;
-
-  const idx = WIZ_STEPS.indexOf(state.step);
-  if (idx <= 0) return;
-
-  const prevKey = WIZ_KEYS[idx - 1];
-  if (prevKey) delete state.data[prevKey];
-  
-  state.step = WIZ_STEPS[idx - 1];
-  state.tempInput = '';
-  await renderWizard(ctx, userId);
-});
-
-bot.action('wiz_home', async (ctx) => {
-  await ctx.answerCbQuery();
-  const userId = ctx.from.id;
-  const oldWizard = userState[userId];
-  if (oldWizard && oldWizard.wizardMsgId) {
-    await ctx.telegram.deleteMessage(oldWizard.chatId, oldWizard.wizardMsgId).catch(() => {});
-  }
-  delete userState[userId];
-  delete browsingSession[userId];
-
-  ctx.reply('✅ العودة إلى القائمة الرئيسية:', {
-    parse_mode: 'HTML',
-    ...getMainMenuKeyboard()
-  });
-});
-
-bot.action('wiz_cancel', async (ctx) => {
-  await ctx.answerCbQuery();
-  const userId = ctx.from.id;
-  const oldWizard = userState[userId];
-  if (oldWizard && oldWizard.wizardMsgId) {
-    await ctx.telegram.deleteMessage(oldWizard.chatId, oldWizard.wizardMsgId).catch(() => {});
-  }
-  delete userState[userId];
-  delete browsingSession[userId];
-
-  ctx.reply('✅ تم إلغاء عملية نشر العقار والعودة للقائمة الرئيسية:', {
-    parse_mode: 'HTML',
-    ...getMainMenuKeyboard()
-  });
-});
-
-bot.action('noop_input', async (ctx) => {
-  await ctx.answerCbQuery('هذا هو حقل الإدخال الرقمي المؤقت 💡');
-});
-
-// 📝 معالج النصوص: اختيار النوع + بناء الوصف التفاعلي
+// =========================================================================
+// 📝 معالج النصوص والأزرار في الأسفل (بما في ذلك لوحة الأرقام الجديدة)
+// =========================================================================
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const userText = ctx.message.text ? ctx.message.text.trim() : '';
@@ -1124,6 +1021,7 @@ bot.on('text', async (ctx) => {
   const state = userState[userId];
   if (!state) return;
 
+  // 1. اختيار النوع
   if (state.step === 'waiting_for_type') {
     const validTypes = await getDynamicPropertyTypes();
     const allowedTitles = validTypes.map(item => item.title);
@@ -1138,6 +1036,65 @@ bot.on('text', async (ctx) => {
     return;
   }
 
+  // 2. التعامل مع لوحة الأرقام (السعر أو الهاتف) في الأسفل
+  if (state.step === 'waiting_for_price' || state.step === 'waiting_for_phone') {
+    await safeDeleteUserMessage(ctx);
+    state.tempInput = state.tempInput || '';
+
+    if (userText >= '0' && userText <= '9') {
+      state.tempInput += userText;
+      return renderWizard(ctx, userId);
+    } else if (userText === '+مليون') {
+      state.tempInput += '000000';
+      return renderWizard(ctx, userId);
+    } else if (userText === '⌫') {
+      state.tempInput = state.tempInput.slice(0, -1);
+      return renderWizard(ctx, userId);
+    } else if (userText === '🗑️ مسح') {
+      state.tempInput = '';
+      return renderWizard(ctx, userId);
+    } else if (userText === '✅ [ OK ] تأكيد') {
+      if (!state.tempInput || state.tempInput.length === 0) {
+        const warnMsg = await ctx.reply('⚠️ <b>يرجى إدخال الرقم في الحقل أولاً!</b>', { parse_mode: 'HTML' });
+        setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warnMsg.message_id).catch(() => {}), 2500);
+        return;
+      }
+
+      if (state.step === 'waiting_for_price') {
+        state.data.price = state.tempInput;
+        state.step = 'waiting_for_phone';
+        state.tempInput = '';
+        return renderWizard(ctx, userId);
+      } else if (state.step === 'waiting_for_phone') {
+        if (state.tempInput.length < 9) {
+          const warnMsg = await ctx.reply('⚠️ <b>رقم الهاتف قصير جداً!</b>', { parse_mode: 'HTML' });
+          setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warnMsg.message_id).catch(() => {}), 2500);
+          return;
+        }
+        state.data.phone = state.tempInput;
+        state.step = 'waiting_for_description';
+        state.data.features_list = state.data.features_list || [];
+        state.tempInput = '';
+        return renderWizard(ctx, userId);
+      }
+    } else if (userText === '⬅️ رجوع') {
+      const idx = WIZ_STEPS.indexOf(state.step);
+      if (idx > 0) {
+        const prevKey = WIZ_KEYS[idx - 1];
+        if (prevKey) delete state.data[prevKey];
+        state.step = WIZ_STEPS[idx - 1];
+        state.tempInput = '';
+        return renderWizard(ctx, userId);
+      }
+    } else if (userText === '🏠 القائمة الرئيسية' || userText === '❌ إلغاء العملية') {
+      delete userState[userId];
+      delete browsingSession[userId];
+      return ctx.reply('✅ العودة إلى القائمة الرئيسية:', { parse_mode: 'HTML', ...getMainMenuKeyboard() });
+    }
+    return;
+  }
+
+  // 3. بناء الوصف التفاعلي
   if (state.step === 'waiting_for_description') {
     await safeDeleteUserMessage(ctx);
     state.data.features_list = state.data.features_list || [];
@@ -1309,7 +1266,7 @@ bot.on('video', async (ctx) => {
 });
 
 // =========================================================================
-// 🛡️ معالج موافقة أو رفض الإدارة (النشر في جدول test_messages)
+// 🛡️ معالج موافقة أو رفض الإدارة
 // =========================================================================
 const handleAdminAction = async (ctx, action) => {
   const requestId = Number(ctx.match[1]);
@@ -1354,7 +1311,7 @@ const handleAdminAction = async (ctx, action) => {
       ).catch(() => {});
 
       await ctx.editMessageCaption(
-        `✅ <b>تم قبول الطلب (#${requestId}) ونشره بنجاح!</b>\n👤 المستخدم: <code>${targetUserId}</code>\n📌 الحالة: <b>مقبول (مُحفظ في جدول test_messages)</b>`,
+        `✅ <b>تم قبول الطلب (#${requestId}) ونشره بنجاح!</b>\n👤 المستخدم: <code>${targetUserId}</code>\n📌 الحالة: <b>مقبول</b>`,
         { parse_mode: 'HTML' }
       );
     } else {
@@ -1376,7 +1333,7 @@ const handleAdminAction = async (ctx, action) => {
   }
 };
 
-bot.action(/^approve_(\d+)$/, (ctx) => handleAdminUserAction ? handleAdminAction(ctx, 'approve') : null);
+bot.action(/^approve_(\d+)$/, (ctx) => handleAdminAction(ctx, 'approve'));
 bot.action(/^reject_(\d+)$/, (ctx) => handleAdminAction(ctx, 'reject'));
 
 // =========================================================================
