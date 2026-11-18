@@ -243,7 +243,7 @@ bot.use(async (ctx, next) => {
   const timer = setTimeout(async () => {
     if (!isResponded && ctx.message && ctx.message.text) {
       try {
-        const waitMsg = await ctx.reply('⏳ <b>جاري الاتصال بالخادم... يرجى الانتظار لحظة.</b>', { parse_mode: 'HTML' });
+        const waitMsg = await ctx.reply('⏳ <b>جاري إيقاظ الخادم والاتصال... يرجى الانتظار لحظة.</b>', { parse_mode: 'HTML' });
         waitMsgId = waitMsg.message_id;
       } catch (e) {}
     }
@@ -1036,7 +1036,7 @@ bot.on('text', async (ctx) => {
     return;
   }
 
-  // 2. التعامل مع لوحة الأرقام (السعر أو الهاتف) في الأسفل
+  // 2. التعامل مع لوحة الأرقام (السعر أو الهاتف) في الأسفل دون إرسال رسائل في الشاشة
   if (state.step === 'waiting_for_price' || state.step === 'waiting_for_phone') {
     await safeDeleteUserMessage(ctx);
     state.tempInput = state.tempInput || '';
