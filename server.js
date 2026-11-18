@@ -231,7 +231,9 @@ function getSketchNumpad(displayValue, isPrice = true) {
       isPrice ? Markup.button.callback('+مليون', 'n_million') : Markup.button.callback('⌫', 'n_back'),
       Markup.button.callback('🗑️ مسح', 'n_clear')
     ],
-    [Markup.button.callback('✅ [ OK ] تأكيد', 'n_confirm')]
+    [Markup.button.callback('✅ [ OK ] تأكيد', 'n_confirm')],
+    [Markup.button.callback('⬅️ رجوع', 'wiz_back'), Markup.button.callback('🏠 القائمة الرئيسية', 'wiz_home')],
+    [Markup.button.callback('❌ إلغاء العملية', 'wiz_cancel')]
   ]);
 }
 
@@ -1018,7 +1020,7 @@ bot.hears(/^🪙 النشر مجاناً/, async (ctx) => {
   }
 });
 
-// ⚡ معالج لوحة الأرقام (Numpad)
+// ⚡ معالج لوحة الأرقام (Numpad) والأزرار المدمجة بها
 bot.action(/^n_(.+)$/, async (ctx) => {
   const userId = ctx.from.id;
   const state = userState[userId];
@@ -1057,6 +1059,56 @@ bot.action(/^n_(.+)$/, async (ctx) => {
 
   await ctx.answerCbQuery().catch(() => {});
   await renderWizard(ctx, userId);
+});
+
+// 🎛️ معالج أزرار التحكم المدمجة داخل لوحة الأرقام
+bot.action('wiz_back', async (ctx) => {
+  await ctx.answerCbQuery();
+  const userId = ctx.from.id;
+  const state = userState[userId];
+  if (!state) return;
+
+  const idx = WIZ_STEPS.indexOf(state.step);
+  if (idx <= 0) return;
+
+  const prevKey = WIZ_KEYS[idx - 1];
+  if (prevKey) delete state.data[prevKey];
+  
+  state.step = WIZ_STEPS[idx - 1];
+  state.tempInput = '';
+  await renderWizard(ctx, userId);
+});
+
+bot.action('wiz_home', async (ctx) => {
+  await ctx.answerCbQuery();
+  const userId = ctx.from.id;
+  const oldWizard = userState[userId];
+  if (oldWizard && oldWizard.wizardMsgId) {
+    await ctx.telegram.deleteMessage(oldWizard.chatId, oldWizard.wizardMsgId).catch(() => {});
+  }
+  delete userState[userId];
+  delete browsingSession[userId];
+
+  ctx.reply('✅ العودة إلى القائمة الرئيسية:', {
+    parse_mode: 'HTML',
+    ...getMainMenuKeyboard()
+  });
+});
+
+bot.action('wiz_cancel', async (ctx) => {
+  await ctx.answerCbQuery();
+  const userId = ctx.from.id;
+  const oldWizard = userState[userId];
+  if (oldWizard && oldWizard.wizardMsgId) {
+    await ctx.telegram.deleteMessage(oldWizard.chatId, oldWizard.wizardMsgId).catch(() => {});
+  }
+  delete userState[userId];
+  delete browsingSession[userId];
+
+  ctx.reply('✅ تم إلغاء عملية نشر العقار والعودة للقائمة الرئيسية:', {
+    parse_mode: 'HTML',
+    ...getMainMenuKeyboard()
+  });
 });
 
 bot.action('noop_input', async (ctx) => {
@@ -1209,7 +1261,6 @@ bot.on('photo', async (ctx) => {
         `📞 <b>الهاتف:</b> ${cleanPhone}\n` +
         `📝 <b>الوصف:</b> ${state.data.description}`;
 
-      // جلب قائمة المدراء (سواء مدير واحد أو عدة مدراء) وإرسال الإشعار لهم جماعياً
       const adminIds = await getAdminIds();
 
       for (const currentAdminId of adminIds) {
@@ -1325,7 +1376,7 @@ const handleAdminAction = async (ctx, action) => {
   }
 };
 
-bot.action(/^approve_(\d+)$/, (ctx) => handleAdminAction(ctx, 'approve'));
+bot.action(/^approve_(\d+)$/, (ctx) => handleAdminUserAction ? handleAdminAction(ctx, 'approve') : null);
 bot.action(/^reject_(\d+)$/, (ctx) => handleAdminAction(ctx, 'reject'));
 
 // =========================================================================
