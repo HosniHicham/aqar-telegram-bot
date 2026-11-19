@@ -1519,7 +1519,7 @@ async function resolvePendingRecordForReview(relatedAd, senderUserId, fallbackAd
   return candidate;
 }
 
-// 📩 إرسال طلب العميل إلى الإدارة بالاسم + الآيدي + الإعلان #رقم + الاستفسار + الوصل إن وجد + زر الرد
+// 📩 إرسال طلب العميل إلى الإدارة بالاسم + الآيدي + الإعلان #رقم + الاستفسار + الوصل إن وجد + أزرار القبول/الرفض والرد
 async function sendStructuredTicketToAdmins(ctx, senderUserId, ticketTitle, detailText, relatedAd = null, payloadType = 'text', mediaContent = {}, fallbackAdId = null) {
   const adminIds = await getAdminIds();
   const dbUser = await getUserRecord(senderUserId);
@@ -1533,23 +1533,47 @@ async function sendStructuredTicketToAdmins(ctx, senderUserId, ticketTitle, deta
   const resolvedAd = await resolvePendingRecordForReview(relatedAd, senderUserId, fallbackAdId);
   const receiptRef = normalizeMediaRef(resolvedAd?.receipt_url);
 
+  const adIdNum = Number(resolvedAd?.id || fallbackAdId);
+  const hasNumericAdId = Number.isFinite(adIdNum) && adIdNum > 0;
   const adIdLabel = resolvedAd?.id || fallbackAdId || null;
+
+  const isReminderOrReview =
+    /تذكير|معلق|إعادة مراجعة|remind|pending|re_review/i.test(ticketTitle) ||
+    /تذكير|معلق|إعادة مراجعة/i.test(detailText || '');
+
+  const photosCount = parseImagesFromImageUrl(resolvedAd?.image_url).length;
+  const videosCount = parseMediaListFromField(resolvedAd?.video_url).length;
+
   const adBlock = adIdLabel
     ? `\n📌 <b>الإعلان:</b> <code>#${escapeHtml(String(adIdLabel))}</code>` +
       (resolvedAd?.property_type ? ` (${escapeHtml(resolvedAd.property_type)}${resolvedAd?.state_name ? ` - ${escapeHtml(resolvedAd.state_name)}` : ''}${resolvedAd?.price ? ` - ${formatMoney(resolvedAd.price)}` : ''})` : '') +
       (resolvedAd?.status_label || relatedAd?.status_label ? ` — الحالة: <b>${resolvedAd?.status_label || relatedAd?.status_label}</b>` : '') +
+      (isReminderOrReview && (photosCount > 0 || videosCount > 0)
+        ? `\n🖼 <b>الصور:</b> ${photosCount} | 🎥 <b>الفيديو:</b> ${videosCount}`
+        : '') +
       (resolvedAd?.description ? `\n📝 <b>الوصف:</b> ${escapeHtml(resolvedAd.description)}` : '')
     : '';
 
-  const header =
-    `📩 <b>طلب من العميل — ${escapeHtml(ticketTitle)}</b>\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n` +
-    `👤 <b>الاسم:</b> ${fullName}\n` +
-    `🆔 <b>الآيدي (ID):</b> <code>${senderUserId}</code>${phoneLine}${adBlock}\n`;
+  const header = isReminderOrReview
+    ? `🔔 <b>معاينة تذكير إعلان — ${escapeHtml(ticketTitle)}</b>\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `👤 <b>الاسم:</b> ${fullName}\n` +
+      `🆔 <b>الآيدي (ID):</b> <code>${senderUserId}</code>${phoneLine}${adBlock}\n`
+    : `📩 <b>طلب من العميل — ${escapeHtml(ticketTitle)}</b>\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `👤 <b>الاسم:</b> ${fullName}\n` +
+      `🆔 <b>الآيدي (ID):</b> <code>${senderUserId}</code>${phoneLine}${adBlock}\n`;
 
-  const inlineRows = [
-    [Markup.button.callback(`✉️ رد على العميل (${senderUserId})`, `support_reply_${senderUserId}`)]
-  ];
+  const inlineRows = [];
+  if (hasNumericAdId) {
+    inlineRows.push([
+      Markup.button.callback(`❌ رفض (#${adIdNum})`, `reject_${adIdNum}`),
+      Markup.button.callback(`✅ قبول ونشر (#${adIdNum})`, `approve_${adIdNum}`)
+    ]);
+  }
+  inlineRows.push([
+    Markup.button.callback(`✉️ رد على العميل (${senderUserId})`, `support_reply_${senderUserId}`)
+  ]);
 
   const replyMarkup = Markup.inlineKeyboard(inlineRows);
   const bodyText = detailText ? `\n💬 <b>الطلب:</b>\n${escapeHtml(detailText)}` : '';
@@ -2398,4 +2422,3 @@ if (WEBHOOK_DOMAIN) {
 } else {
   bot.launch();
 }
-
