@@ -267,10 +267,10 @@ function normalizeMediaRef(v) {
   return clean.startsWith('tg:') ? clean.slice(3) : clean;
 }
 
-// 📸 استخراج قائمة الصور من عمود image_url فقط (يدعم مفصولة بـ | أو JSON أو رابط واحد)
-function parseImagesFromImageUrl(imageUrlField) {
-  if (!imageUrlField || typeof imageUrlField !== 'string') return [];
-  const trimmed = imageUrlField.trim();
+// 📸 استخراج قائمة العناصر من عمود نصي (يدعم مفصولة بـ | أو JSON أو عنصر واحد)
+function parseMediaListFromField(fieldVal) {
+  if (!fieldVal || typeof fieldVal !== 'string') return [];
+  const trimmed = fieldVal.trim();
   if (!trimmed || trimmed === 'EMPTY') return [];
 
   if (trimmed.startsWith('[')) {
@@ -285,19 +285,24 @@ function parseImagesFromImageUrl(imageUrlField) {
   return [...new Set(trimmed.split('|').map(normalizeMediaRef).filter(Boolean))];
 }
 
-// 📤 رفع عدة صور وإرجاع سلسلة مخزنة لعمود image_url
-async function uploadMultipleImagesToImageUrl(ctx, mediaItems = []) {
+function parseImagesFromImageUrl(imageUrlField) {
+  return parseMediaListFromField(imageUrlField);
+}
+
+// 📤 رفع قائمة وسائط (صور أو فيديوهات) وإرجاع سلسلة مخزنة مفصولة بـ |
+async function uploadMediaListByType(ctx, mediaItems = [], targetType) {
+  const filtered = mediaItems.filter(item => item.type === targetType);
   const urls = [];
-  for (let i = 0; i < mediaItems.length; i++) {
-    const item = mediaItems[i];
+  for (let i = 0; i < filtered.length; i++) {
+    const item = filtered[i];
     let url = `tg:${item.file_id}`;
     try {
       const fileLink = await ctx.telegram.getFileLink(item.file_id);
       const res = await fetch(fileLink.href);
       const buf = Buffer.from(await res.arrayBuffer());
-      const ext = item.type === 'video' ? 'mp4' : 'jpg';
-      const mime = item.type === 'video' ? 'video/mp4' : 'image/jpeg';
-      const fileName = `${Date.now()}_${i}_aqar.${ext}`;
+      const ext = targetType === 'video' ? 'mp4' : 'jpg';
+      const mime = targetType === 'video' ? 'video/mp4' : 'image/jpeg';
+      const fileName = `${Date.now()}_${i}_${targetType}_aqar.${ext}`;
       await supabase.storage.from('test_media').upload(fileName, buf, { contentType: mime, upsert: true });
       const { data: pubUrl } = supabase.storage.from('test_media').getPublicUrl(fileName);
       if (pubUrl && pubUrl.publicUrl) url = pubUrl.publicUrl;
@@ -305,6 +310,16 @@ async function uploadMultipleImagesToImageUrl(ctx, mediaItems = []) {
     urls.push(url);
   }
   return urls.length > 0 ? urls.join('|') : 'EMPTY';
+}
+
+function formatMediaSummaryLabel(mediaItems = []) {
+  const photosCount = mediaItems.filter(i => i.type === 'photo').length;
+  const videosCount = mediaItems.filter(i => i.type === 'video').length;
+  const parts = [];
+  if (photosCount > 0) parts.push(`${photosCount} صورة`);
+  if (videosCount > 0) parts.push(`${videosCount} فيديو`);
+  if (parts.length === 0) return null;
+  return `📎 تم إرفاق ${parts.join(' و ')} (يمكنك إضافة المزيد)`;
 }
 
 // =========================================================================
@@ -476,7 +491,7 @@ const WIZ_STEPS = [
   'waiting_for_payment_receipt'
 ];
 const WIZ_KEYS = ['property_type', 'state_name', 'price', 'phone', 'description', 'media_label', null, null];
-const WIZ_LABELS = ['🏠 النوع', '📍 الولاية', '💰 السعر', '📞 الهاتف', '📝 الوصف', '📸 الصور', '💳 الدفع'];
+const WIZ_LABELS = ['🏠 النوع', '📍 الولاية', '💰 السعر', '📞 الهاتف', '📝 الوصف', '📸 الصور والفيديو', '💳 الدفع'];
 
 async function getWizardPrompt(stepIndex) {
   const prompts = [
@@ -485,7 +500,7 @@ async function getWizardPrompt(stepIndex) {
     'استخدم لوحة الأرقام في الأسفل لتشكيل السعر، ثم اضغط <b>✅ [ OK ] تأكيد</b>:',
     'استخدم لوحة الأرقام في الأسفل لإدخال رقم الهاتف، ثم اضغط <b>✅ [ OK ] تأكيد</b>:',
     'اختر <b>مزايا ومواصفات العقار</b> من القائمة في الأسفل (يمكنك اختيار أكثر من ميزة)، ثم اضغط <b>✅ تأكيد الوصف والانتقال</b>:',
-    `أرسل الآن <b>عدة صور للعقار</b> (حتى ${MAX_PROPERTY_IMAGES} صور) أو فيديو، ثم اضغط <b>✅ إنهاء إرفاق الصور والانتقال</b>:`,
+    `أرسل الآن <b>عدة صور أو فيديوهات للعقار</b> (حتى ${MAX_PROPERTY_IMAGES} ملفات معاً)، ثم اضغط <b>✅ إنهاء إرفاق الوسائط والانتقال</b>:`,
     'اختر طريقة الدفع من القائمة في الأسفل:',
     'أرسل الآن <b>صورة وصل الدفع (BaridiMob / CCP)</b>:'
   ];
@@ -566,8 +581,8 @@ async function getStandardReplyKeyboard(state) {
     const count = (state.data.media_items || []).length;
     const rows = [];
     if (count > 0) {
-      rows.push([`✅ إنهاء إرفاق الصور (${count}) والانتقال`]);
-      rows.push(['🗑️ مسح الصور المرفقة']);
+      rows.push([`✅ إنهاء إرفاق الوسائط (${count}) والانتقال`]);
+      rows.push(['🗑️ مسح الوسائط المرفقة']);
     }
     rows.push([backText, homeText]);
     rows.push([cancelText]);
@@ -894,6 +909,7 @@ async function renderPropertyPage(ctx, userId, pageIndex, photoIndex = 0) {
 
     const item = data[pageIndex];
     const imagesList = parseImagesFromImageUrl(item.image_url).slice(0, MAX_PROPERTY_IMAGES);
+    const videosList = parseMediaListFromField(item.video_url).slice(0, MAX_PROPERTY_IMAGES);
     const totalPhotos = imagesList.length;
 
     let safePhotoIndex = Number(photoIndex) || 0;
@@ -902,12 +918,13 @@ async function renderPropertyPage(ctx, userId, pageIndex, photoIndex = 0) {
     session.photoIndex = safePhotoIndex;
 
     const photosLine = totalPhotos > 0 ? `\n📸 <b>الصورة:</b> ${safePhotoIndex + 1} / ${totalPhotos}` : '';
+    const videosLine = videosList.length > 0 ? `\n🎥 <b>الفيديوهات:</b> ${videosList.length}` : '';
 
     const caption =
       `🏛 <b>الولاية:</b> ${escapeHtml(item.state_name || '')} (${pageIndex + 1}/${data.length})\n\n` +
       `🏠 <b>العقار:</b> ${escapeHtml(item.property_type || '')}\n` +
       `💰 <b>السعر:</b> ${formatMoney(item.price)}\n` +
-      `📞 <b>هاتف المالك:</b> <code>${escapeHtml(item.phone || '')}</code>${photosLine}\n` +
+      `📞 <b>هاتف المالك:</b> <code>${escapeHtml(item.phone || '')}</code>${photosLine}${videosLine}\n` +
       `📝 <b>الوصف:</b> ${escapeHtml(item.description || item.message || '')}`;
 
     const replyKb = getBrowsingKeyboard(pageIndex, data.length, safePhotoIndex, totalPhotos);
@@ -918,15 +935,6 @@ async function renderPropertyPage(ctx, userId, pageIndex, photoIndex = 0) {
       }
     }
     session.lastMessageIds = [];
-
-    const videoRef = normalizeMediaRef(item.video_url);
-    if (videoRef && totalPhotos === 0) {
-      try {
-        const sentMsg = await ctx.replyWithVideo(videoRef, { caption, parse_mode: 'HTML', ...replyKb });
-        if (sentMsg) session.lastMessageIds.push(sentMsg.message_id);
-        return;
-      } catch (e) {}
-    }
 
     if (totalPhotos > 0) {
       const currentImage = imagesList[safePhotoIndex];
@@ -939,6 +947,14 @@ async function renderPropertyPage(ctx, userId, pageIndex, photoIndex = 0) {
         if (sentMsg) session.lastMessageIds.push(sentMsg.message_id);
         return;
       } catch (photoErr) {}
+    }
+
+    if (videosList.length > 0) {
+      try {
+        const sentMsg = await ctx.replyWithVideo(videosList[0], { caption, parse_mode: 'HTML', ...replyKb });
+        if (sentMsg) session.lastMessageIds.push(sentMsg.message_id);
+        return;
+      } catch (e) {}
     }
 
     const sentMsg = await ctx.reply(caption, { parse_mode: 'HTML', ...replyKb });
@@ -1050,7 +1066,7 @@ bot.hears('التالي ➡️', async (ctx) => {
 });
 
 // =========================================================================
-// ➕ إضافة عقار والدفع (تخزين الصور المتعددة في عمود image_url فقط)
+// ➕ إضافة عقار والدفع (تخزين كل الصور والفيديوهات المرسلة بنفس الطريقة)
 // =========================================================================
 bot.hears('➕ إضافة عقار جديد', async (ctx) => {
   await safeDeleteUserMessage(ctx);
@@ -1113,9 +1129,8 @@ bot.hears(/^🪙 النشر مجاناً/, async (ctx) => {
     await renderWizard(ctx, userId, { footer: publishingText });
 
     const mediaItems = state.data.media_items || [];
-    const isVideo = state.data.media_type === 'video';
-    const combinedImagesUrl = isVideo ? 'EMPTY' : await uploadMultipleImagesToImageUrl(ctx, mediaItems);
-    const videoUrl = isVideo ? await uploadMultipleImagesToImageUrl(ctx, mediaItems) : 'EMPTY';
+    const combinedImagesUrl = await uploadMediaListByType(ctx, mediaItems, 'photo');
+    const videoUrl = await uploadMediaListByType(ctx, mediaItems, 'video');
 
     await supabase.from('users').update({ points: currentPoints - publishCost }).eq('id', userId);
 
@@ -1263,15 +1278,15 @@ bot.on('text', async (ctx) => {
   if (state.step === 'waiting_for_media') {
     await safeDeleteUserMessage(ctx);
 
-    if (userText === '🗑️ مسح الصور المرفقة') {
+    if (userText === '🗑️ مسح الوسائط المرفقة' || userText === '🗑️ مسح الصور المرفقة') {
       state.data.media_items = [];
       state.data.media_label = null;
       return renderWizard(ctx, userId);
     }
 
-    if (userText.startsWith('✅ إنهاء إرفاق الصور')) {
+    if (userText.startsWith('✅ إنهاء إرفاق')) {
       if (!state.data.media_items || state.data.media_items.length === 0) {
-        const warnMsg = await ctx.reply('⚠️ <b>يرجى إرسال صورة واحدة على الأقل أولاً!</b>', { parse_mode: 'HTML' });
+        const warnMsg = await ctx.reply('⚠️ <b>يرجى إرسال صورة أو فيديو واحد على الأقل أولاً!</b>', { parse_mode: 'HTML' });
         setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warnMsg.message_id).catch(() => {}), 2500);
         return;
       }
@@ -1290,19 +1305,14 @@ bot.on('photo', async (ctx) => {
     const photo = ctx.message.photo[ctx.message.photo.length - 1];
     state.data.media_items = state.data.media_items || [];
 
-    if (state.data.media_type === 'video') {
-      state.data.media_items = [];
-    }
-
     if (state.data.media_items.length >= MAX_PROPERTY_IMAGES) {
-      const warnMsg = await ctx.reply(`⚠️ <b>وصلت للحد الأقصى (${MAX_PROPERTY_IMAGES} صور).</b> اضغط زر الإنهاء في الأسفل.`, { parse_mode: 'HTML' });
+      const warnMsg = await ctx.reply(`⚠️ <b>وصلت للحد الأقصى (${MAX_PROPERTY_IMAGES} ملفات).</b> اضغط زر الإنهاء في الأسفل.`, { parse_mode: 'HTML' });
       setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warnMsg.message_id).catch(() => {}), 2500);
       return;
     }
 
     state.data.media_items.push({ type: 'photo', file_id: photo.file_id });
-    state.data.media_type = 'photo';
-    state.data.media_label = `🖼 تم إرفاق ${state.data.media_items.length} صورة (يمكنك إضافة المزيد)`;
+    state.data.media_label = formatMediaSummaryLabel(state.data.media_items);
 
     return renderWizard(ctx, userId);
   }
@@ -1316,9 +1326,8 @@ bot.on('photo', async (ctx) => {
       await renderWizard(ctx, userId, { footer: publishingText });
 
       const mediaItems = state.data.media_items || [];
-      const isVideo = state.data.media_type === 'video';
-      const combinedImagesUrl = isVideo ? 'EMPTY' : await uploadMultipleImagesToImageUrl(ctx, mediaItems);
-      const videoUrl = isVideo ? await uploadMultipleImagesToImageUrl(ctx, mediaItems) : 'EMPTY';
+      const combinedImagesUrl = await uploadMediaListByType(ctx, mediaItems, 'photo');
+      const videoUrl = await uploadMediaListByType(ctx, mediaItems, 'video');
 
       let receiptUrl = '';
       try {
@@ -1356,7 +1365,8 @@ bot.on('photo', async (ctx) => {
       if (insertError) throw insertError;
 
       const requestId = insertedRow.id;
-      const photosCount = isVideo ? 0 : parseImagesFromImageUrl(combinedImagesUrl).length;
+      const photosCount = parseImagesFromImageUrl(combinedImagesUrl).length;
+      const videosCount = parseMediaListFromField(videoUrl).length;
 
       const adminCaption =
         `🚨 <b>طلب إعلان عقاري جديد (#${requestId})</b>\n\n` +
@@ -1365,7 +1375,8 @@ bot.on('photo', async (ctx) => {
         `📍 <b>الولاية:</b> ${escapeHtml(state.data.state_name || '')}\n` +
         `💰 <b>السعر:</b> ${formatMoney(numericPrice)}\n` +
         `📞 <b>الهاتف:</b> ${escapeHtml(cleanPhone)}\n` +
-        `🖼 <b>عدد الصور:</b> ${isVideo ? 'فيديو' : photosCount}\n` +
+        `🖼 <b>عدد الصور:</b> ${photosCount}\n` +
+        `🎥 <b>عدد الفيديوهات:</b> ${videosCount}\n` +
         `📝 <b>الوصف:</b> ${escapeHtml(state.data.description || '')}`;
 
       const adminButtons = Markup.inlineKeyboard([
@@ -1422,11 +1433,17 @@ bot.on('video', async (ctx) => {
 
   if (state && state.step === 'waiting_for_media') {
     const video = ctx.message.video;
-    state.data.media_items = [{ type: 'video', file_id: video.file_id }];
-    state.data.media_type = 'video';
-    state.data.media_label = '🎥 تم إرفاق الفيديو';
+    state.data.media_items = state.data.media_items || [];
 
-    state.step = 'waiting_for_payment_choice';
+    if (state.data.media_items.length >= MAX_PROPERTY_IMAGES) {
+      const warnMsg = await ctx.reply(`⚠️ <b>وصلت للحد الأقصى (${MAX_PROPERTY_IMAGES} ملفات).</b> اضغط زر الإنهاء في الأسفل.`, { parse_mode: 'HTML' });
+      setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warnMsg.message_id).catch(() => {}), 2500);
+      return;
+    }
+
+    state.data.media_items.push({ type: 'video', file_id: video.file_id });
+    state.data.media_label = formatMediaSummaryLabel(state.data.media_items);
+
     return renderWizard(ctx, userId);
   }
 });
