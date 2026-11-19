@@ -1208,12 +1208,231 @@ bot.hears(/^🪙 النشر مجاناً/, async (ctx) => {
     await replyTracked(ctx, userId, '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getMainMenuKeyboard(), true);
   }
 });
-
 // =========================================================================
 // >>>>>>>>>>>>>>>>>>>>>> START SUPPORT_ADMIN_MODULE >>>>>>>>>>>>>>>>>>>>>>>
-// منطقة مخصصة بالكامل لمركز الدعم والإدارة (يمكن استبدالها مستقلة لاحقاً)
+// لوحة تحكم العميل (بروفيل + إعلاناتي + تصفح خاص) ومركز الدعم والإدارة
 // =========================================================================
-async function forwardSupportPayloadToAdmins(ctx, senderUserId, payloadType, content) {
+const supportUserSession = {};
+
+async function fetchUserOwnedAds(userId) {
+  const ads = [];
+
+  try {
+    const { data: pendingRows } = await supabase
+      .from('pending_properties')
+      .select('*')
+      .eq('user_id', userId)
+      .order('id', { ascending: false });
+
+    if (Array.isArray(pendingRows)) {
+      for (const row of pendingRows) {
+        const st = row.status || 'pending';
+        ads.push({
+          ...row,
+          source: 'pending_properties',
+          ad_status: st,
+          status_label:
+            st === 'approved' ? '✅ مقبول' :
+            st === 'rejected' ? '❌ مرفوض' : '⏳ معلق'
+        });
+      }
+    }
+  } catch (e) {}
+
+  try {
+    const { data: publishedRows } = await supabase
+      .from('test_messages')
+      .select('*')
+      .eq('user_id', userId)
+      .order('id', { ascending: false });
+
+    if (Array.isArray(publishedRows)) {
+      const existingApprovedKeys = new Set(
+        ads
+          .filter(a => a.ad_status === 'approved')
+          .map(a => `${a.property_type}|${a.state_name}|${a.price}|${a.phone}`)
+      );
+
+      for (const row of publishedRows) {
+        const key = `${row.property_type}|${row.state_name}|${row.price}|${row.phone}`;
+        if (!existingApprovedKeys.has(key)) {
+          ads.push({
+            ...row,
+            source: 'test_messages',
+            ad_status: 'approved',
+            status_label: '✅ مقبول'
+          });
+        }
+      }
+    }
+  } catch (e) {}
+
+  return ads;
+}
+
+function getSupportHubKeyboard() {
+  return Markup.keyboard([
+    ['👤 ملفي الشخصي ورصيدي', '📋 إعلاناتي وحالتها'],
+    ['🗂 تصفح إعلاناتي الخاصة', '💬 دعم واقتراحات وشكر'],
+    ['🏠 القائمة الرئيسية']
+  ]).resize();
+}
+
+function getSupportCategoriesKeyboard() {
+  return Markup.keyboard([
+    ['💳 مشكلة في الدفع', '🏠 إعلان أو تصفح عقاري'],
+    ['🪙 النقاط والمكافآت', '💡 اقتراح أو تحسين'],
+    ['👏 شكر أو ملاحظة إيجابية', '💬 استفسار عام / أخرى'],
+    ['⬅️ لوحة العميل', '🏠 القائمة الرئيسية']
+  ]).resize();
+}
+
+function getAdActionButtonsForStatus(ad) {
+  const id = ad.id || 'غير_محدد';
+  if (ad.ad_status === 'pending') {
+    return Markup.keyboard([
+      [`❓ لماذا إعلاني معلق؟ (#${id})`],
+      [`⏱️ تذكير الإدارة بمراجعة الطلب (#${id})`],
+      [`📞 لماذا لم يتم التواصل معي؟ (#${id})`],
+      ['⬅️ قائمة الإعلانات', '🏠 القائمة الرئيسية']
+    ]).resize();
+  }
+  if (ad.ad_status === 'rejected') {
+    return Markup.keyboard([
+      [`❌ لماذا تم رفض إعلاني؟ (#${id})`],
+      [`🔄 طلب إعادة مراجعة الإعلان (#${id})`],
+      ['⬅️ قائمة الإعلانات', '🏠 القائمة الرئيسية']
+    ]).resize();
+  }
+  return Markup.keyboard([
+    [`⚠️ ملاحظة أو استفسار حول الإعلان (#${id})`],
+    ['⬅️ قائمة الإعلانات', '🏠 القائمة الرئيسية']
+  ]).resize();
+}
+
+function getUserOwnBrowsingKeyboard(index, total, mediaIdx = 0, totalMedia = 0) {
+  const rows = [];
+  if (totalMedia > 1) {
+    const mRow = [];
+    if (mediaIdx > 0) mRow.push('🖼 الصورة السابقة');
+    mRow.push(`📸 عنصر ${mediaIdx + 1} / ${totalMedia}`);
+    if (mediaIdx < totalMedia - 1) mRow.push('الصورة التالية 🖼');
+    rows.push(mRow);
+  }
+
+  const navRow = [];
+  if (index > 0) navRow.push('⬅️ إعلاني السابق');
+  navRow.push(`🗂 ${index + 1} / ${total}`);
+  if (index < total - 1) navRow.push('إعلاني التالي ➡️');
+  rows.push(navRow);
+  rows.push(['⬅️ لوحة العميل', '🏠 القائمة الرئيسية']);
+  return Markup.keyboard(rows).resize();
+}
+
+async function openSupportDashboard(ctx, userId) {
+  const dbUser = await getUserRecord(userId);
+  const allAds = await fetchUserOwnedAds(userId);
+  const pendingCount = allAds.filter(a => a.ad_status === 'pending').length;
+  const approvedCount = allAds.filter(a => a.ad_status === 'approved').length;
+  const rejectedCount = allAds.filter(a => a.ad_status === 'rejected').length;
+
+  const points = dbUser?.points ?? 0;
+  const phone = dbUser?.phone_number ? escapeHtml(dbUser.phone_number) : 'غير مسجل';
+  const name = escapeHtml(dbUser?.first_name || ctx.from.first_name || 'عميلنا الكريم');
+  const supportIntro = await getSetting('support_text', '');
+
+  supportUserSession[userId] = { mode: 'dashboard', ads: allAds };
+  userState[userId] = {
+    step: 'support_dashboard',
+    data: {},
+    chatId: ctx.chat.id,
+    wizardMsgId: null
+  };
+
+  const text =
+    `🎛 <b>لوحة العميل ومركز الدعم والإدارة</b>\n` +
+    `━━━━━━━━━━━━━━━━━━━━\n` +
+    `👤 <b>العميل:</b> ${name} (<code>${userId}</code>)\n` +
+    `📞 <b>الهاتف:</b> <code>${phone}</code>\n` +
+    `🪙 <b>الرصيد:</b> <b>${points} نقطة</b>\n` +
+    `📊 <b>إعلاناتك:</b> إجمالي <b>${allAds.length}</b> | ⏳ معلق: <b>${pendingCount}</b> | ✅ مقبول: <b>${approvedCount}</b> | ❌ مرفوض: <b>${rejectedCount}</b>` +
+    (supportIntro ? `\n\n${supportIntro}` : '') +
+    `\n\n👇 <b>اختر ما تريد من الأزرار أدناه:</b>`;
+
+  await replyTracked(ctx, userId, text, {
+    parse_mode: 'HTML',
+    ...getSupportHubKeyboard()
+  }, true);
+}
+
+async function renderUserOwnAdBrowser(ctx, userId, adIndex = 0, mediaIndex = 0) {
+  const allAds = await fetchUserOwnedAds(userId);
+  if (!allAds.length) {
+    return replyTracked(
+      ctx,
+      userId,
+      '📭 <b>لا توجد إعلانات مسجلة باسمك حتى الآن.</b>',
+      { parse_mode: 'HTML', ...getSupportHubKeyboard() },
+      true
+    );
+  }
+
+  let safeIdx = Number(adIndex) || 0;
+  if (safeIdx < 0) safeIdx = 0;
+  if (safeIdx >= allAds.length) safeIdx = allAds.length - 1;
+
+  const ad = allAds[safeIdx];
+  const orderedMedia = buildOrderedBrowsingMedia(ad);
+  const totalMedia = orderedMedia.length;
+
+  let safeMediaIdx = Number(mediaIndex) || 0;
+  if (safeMediaIdx < 0) safeMediaIdx = 0;
+  if (totalMedia > 0 && safeMediaIdx >= totalMedia) safeMediaIdx = totalMedia - 1;
+
+  supportUserSession[userId] = {
+    mode: 'browsing_own_ads',
+    ads: allAds,
+    page: safeIdx,
+    mediaIndex: safeMediaIdx,
+    selectingPage: false
+  };
+
+  const currentMedia = totalMedia > 0 ? orderedMedia[safeMediaIdx] : null;
+  const mediaLine = totalMedia > 0
+    ? `\n${currentMedia.type === 'video' ? '🎥 فيديو' : '🖼 صورة'}: <b>${safeMediaIdx + 1} / ${totalMedia}</b>`
+    : '';
+
+  const caption =
+    `🗂 <b>إعلاناتك الخاصة (${safeIdx + 1}/${allAds.length})</b> — الحالة: <b>${ad.status_label}</b>\n` +
+    `🆔 <b>رقم السجل:</b> <code>#${ad.id || '—'}</code>\n` +
+    `━━━━━━━━━━━━━━━━━━━━\n` +
+    `🏠 <b>العقار:</b> ${escapeHtml(ad.property_type || '')}\n` +
+    `📍 <b>الولاية:</b> ${escapeHtml(ad.state_name || '')}\n` +
+    `💰 <b>السعر:</b> ${formatMoney(ad.price)}\n` +
+    `📞 <b>الهاتف:</b> <code>${escapeHtml(ad.phone || '')}</code>${mediaLine}\n` +
+    `📝 <b>الوصف:</b> ${escapeHtml(ad.description || ad.message || '')}`;
+
+  const kb = getUserOwnBrowsingKeyboard(safeIdx, allAds.length, safeMediaIdx, totalMedia);
+
+  let sentMsg = null;
+  if (currentMedia) {
+    try {
+      sentMsg = currentMedia.type === 'video'
+        ? await ctx.replyWithVideo(currentMedia.ref, { caption, parse_mode: 'HTML', ...kb })
+        : await ctx.replyWithPhoto(currentMedia.ref, { caption, parse_mode: 'HTML', ...kb });
+    } catch (e) {}
+  }
+
+  if (!sentMsg) {
+    sentMsg = await ctx.reply(caption, { parse_mode: 'HTML', ...kb });
+  }
+
+  const keepIds = sentMsg?.message_id ? [sentMsg.message_id] : [];
+  if (sentMsg?.message_id) trackBotMessage(userId, ctx.chat.id, sentMsg.message_id);
+  await clearTrackedBotMessages(ctx, userId, keepIds);
+}
+
+async function sendStructuredTicketToAdmins(ctx, senderUserId, ticketTitle, detailText, relatedAd = null, payloadType = 'text', mediaContent = {}) {
   const adminIds = await getAdminIds();
   const dbUser = await getUserRecord(senderUserId);
   const fullName = escapeHtml(
@@ -1221,34 +1440,46 @@ async function forwardSupportPayloadToAdmins(ctx, senderUserId, payloadType, con
     dbUser?.first_name ||
     'مستخدم'
   );
-  const phoneText = dbUser?.phone_number ? `\n📞 <b>الهاتف:</b> <code>${escapeHtml(dbUser.phone_number)}</code>` : '';
+  const phoneLine = dbUser?.phone_number ? `\n📞 <b>الهاتف:</b> <code>${escapeHtml(dbUser.phone_number)}</code>` : '';
+  const pointsLine = `\n🪙 <b>الرصيد:</b> <b>${dbUser?.points ?? 0} نقطة</b>`;
+
+  const adBlock = relatedAd
+    ? `\n📌 <b>الإعلان المرتبط:</b> <code>#${relatedAd.id || '—'}</code> (${escapeHtml(relatedAd.property_type || '')} - ${escapeHtml(relatedAd.state_name || '')} - ${formatMoney(relatedAd.price)}) — الحالة: <b>${relatedAd.status_label}</b>`
+    : '';
 
   const header =
-    `📩 <b>رسالة جديدة إلى مركز الدعم والإدارة</b>\n` +
-    `👤 <b>المرسل:</b> ${fullName}\n` +
-    `🆔 <b>المعرف:</b> <code>${senderUserId}</code>${phoneText}\n` +
+    `📩 <b>تذكرة جديدة — ${escapeHtml(ticketTitle)}</b>\n` +
+    `👤 <b>العميل:</b> ${fullName}\n` +
+    `🆔 <b>المعرف:</b> <code>${senderUserId}</code>${phoneLine}${pointsLine}${adBlock}\n` +
     `━━━━━━━━━━━━━━━━━━━━\n`;
 
-  const replyBtn = Markup.inlineKeyboard([
-    [Markup.button.callback(`✉️ رد على المستخدم (${senderUserId})`, `support_reply_${senderUserId}`)]
-  ]);
+  const inlineRows = [
+    [Markup.button.callback(`✉️ رد على العميل (${senderUserId})`, `support_reply_${senderUserId}`)]
+  ];
+
+  if (relatedAd && relatedAd.source === 'pending_properties' && relatedAd.ad_status === 'pending' && relatedAd.id) {
+    inlineRows.push([
+      Markup.button.callback(`❌ رفض (#${relatedAd.id})`, `reject_${relatedAd.id}`),
+      Markup.button.callback(`✅ قبول ونشر (#${relatedAd.id})`, `approve_${relatedAd.id}`)
+    ]);
+  }
+
+  const replyMarkup = Markup.inlineKeyboard(inlineRows);
+  const bodyText = detailText ? `💬 <b>التفاصيل:</b>\n${escapeHtml(detailText)}` : '';
 
   for (const adminId of adminIds) {
     try {
       if (payloadType === 'photo') {
-        const cap = header + (content.caption ? `📝 <b>النص:</b> ${escapeHtml(content.caption)}` : '🖼 <b>مرفق صورة</b>');
-        await ctx.telegram.sendPhoto(adminId, content.fileId, { caption: cap, parse_mode: 'HTML', ...replyBtn });
+        const cap = header + (mediaContent.caption ? `💬 <b>الرسالة:</b> ${escapeHtml(mediaContent.caption)}` : '🖼 <b>مرفق صورة من العميل</b>');
+        await ctx.telegram.sendPhoto(adminId, mediaContent.fileId, { caption: cap, parse_mode: 'HTML', ...replyMarkup });
       } else if (payloadType === 'video') {
-        const cap = header + (content.caption ? `📝 <b>النص:</b> ${escapeHtml(content.caption)}` : '🎥 <b>مرفق فيديو</b>');
-        await ctx.telegram.sendVideo(adminId, content.fileId, { caption: cap, parse_mode: 'HTML', ...replyBtn });
+        const cap = header + (mediaContent.caption ? `💬 <b>الرسالة:</b> ${escapeHtml(mediaContent.caption)}` : '🎥 <b>مرفق فيديو من العميل</b>');
+        await ctx.telegram.sendVideo(adminId, mediaContent.fileId, { caption: cap, parse_mode: 'HTML', ...replyMarkup });
       } else {
-        await ctx.telegram.sendMessage(adminId, header + `💬 <b>الرسالة:</b>\n${escapeHtml(content.text)}`, {
-          parse_mode: 'HTML',
-          ...replyBtn
-        });
+        await ctx.telegram.sendMessage(adminId, header + bodyText, { parse_mode: 'HTML', ...replyMarkup });
       }
     } catch (err) {
-      console.error(`Support forward error to admin ${adminId}:`, err.message);
+      console.error(`Support ticket forward error to ${adminId}:`, err.message);
     }
   }
 }
@@ -1269,7 +1500,7 @@ async function deliverAdminReplyToUser(ctx, adminId, targetUserId, payloadType, 
   await replyTracked(
     ctx,
     adminId,
-    `✅ <b>تم إرسال ردك بنجاح إلى المستخدم</b> <code>${targetUserId}</code>.`,
+    `✅ <b>تم إرسال ردك بنجاح إلى العميل</b> <code>${targetUserId}</code>.`,
     { parse_mode: 'HTML', ...getMainMenuKeyboard() },
     true
   );
@@ -1277,14 +1508,241 @@ async function deliverAdminReplyToUser(ctx, adminId, targetUserId, payloadType, 
 
 bot.hears('📞 الدعم والإدارة', async (ctx) => {
   await safeDeleteUserMessage(ctx);
+  await openSupportDashboard(ctx, ctx.from.id);
+});
+
+bot.hears('⬅️ لوحة العميل', async (ctx) => {
+  await safeDeleteUserMessage(ctx);
+  await openSupportDashboard(ctx, ctx.from.id);
+});
+
+bot.hears('👤 ملفي الشخصي ورصيدي', async (ctx) => {
+  await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
-  const supportMsg = await getSetting(
-    'support_text',
-    '📞 <b>مركز الدعم والإدارة - منصة عقار الجزائر:</b>\n\nنحن هنا لمساعدتك. اكتب رسالتك أو أرسل صورة/فيديو وسيتم تحويلها للإدارة مباشرة.'
+  const dbUser = await getUserRecord(userId);
+  const allAds = await fetchUserOwnedAds(userId);
+  const botUsername = ctx.botInfo?.username || 'AqarDZ_bot';
+  const refLink = `https://t.me/${botUsername}?start=ref_${userId}`;
+
+  const text =
+    `👤 <b>الملف الشخصي والرصيد</b>\n` +
+    `━━━━━━━━━━━━━━━━━━━━\n` +
+    `• <b>الاسم:</b> ${escapeHtml(dbUser?.first_name || ctx.from.first_name || 'غير محدد')}\n` +
+    `• <b>معرف الحساب (ID):</b> <code>${userId}</code>\n` +
+    `• <b>رقم الهاتف:</b> <code>${escapeHtml(dbUser?.phone_number || 'غير مسجل')}</code>\n` +
+    `• <b>رصيد النقاط:</b> <b>${dbUser?.points ?? 0} نقطة</b>\n` +
+    `• <b>عدد إعلاناتك المسجلة:</b> <b>${allAds.length}</b>\n` +
+    `• <b>رابط الدعوة:</b>\n<code>${refLink}</code>`;
+
+  await replyTracked(ctx, userId, text, {
+    parse_mode: 'HTML',
+    ...getSupportHubKeyboard()
+  }, true);
+});
+
+bot.hears('📋 إعلاناتي وحالتها', async (ctx) => {
+  await safeDeleteUserMessage(ctx);
+  const userId = ctx.from.id;
+  const allAds = await fetchUserOwnedAds(userId);
+  supportUserSession[userId] = { mode: 'ads_filter', ads: allAds };
+
+  const pending = allAds.filter(a => a.ad_status === 'pending').length;
+  const approved = allAds.filter(a => a.ad_status === 'approved').length;
+  const rejected = allAds.filter(a => a.ad_status === 'rejected').length;
+
+  await replyTracked(
+    ctx,
+    userId,
+    `📋 <b>إعلاناتي وحالتها</b>\n\nاختر الفئة لعرض إعلاناتك والتساؤل حول أي إعلان بضغطة زر:`,
+    {
+      parse_mode: 'HTML',
+      ...Markup.keyboard([
+        [`⏳ معلقة (${pending})`, `✅ مقبولة (${approved})`],
+        [`❌ مرفوضة (${rejected})`, `📌 الكل (${allAds.length})`],
+        ['⬅️ لوحة العميل', '🏠 القائمة الرئيسية']
+      ]).resize()
+    },
+    true
+  );
+});
+
+bot.hears(/^(⏳ معلقة|✅ مقبولة|❌ مرفوضة|📌 الكل) \(\d+\)$/, async (ctx) => {
+  await safeDeleteUserMessage(ctx);
+  const userId = ctx.from.id;
+  const prefix = ctx.match[1];
+  const allAds = await fetchUserOwnedAds(userId);
+
+  let filtered = allAds;
+  let label = 'جميع إعلاناتك';
+  if (prefix.startsWith('⏳')) {
+    filtered = allAds.filter(a => a.ad_status === 'pending');
+    label = 'إعلاناتك المعلقة';
+  } else if (prefix.startsWith('✅')) {
+    filtered = allAds.filter(a => a.ad_status === 'approved');
+    label = 'إعلاناتك المقبولة';
+  } else if (prefix.startsWith('❌')) {
+    filtered = allAds.filter(a => a.ad_status === 'rejected');
+    label = 'إعلاناتك المرفوضة';
+  }
+
+  if (!filtered.length) {
+    return replyTracked(
+      ctx,
+      userId,
+      `📭 <b>لا توجد إعلانات في فئة "${escapeHtml(label)}".</b>`,
+      {
+        parse_mode: 'HTML',
+        ...Markup.keyboard([
+          ['📋 إعلاناتي وحالتها'],
+          ['⬅️ لوحة العميل', '🏠 القائمة الرئيسية']
+        ]).resize()
+      },
+      true
+    );
+  }
+
+  supportUserSession[userId] = { mode: 'select_ad_for_action', ads: filtered };
+
+  const listLines = filtered.slice(0, 15).map((ad, idx) =>
+    `${idx + 1}. ${ad.status_label} <b>#${ad.id || '—'}</b> — ${escapeHtml(ad.property_type || '')} (${escapeHtml(ad.state_name || '')}) • ${formatMoney(ad.price)}`
   );
 
+  const adButtons = filtered.slice(0, 12).map(ad =>
+    `📄 إعلان #${ad.id || '—'} (${escapeHtml(ad.property_type || '')})`
+  );
+
+  await replyTracked(
+    ctx,
+    userId,
+    `📋 <b>${escapeHtml(label)} (${filtered.length}):</b>\n\n${listLines.join('\n')}\n\n👇 <b>اختر إعلاناً من الأزرار لإرسال استفسار أو تذكير حوله:</b>`,
+    {
+      parse_mode: 'HTML',
+      ...Markup.keyboard([
+        ...chunkButtons(adButtons, 2),
+        ['⬅️ قائمة الإعلانات', '⬅️ لوحة العميل']
+      ]).resize()
+    },
+    true
+  );
+});
+
+bot.hears('⬅️ قائمة الإعلانات', async (ctx) => {
+  await safeDeleteUserMessage(ctx);
+  const userId = ctx.from.id;
+  const allAds = await fetchUserOwnedAds(userId);
+  supportUserSession[userId] = { mode: 'ads_filter', ads: allAds };
+
+  const pending = allAds.filter(a => a.ad_status === 'pending').length;
+  const approved = allAds.filter(a => a.ad_status === 'approved').length;
+  const rejected = allAds.filter(a => a.ad_status === 'rejected').length;
+
+  await replyTracked(
+    ctx,
+    userId,
+    `📋 <b>إعلاناتي وحالتها</b>\nاختر الفئة:`,
+    {
+      parse_mode: 'HTML',
+      ...Markup.keyboard([
+        [`⏳ معلقة (${pending})`, `✅ مقبولة (${approved})`],
+        [`❌ مرفوضة (${rejected})`, `📌 الكل (${allAds.length})`],
+        ['⬅️ لوحة العميل', '🏠 القائمة الرئيسية']
+      ]).resize()
+    },
+    true
+  );
+});
+
+bot.hears(/^📄 إعلان #(\S+) \((.+)\)$/, async (ctx) => {
+  await safeDeleteUserMessage(ctx);
+  const userId = ctx.from.id;
+  const reqIdStr = ctx.match[1];
+  const allAds = supportUserSession[userId]?.ads || await fetchUserOwnedAds(userId);
+  const targetAd = allAds.find(a => String(a.id) === String(reqIdStr)) || allAds[0];
+
+  if (!targetAd) return;
+
+  supportUserSession[userId] = {
+    mode: 'ad_actions',
+    ads: allAds,
+    selectedAd: targetAd
+  };
+
+  const cardText =
+    `📄 <b>تفاصيل الإعلان #${escapeHtml(String(targetAd.id || '—'))}</b>\n` +
+    `━━━━━━━━━━━━━━━━━━━━\n` +
+    `• <b>الحالة:</b> <b>${targetAd.status_label}</b>\n` +
+    `• <b>النوع:</b> ${escapeHtml(targetAd.property_type || '')}\n` +
+    `• <b>الولاية:</b> ${escapeHtml(targetAd.state_name || '')}\n` +
+    `• <b>السعر:</b> ${formatMoney(targetAd.price)}\n` +
+    `• <b>الهاتف:</b> <code>${escapeHtml(targetAd.phone || '')}</code>\n` +
+    `• <b>الوصف:</b> ${escapeHtml(targetAd.description || targetAd.message || '')}\n\n` +
+    `👇 <b>اختر الإجراء أو التساؤل لإرساله مباشرة للإدارة:</b>`;
+
+  await replyTracked(ctx, userId, cardText, {
+    parse_mode: 'HTML',
+    ...getAdActionButtonsForStatus(targetAd)
+  }, true);
+});
+
+// تصفح إعلانات العميل الخاصة بنفس منهجية التصفح
+bot.hears('🗂 تصفح إعلاناتي الخاصة', async (ctx) => {
+  await safeDeleteUserMessage(ctx);
+  await renderUserOwnAdBrowser(ctx, ctx.from.id, 0, 0);
+});
+
+bot.hears('إعلاني التالي ➡️', async (ctx) => {
+  await safeDeleteUserMessage(ctx);
+  const userId = ctx.from.id;
+  const s = supportUserSession[userId];
+  if (s && s.mode === 'browsing_own_ads') {
+    await renderUserOwnAdBrowser(ctx, userId, (s.page || 0) + 1, 0);
+  }
+});
+
+bot.hears('⬅️ إعلاني السابق', async (ctx) => {
+  await safeDeleteUserMessage(ctx);
+  const userId = ctx.from.id;
+  const s = supportUserSession[userId];
+  if (s && s.mode === 'browsing_own_ads') {
+    await renderUserOwnAdBrowser(ctx, userId, Math.max((s.page || 0) - 1, 0), 0);
+  }
+});
+
+bot.hears(/^🗂 \d+ \/ \d+$/, async (ctx) => {
+  await safeDeleteUserMessage(ctx);
+  const userId = ctx.from.id;
+  const s = supportUserSession[userId];
+  if (!s || s.mode !== 'browsing_own_ads' || !s.ads?.length) return;
+
+  s.selectingPage = true;
+  const total = s.ads.length;
+  const rows = [];
+  let row = [];
+  for (let i = 1; i <= total; i++) {
+    row.push(`${i}`);
+    if (row.length === 5) {
+      rows.push(row);
+      row = [];
+    }
+  }
+  if (row.length) rows.push(row);
+  rows.push(['🗂 تصفح إعلاناتي الخاصة']);
+
+  await replyTracked(
+    ctx,
+    userId,
+    `🔢 <b>اختر رقم إعلانك للانتقال إليه مباشرة (1 إلى ${total}):</b>`,
+    { parse_mode: 'HTML', ...Markup.keyboard(rows).resize() },
+    true
+  );
+});
+
+// أزرار الدعم والتصنيفات العامة (شكر، اقتراح، مشكلة دفع، تصفح، نقاط، أخرى)
+bot.hears('💬 دعم واقتراحات وشكر', async (ctx) => {
+  await safeDeleteUserMessage(ctx);
+  const userId = ctx.from.id;
   userState[userId] = {
-    step: 'waiting_for_support_message',
+    step: 'support_selecting_category',
     data: {},
     chatId: ctx.chat.id,
     wizardMsgId: null
@@ -1293,10 +1751,50 @@ bot.hears('📞 الدعم والإدارة', async (ctx) => {
   await replyTracked(
     ctx,
     userId,
-    `${supportMsg}\n\n✍️ <b>أرسل رسالتك الآن (أو اضغط "🏠 القائمة الرئيسية" للرجوع):</b>`,
+    `💬 <b>اختر نوع الرسالة أو الملاحظة:</b>\n\nيمكنك اختيار سبب التواصل من الأزرار أدناه دون الحاجة للكتابة العشوائية، أو اختيار <b>💬 استفسار عام / أخرى</b> للكتابة الحرة:`,
+    { parse_mode: 'HTML', ...getSupportCategoriesKeyboard() },
+    true
+  );
+});
+
+bot.hears(['💳 مشكلة في الدفع', '🏠 إعلان أو تصفح عقاري', '🪙 النقاط والمكافآت', '💡 اقتراح أو تحسين', '👏 شكر أو ملاحظة إيجابية', '💬 استفسار عام / أخرى'], async (ctx) => {
+  await safeDeleteUserMessage(ctx);
+  const userId = ctx.from.id;
+  const chosenCat = ctx.message.text.trim();
+
+  if (chosenCat === '👏 شكر أو ملاحظة إيجابية') {
+    await sendStructuredTicketToAdmins(
+      ctx,
+      userId,
+      chosenCat,
+      'أرسل العميل رسالة شكر وتقدير للمنصة عبر الأزرار السريعة.',
+      null,
+      'text'
+    );
+    delete userState[userId];
+    return replyTracked(
+      ctx,
+      userId,
+      '👏 <b>شكراً جزيلاً لك على كلماتك الطيبة وثقتك بمنصة عقار الجزائر!</b> تم إرسال رسالتك للإدارة.',
+      { parse_mode: 'HTML', ...getSupportHubKeyboard() },
+      true
+    );
+  }
+
+  userState[userId] = {
+    step: 'waiting_for_support_message',
+    data: { category: chosenCat },
+    chatId: ctx.chat.id,
+    wizardMsgId: null
+  };
+
+  await replyTracked(
+    ctx,
+    userId,
+    `✍️ <b>${escapeHtml(chosenCat)}</b>\n\nاكتب تفاصيل رسالتك أو أرسل صورة/فيديو توضيحي الآن (أو اضغط "⬅️ لوحة العميل" للرجوع):`,
     {
       parse_mode: 'HTML',
-      ...Markup.keyboard([['🏠 القائمة الرئيسية']]).resize()
+      ...Markup.keyboard([['⬅️ لوحة العميل'], ['🏠 القائمة الرئيسية']]).resize()
     },
     true
   );
@@ -1322,7 +1820,7 @@ bot.action(/^support_reply_(\d+)$/, async (ctx) => {
   await replyTracked(
     ctx,
     adminId,
-    `✉️ <b>وضع الرد على المستخدم</b> <code>${targetUserId}</code>\n\nاكتب ردك الآن أو أرسل صورة/فيديو (أو اضغط "🏠 القائمة الرئيسية" للإلغاء):`,
+    `✉️ <b>وضع الرد على العميل</b> <code>${targetUserId}</code>\n\nاكتب ردك الآن أو أرسل صورة/فيديو (أو اضغط "🏠 القائمة الرئيسية" للإلغاء):`,
     {
       parse_mode: 'HTML',
       ...Markup.keyboard([['🏠 القائمة الرئيسية']]).resize()
@@ -1332,18 +1830,62 @@ bot.action(/^support_reply_(\d+)$/, async (ctx) => {
 });
 
 async function handleSupportTextStep(ctx, userId, userText) {
+  const s = supportUserSession[userId];
+  if (s && s.mode === 'browsing_own_ads' && s.selectingPage && /^\d+$/.test(userText)) {
+    await safeDeleteUserMessage(ctx);
+    const num = parseInt(userText, 10) - 1;
+    s.selectingPage = false;
+    await renderUserOwnAdBrowser(ctx, userId, num, 0);
+    return true;
+  }
+
+  // أزرار التساؤلات والتذكيرات الجاهزة المرتبطة بإعلان محدد
+  const adQuickMatch = userText.match(/^(❓ لماذا إعلاني معلق؟|⏱️ تذكير الإدارة بمراجعة الطلب|📞 لماذا لم يتم التواصل معي؟|❌ لماذا تم رفض إعلاني؟|🔄 طلب إعادة مراجعة الإعلان|⚠️ ملاحظة أو استفسار حول الإعلان) \(#([^)]+)\)$/);
+  if (adQuickMatch) {
+    await safeDeleteUserMessage(ctx);
+    const actionLabel = adQuickMatch[1];
+    const reqId = adQuickMatch[2];
+    const adsList = s?.ads || await fetchUserOwnedAds(userId);
+    const relatedAd = adsList.find(a => String(a.id) === String(reqId)) || s?.selectedAd || null;
+
+    await sendStructuredTicketToAdmins(
+      ctx,
+      userId,
+      `${actionLabel} (#${reqId})`,
+      `استفسار/إجراء سريع من العميل بخصوص الإعلان رقم #${reqId}.`,
+      relatedAd,
+      'text'
+    );
+
+    await replyTracked(
+      ctx,
+      userId,
+      `✅ <b>تم إرسال طلبك (${escapeHtml(actionLabel)}) للإدارة بخصوص الإعلان <code>#${escapeHtml(reqId)}</code>.</b>`,
+      {
+        parse_mode: 'HTML',
+        ...Markup.keyboard([
+          ['📋 إعلاناتي وحالتها'],
+          ['⬅️ لوحة العميل', '🏠 القائمة الرئيسية']
+        ]).resize()
+      },
+      true
+    );
+    return true;
+  }
+
   const state = userState[userId];
   if (!state) return false;
 
   if (state.step === 'waiting_for_support_message') {
     await safeDeleteUserMessage(ctx);
-    await forwardSupportPayloadToAdmins(ctx, userId, 'text', { text: userText });
+    const categoryTitle = state.data?.category || 'دعم عام';
+    await sendStructuredTicketToAdmins(ctx, userId, categoryTitle, userText, null, 'text');
     delete userState[userId];
     await replyTracked(
       ctx,
       userId,
       '✅ <b>تم إرسال رسالتك إلى مركز الدعم والإدارة بنجاح.</b> سيتم الرد عليك في أقرب وقت.',
-      { parse_mode: 'HTML', ...getMainMenuKeyboard() },
+      { parse_mode: 'HTML', ...getSupportHubKeyboard() },
       true
     );
     return true;
@@ -1369,13 +1911,17 @@ async function handleSupportMediaStep(ctx, userId, mediaType, fileId, captionTex
 
   if (state.step === 'waiting_for_support_message') {
     await safeDeleteUserMessage(ctx);
-    await forwardSupportPayloadToAdmins(ctx, userId, mediaType, { fileId, caption: captionText });
+    const categoryTitle = state.data?.category || 'دعم عام';
+    await sendStructuredTicketToAdmins(ctx, userId, categoryTitle, '', null, mediaType, {
+      fileId,
+      caption: captionText
+    });
     delete userState[userId];
     await replyTracked(
       ctx,
       userId,
       '✅ <b>تم إرسال المرفق إلى مركز الدعم والإدارة بنجاح.</b>',
-      { parse_mode: 'HTML', ...getMainMenuKeyboard() },
+      { parse_mode: 'HTML', ...getSupportHubKeyboard() },
       true
     );
     return true;
@@ -1388,7 +1934,10 @@ async function handleSupportMediaStep(ctx, userId, mediaType, fileId, captionTex
       delete userState[userId];
       return true;
     }
-    await deliverAdminReplyToUser(ctx, userId, targetUserId, mediaType, { fileId, caption: captionText });
+    await deliverAdminReplyToUser(ctx, userId, targetUserId, mediaType, {
+      fileId,
+      caption: captionText
+    });
     return true;
   }
 
@@ -1398,7 +1947,6 @@ async function handleSupportMediaStep(ctx, userId, mediaType, fileId, captionTex
 // <<<<<<<<<<<<<<<<<<<<<<< END SUPPORT_ADMIN_MODULE <<<<<<<<<<<<<<<<<<<<<<<<
 // =========================================================================
 
-// =========================================================================
 // 📝 معالج النصوص وأزرار القائمة السفلية الموحدة
 // =========================================================================
 bot.on('text', async (ctx) => {
