@@ -870,12 +870,6 @@ bot.hears('🌐 تصفح الموقع الرسمي (البروزر)', async (ctx
   );
 });
 
-bot.hears('📞 الدعم والإدارة', async (ctx) => {
-  await safeDeleteUserMessage(ctx);
-  const supportMsg = await getSetting('support_text', '📞 <b>مركز الدعم التقني - منصة عقار الجزائر:</b>\n\nنحن في خدمتك دائماً.');
-  await replyTracked(ctx, ctx.from.id, supportMsg, { parse_mode: 'HTML', ...getMainMenuKeyboard() }, true);
-});
-
 bot.hears('ℹ️ عن المنصة', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const aboutMsg = await getSetting('about_text', '🏛 <b>عن منصة عقار الجزائر (Aqar System):</b>\n\nنظام رقمي ذكي ومتطور لإدارة المعاملات العقارية.');
@@ -1216,6 +1210,195 @@ bot.hears(/^🪙 النشر مجاناً/, async (ctx) => {
 });
 
 // =========================================================================
+// >>>>>>>>>>>>>>>>>>>>>> START SUPPORT_ADMIN_MODULE >>>>>>>>>>>>>>>>>>>>>>>
+// منطقة مخصصة بالكامل لمركز الدعم والإدارة (يمكن استبدالها مستقلة لاحقاً)
+// =========================================================================
+async function forwardSupportPayloadToAdmins(ctx, senderUserId, payloadType, content) {
+  const adminIds = await getAdminIds();
+  const dbUser = await getUserRecord(senderUserId);
+  const fullName = escapeHtml(
+    [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' ') ||
+    dbUser?.first_name ||
+    'مستخدم'
+  );
+  const phoneText = dbUser?.phone_number ? `\n📞 <b>الهاتف:</b> <code>${escapeHtml(dbUser.phone_number)}</code>` : '';
+
+  const header =
+    `📩 <b>رسالة جديدة إلى مركز الدعم والإدارة</b>\n` +
+    `👤 <b>المرسل:</b> ${fullName}\n` +
+    `🆔 <b>المعرف:</b> <code>${senderUserId}</code>${phoneText}\n` +
+    `━━━━━━━━━━━━━━━━━━━━\n`;
+
+  const replyBtn = Markup.inlineKeyboard([
+    [Markup.button.callback(`✉️ رد على المستخدم (${senderUserId})`, `support_reply_${senderUserId}`)]
+  ]);
+
+  for (const adminId of adminIds) {
+    try {
+      if (payloadType === 'photo') {
+        const cap = header + (content.caption ? `📝 <b>النص:</b> ${escapeHtml(content.caption)}` : '🖼 <b>مرفق صورة</b>');
+        await ctx.telegram.sendPhoto(adminId, content.fileId, { caption: cap, parse_mode: 'HTML', ...replyBtn });
+      } else if (payloadType === 'video') {
+        const cap = header + (content.caption ? `📝 <b>النص:</b> ${escapeHtml(content.caption)}` : '🎥 <b>مرفق فيديو</b>');
+        await ctx.telegram.sendVideo(adminId, content.fileId, { caption: cap, parse_mode: 'HTML', ...replyBtn });
+      } else {
+        await ctx.telegram.sendMessage(adminId, header + `💬 <b>الرسالة:</b>\n${escapeHtml(content.text)}`, {
+          parse_mode: 'HTML',
+          ...replyBtn
+        });
+      }
+    } catch (err) {
+      console.error(`Support forward error to admin ${adminId}:`, err.message);
+    }
+  }
+}
+
+async function deliverAdminReplyToUser(ctx, adminId, targetUserId, payloadType, content) {
+  const header = `📩 <b>رد من مركز الدعم والإدارة:</b>\n━━━━━━━━━━━━━━━━━━━━\n`;
+  if (payloadType === 'photo') {
+    const cap = header + (content.caption ? escapeHtml(content.caption) : '🖼 <b>مرفق صورة من الإدارة</b>');
+    await ctx.telegram.sendPhoto(targetUserId, content.fileId, { caption: cap, parse_mode: 'HTML' });
+  } else if (payloadType === 'video') {
+    const cap = header + (content.caption ? escapeHtml(content.caption) : '🎥 <b>مرفق فيديو من الإدارة</b>');
+    await ctx.telegram.sendVideo(targetUserId, content.fileId, { caption: cap, parse_mode: 'HTML' });
+  } else {
+    await ctx.telegram.sendMessage(targetUserId, header + escapeHtml(content.text), { parse_mode: 'HTML' });
+  }
+
+  delete userState[adminId];
+  await replyTracked(
+    ctx,
+    adminId,
+    `✅ <b>تم إرسال ردك بنجاح إلى المستخدم</b> <code>${targetUserId}</code>.`,
+    { parse_mode: 'HTML', ...getMainMenuKeyboard() },
+    true
+  );
+}
+
+bot.hears('📞 الدعم والإدارة', async (ctx) => {
+  await safeDeleteUserMessage(ctx);
+  const userId = ctx.from.id;
+  const supportMsg = await getSetting(
+    'support_text',
+    '📞 <b>مركز الدعم والإدارة - منصة عقار الجزائر:</b>\n\nنحن هنا لمساعدتك. اكتب رسالتك أو أرسل صورة/فيديو وسيتم تحويلها للإدارة مباشرة.'
+  );
+
+  userState[userId] = {
+    step: 'waiting_for_support_message',
+    data: {},
+    chatId: ctx.chat.id,
+    wizardMsgId: null
+  };
+
+  await replyTracked(
+    ctx,
+    userId,
+    `${supportMsg}\n\n✍️ <b>أرسل رسالتك الآن (أو اضغط "🏠 القائمة الرئيسية" للرجوع):</b>`,
+    {
+      parse_mode: 'HTML',
+      ...Markup.keyboard([['🏠 القائمة الرئيسية']]).resize()
+    },
+    true
+  );
+});
+
+bot.action(/^support_reply_(\d+)$/, async (ctx) => {
+  const adminId = ctx.from.id;
+  const targetUserId = Number(ctx.match[1]);
+  await ctx.answerCbQuery();
+
+  const adminIds = await getAdminIds();
+  if (!adminIds.includes(adminId)) {
+    return await ctx.answerCbQuery('⛔ هذا الإجراء مخصص للإدارة فقط.', { show_alert: true });
+  }
+
+  userState[adminId] = {
+    step: 'replying_to_support_user',
+    data: { targetUserId },
+    chatId: ctx.chat.id,
+    wizardMsgId: null
+  };
+
+  await replyTracked(
+    ctx,
+    adminId,
+    `✉️ <b>وضع الرد على المستخدم</b> <code>${targetUserId}</code>\n\nاكتب ردك الآن أو أرسل صورة/فيديو (أو اضغط "🏠 القائمة الرئيسية" للإلغاء):`,
+    {
+      parse_mode: 'HTML',
+      ...Markup.keyboard([['🏠 القائمة الرئيسية']]).resize()
+    },
+    true
+  );
+});
+
+async function handleSupportTextStep(ctx, userId, userText) {
+  const state = userState[userId];
+  if (!state) return false;
+
+  if (state.step === 'waiting_for_support_message') {
+    await safeDeleteUserMessage(ctx);
+    await forwardSupportPayloadToAdmins(ctx, userId, 'text', { text: userText });
+    delete userState[userId];
+    await replyTracked(
+      ctx,
+      userId,
+      '✅ <b>تم إرسال رسالتك إلى مركز الدعم والإدارة بنجاح.</b> سيتم الرد عليك في أقرب وقت.',
+      { parse_mode: 'HTML', ...getMainMenuKeyboard() },
+      true
+    );
+    return true;
+  }
+
+  if (state.step === 'replying_to_support_user') {
+    await safeDeleteUserMessage(ctx);
+    const targetUserId = state.data?.targetUserId;
+    if (!targetUserId) {
+      delete userState[userId];
+      return true;
+    }
+    await deliverAdminReplyToUser(ctx, userId, targetUserId, 'text', { text: userText });
+    return true;
+  }
+
+  return false;
+}
+
+async function handleSupportMediaStep(ctx, userId, mediaType, fileId, captionText = '') {
+  const state = userState[userId];
+  if (!state) return false;
+
+  if (state.step === 'waiting_for_support_message') {
+    await safeDeleteUserMessage(ctx);
+    await forwardSupportPayloadToAdmins(ctx, userId, mediaType, { fileId, caption: captionText });
+    delete userState[userId];
+    await replyTracked(
+      ctx,
+      userId,
+      '✅ <b>تم إرسال المرفق إلى مركز الدعم والإدارة بنجاح.</b>',
+      { parse_mode: 'HTML', ...getMainMenuKeyboard() },
+      true
+    );
+    return true;
+  }
+
+  if (state.step === 'replying_to_support_user') {
+    await safeDeleteUserMessage(ctx);
+    const targetUserId = state.data?.targetUserId;
+    if (!targetUserId) {
+      delete userState[userId];
+      return true;
+    }
+    await deliverAdminReplyToUser(ctx, userId, targetUserId, mediaType, { fileId, caption: captionText });
+    return true;
+  }
+
+  return false;
+}
+// =========================================================================
+// <<<<<<<<<<<<<<<<<<<<<<< END SUPPORT_ADMIN_MODULE <<<<<<<<<<<<<<<<<<<<<<<<
+// =========================================================================
+
+// =========================================================================
 // 📝 معالج النصوص وأزرار القائمة السفلية الموحدة
 // =========================================================================
 bot.on('text', async (ctx) => {
@@ -1225,6 +1408,12 @@ bot.on('text', async (ctx) => {
 
   const state = userState[userId];
   if (!state) return;
+
+  // تحويل خطوات الدعم والرد الإداري إلى وحدة الدعم
+  if (state.step === 'waiting_for_support_message' || state.step === 'replying_to_support_user') {
+    await handleSupportTextStep(ctx, userId, userText);
+    return;
+  }
 
   if (state.step === 'waiting_for_type') {
     const validTypes = await getDynamicPropertyTypes();
@@ -1348,9 +1537,16 @@ bot.on('text', async (ctx) => {
 });
 
 bot.on('photo', async (ctx) => {
-  await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   const state = userState[userId];
+
+  if (state && (state.step === 'waiting_for_support_message' || state.step === 'replying_to_support_user')) {
+    const photo = ctx.message.photo[ctx.message.photo.length - 1];
+    await handleSupportMediaStep(ctx, userId, 'photo', photo.file_id, ctx.message.caption || '');
+    return;
+  }
+
+  await safeDeleteUserMessage(ctx);
 
   if (state && state.step === 'waiting_for_media') {
     const photo = ctx.message.photo[ctx.message.photo.length - 1];
@@ -1475,9 +1671,15 @@ bot.on('photo', async (ctx) => {
 });
 
 bot.on('video', async (ctx) => {
-  await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   const state = userState[userId];
+
+  if (state && (state.step === 'waiting_for_support_message' || state.step === 'replying_to_support_user')) {
+    await handleSupportMediaStep(ctx, userId, 'video', ctx.message.video.file_id, ctx.message.caption || '');
+    return;
+  }
+
+  await safeDeleteUserMessage(ctx);
 
   if (state && state.step === 'waiting_for_media') {
     const video = ctx.message.video;
