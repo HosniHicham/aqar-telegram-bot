@@ -163,16 +163,16 @@ function getMainMenuKeyboard() {
   ]).resize();
 }
 
-function getBrowsingKeyboard(currentIndex, totalCount, photoIdx = 0, totalPhotos = 0) {
+function getBrowsingKeyboard(currentIndex, totalCount, mediaIdx = 0, totalMedia = 0) {
   const rows = [];
 
-  // صف أزرار التنقل بين صور العقار الحالي فقط عند وجود أكثر من صورة
-  if (totalPhotos > 1) {
-    const photoRow = [];
-    if (photoIdx > 0) photoRow.push('🖼 الصورة السابقة');
-    photoRow.push(`📸 صورة ${photoIdx + 1} / ${totalPhotos}`);
-    if (photoIdx < totalPhotos - 1) photoRow.push('الصورة التالية 🖼');
-    rows.push(photoRow);
+  // صف أزرار التنقل بين وسائط العقار الحالي (الفيديو أولاً ثم الصور) عند وجود أكثر من عنصر
+  if (totalMedia > 1) {
+    const mediaRow = [];
+    if (mediaIdx > 0) mediaRow.push('🖼 الصورة السابقة');
+    mediaRow.push(`📸 عنصر ${mediaIdx + 1} / ${totalMedia}`);
+    if (mediaIdx < totalMedia - 1) mediaRow.push('الصورة التالية 🖼');
+    rows.push(mediaRow);
   }
 
   const navRow = [];
@@ -287,6 +287,19 @@ function parseMediaListFromField(fieldVal) {
 
 function parseImagesFromImageUrl(imageUrlField) {
   return parseMediaListFromField(imageUrlField);
+}
+
+// 🎬 دمج الفيديوهات أولاً ثم الصور في قائمة عرض موحدة للتنقل بينهما
+function buildOrderedBrowsingMedia(item) {
+  const videos = parseMediaListFromField(item.video_url)
+    .slice(0, MAX_PROPERTY_IMAGES)
+    .map(ref => ({ type: 'video', ref }));
+
+  const photos = parseImagesFromImageUrl(item.image_url)
+    .slice(0, MAX_PROPERTY_IMAGES)
+    .map(ref => ({ type: 'photo', ref }));
+
+  return [...videos, ...photos];
 }
 
 // 📤 رفع قائمة وسائط (صور أو فيديوهات) وإرجاع سلسلة مخزنة مفصولة بـ |
@@ -825,7 +838,7 @@ bot.hears('ℹ️ عن المنصة', async (ctx) => {
 });
 
 // =========================================================================
-// 🔍 تصفح العقارات والمعاينة من عمود image_url مع أزرار تنقل بين الصور
+// 🔍 تصفح العقارات والمعاينة (الفيديو أولاً ثم الصور ضمن نفس قائمة التنقل)
 // =========================================================================
 async function showStatesMenu(ctx) {
   try {
@@ -887,7 +900,7 @@ bot.hears('🌐 الكل', async (ctx) => {
   renderPropertyPage(ctx, userId, 0, 0);
 });
 
-async function renderPropertyPage(ctx, userId, pageIndex, photoIndex = 0) {
+async function renderPropertyPage(ctx, userId, pageIndex, mediaIndex = 0) {
   const session = browsingSession[userId];
   if (!session) return;
 
@@ -908,26 +921,32 @@ async function renderPropertyPage(ctx, userId, pageIndex, photoIndex = 0) {
     session.page = pageIndex;
 
     const item = data[pageIndex];
-    const imagesList = parseImagesFromImageUrl(item.image_url).slice(0, MAX_PROPERTY_IMAGES);
-    const videosList = parseMediaListFromField(item.video_url).slice(0, MAX_PROPERTY_IMAGES);
-    const totalPhotos = imagesList.length;
+    // الفيديو أولاً ثم الصور في قائمة واحدة
+    const orderedMedia = buildOrderedBrowsingMedia(item);
+    const totalMedia = orderedMedia.length;
 
-    let safePhotoIndex = Number(photoIndex) || 0;
-    if (safePhotoIndex < 0) safePhotoIndex = 0;
-    if (totalPhotos > 0 && safePhotoIndex >= totalPhotos) safePhotoIndex = totalPhotos - 1;
-    session.photoIndex = safePhotoIndex;
+    let safeMediaIndex = Number(mediaIndex) || 0;
+    if (safeMediaIndex < 0) safeMediaIndex = 0;
+    if (totalMedia > 0 && safeMediaIndex >= totalMedia) safeMediaIndex = totalMedia - 1;
+    session.photoIndex = safeMediaIndex;
 
-    const photosLine = totalPhotos > 0 ? `\n📸 <b>الصورة:</b> ${safePhotoIndex + 1} / ${totalPhotos}` : '';
-    const videosLine = videosList.length > 0 ? `\n🎥 <b>الفيديوهات:</b> ${videosList.length}` : '';
+    const currentMedia = totalMedia > 0 ? orderedMedia[safeMediaIndex] : null;
+    const mediaTypeLabel = currentMedia
+      ? (currentMedia.type === 'video' ? '🎥 فيديو' : '🖼 صورة')
+      : '';
+
+    const mediaLine = totalMedia > 0
+      ? `\n${mediaTypeLabel}: <b>${safeMediaIndex + 1} / ${totalMedia}</b>`
+      : '';
 
     const caption =
       `🏛 <b>الولاية:</b> ${escapeHtml(item.state_name || '')} (${pageIndex + 1}/${data.length})\n\n` +
       `🏠 <b>العقار:</b> ${escapeHtml(item.property_type || '')}\n` +
       `💰 <b>السعر:</b> ${formatMoney(item.price)}\n` +
-      `📞 <b>هاتف المالك:</b> <code>${escapeHtml(item.phone || '')}</code>${photosLine}${videosLine}\n` +
+      `📞 <b>هاتف المالك:</b> <code>${escapeHtml(item.phone || '')}</code>${mediaLine}\n` +
       `📝 <b>الوصف:</b> ${escapeHtml(item.description || item.message || '')}`;
 
-    const replyKb = getBrowsingKeyboard(pageIndex, data.length, safePhotoIndex, totalPhotos);
+    const replyKb = getBrowsingKeyboard(pageIndex, data.length, safeMediaIndex, totalMedia);
 
     if (session.lastMessageIds && Array.isArray(session.lastMessageIds)) {
       for (const msgId of session.lastMessageIds) {
@@ -936,25 +955,14 @@ async function renderPropertyPage(ctx, userId, pageIndex, photoIndex = 0) {
     }
     session.lastMessageIds = [];
 
-    if (totalPhotos > 0) {
-      const currentImage = imagesList[safePhotoIndex];
+    if (currentMedia) {
       try {
-        const sentMsg = await ctx.replyWithPhoto(currentImage, {
-          caption,
-          parse_mode: 'HTML',
-          ...replyKb
-        });
+        const sentMsg = currentMedia.type === 'video'
+          ? await ctx.replyWithVideo(currentMedia.ref, { caption, parse_mode: 'HTML', ...replyKb })
+          : await ctx.replyWithPhoto(currentMedia.ref, { caption, parse_mode: 'HTML', ...replyKb });
         if (sentMsg) session.lastMessageIds.push(sentMsg.message_id);
         return;
-      } catch (photoErr) {}
-    }
-
-    if (videosList.length > 0) {
-      try {
-        const sentMsg = await ctx.replyWithVideo(videosList[0], { caption, parse_mode: 'HTML', ...replyKb });
-        if (sentMsg) session.lastMessageIds.push(sentMsg.message_id);
-        return;
-      } catch (e) {}
+      } catch (mediaErr) {}
     }
 
     const sentMsg = await ctx.reply(caption, { parse_mode: 'HTML', ...replyKb });
@@ -970,8 +978,8 @@ bot.hears('الصورة التالية 🖼', async (ctx) => {
   const userId = ctx.from.id;
   const session = browsingSession[userId];
   if (!session) return;
-  const nextPhotoIdx = (session.photoIndex || 0) + 1;
-  return renderPropertyPage(ctx, userId, session.page, nextPhotoIdx);
+  const nextMediaIdx = (session.photoIndex || 0) + 1;
+  return renderPropertyPage(ctx, userId, session.page, nextMediaIdx);
 });
 
 bot.hears('🖼 الصورة السابقة', async (ctx) => {
@@ -979,11 +987,11 @@ bot.hears('🖼 الصورة السابقة', async (ctx) => {
   const userId = ctx.from.id;
   const session = browsingSession[userId];
   if (!session) return;
-  const prevPhotoIdx = Math.max((session.photoIndex || 0) - 1, 0);
-  return renderPropertyPage(ctx, userId, session.page, prevPhotoIdx);
+  const prevMediaIdx = Math.max((session.photoIndex || 0) - 1, 0);
+  return renderPropertyPage(ctx, userId, session.page, prevMediaIdx);
 });
 
-bot.hears(/^📸 صورة \d+ \/ \d+$/, async (ctx) => {
+bot.hears(/^📸 (صورة|عنصر) \d+ \/ \d+$/, async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   const session = browsingSession[userId];
