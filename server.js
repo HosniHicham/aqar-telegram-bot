@@ -1337,7 +1337,6 @@ async function openSupportDashboard(ctx, userId) {
   const rejectedCount = allAds.filter(a => a.ad_status === 'rejected').length;
 
   const points = dbUser?.points ?? 0;
-  const phone = dbUser?.phone_number ? escapeHtml(dbUser.phone_number) : 'غير مسجل';
   const name = escapeHtml(dbUser?.first_name || ctx.from.first_name || 'عميلنا الكريم');
   const supportIntro = await getSetting('support_text', '');
 
@@ -1349,12 +1348,12 @@ async function openSupportDashboard(ctx, userId) {
     wizardMsgId: null
   };
 
+  // واجهة نظيفة للعميل دون عرض بيانات إدارية داخلية أو أرقام تعريفية لا تهمه
   const text =
-    `🎛 <b>لوحة العميل ومركز الدعم والإدارة</b>\n` +
+    `🎛 <b>لوحة العميل ومركز الدعم</b>\n` +
     `━━━━━━━━━━━━━━━━━━━━\n` +
-    `👤 <b>العميل:</b> ${name} (<code>${userId}</code>)\n` +
-    `📞 <b>الهاتف:</b> <code>${phone}</code>\n` +
-    `🪙 <b>الرصيد:</b> <b>${points} نقطة</b>\n` +
+    `👋 أهلاً بك يا <b>${name}</b>\n` +
+    `🪙 <b>رصيد النقاط:</b> <b>${points} نقطة</b>\n` +
     `📊 <b>إعلاناتك:</b> إجمالي <b>${allAds.length}</b> | ⏳ معلق: <b>${pendingCount}</b> | ✅ مقبول: <b>${approvedCount}</b> | ❌ مرفوض: <b>${rejectedCount}</b>` +
     (supportIntro ? `\n\n${supportIntro}` : '') +
     `\n\n👇 <b>اختر ما تريد من الأزرار أدناه:</b>`;
@@ -1404,7 +1403,6 @@ async function renderUserOwnAdBrowser(ctx, userId, adIndex = 0, mediaIndex = 0) 
 
   const caption =
     `🗂 <b>إعلاناتك الخاصة (${safeIdx + 1}/${allAds.length})</b> — الحالة: <b>${ad.status_label}</b>\n` +
-    `🆔 <b>رقم السجل:</b> <code>#${ad.id || '—'}</code>\n` +
     `━━━━━━━━━━━━━━━━━━━━\n` +
     `🏠 <b>العقار:</b> ${escapeHtml(ad.property_type || '')}\n` +
     `📍 <b>الولاية:</b> ${escapeHtml(ad.state_name || '')}\n` +
@@ -1432,7 +1430,7 @@ async function renderUserOwnAdBrowser(ctx, userId, adIndex = 0, mediaIndex = 0) 
   await clearTrackedBotMessages(ctx, userId, keepIds);
 }
 
-// 🔍 استرجاع سجل pending_properties الكامل (بما فيه وصل الفيرسمون receipt_url) لإعادة المراجعة
+// 🔍 استرجاع سجل pending_properties الكامل (بما فيه وصل الفيرسمون receipt_url) للمراجعة الإدارية
 async function resolvePendingRecordForReview(relatedAd, senderUserId) {
   if (!relatedAd) return null;
 
@@ -1467,6 +1465,7 @@ async function resolvePendingRecordForReview(relatedAd, senderUserId) {
   return relatedAd;
 }
 
+// 📩 إرسال الرسالة والتفاصيل الإدارية إلى adminIds مع إبقاء أزرار الإدارة داخل الرسالة نفسها (Inline)
 async function sendStructuredTicketToAdmins(ctx, senderUserId, ticketTitle, detailText, relatedAd = null, payloadType = 'text', mediaContent = {}) {
   const adminIds = await getAdminIds();
   const dbUser = await getUserRecord(senderUserId);
@@ -1475,43 +1474,29 @@ async function sendStructuredTicketToAdmins(ctx, senderUserId, ticketTitle, deta
     dbUser?.first_name ||
     'مستخدم'
   );
-  const phoneLine = dbUser?.phone_number ? `\n📞 <b>الهاتف:</b> <code>${escapeHtml(dbUser.phone_number)}</code>` : '';
-  const pointsLine = `\n🪙 <b>الرصيد:</b> <b>${dbUser?.points ?? 0} نقطة</b>`;
+  const phoneLine = dbUser?.phone_number ? `\n📞 <b>هاتف العميل:</b> <code>${escapeHtml(dbUser.phone_number)}</code>` : '';
 
   const resolvedAd = await resolvePendingRecordForReview(relatedAd, senderUserId);
   const receiptRef = normalizeMediaRef(resolvedAd?.receipt_url);
 
   const adBlock = resolvedAd
-    ? `\n📌 <b>الإعلان المرتبط:</b> <code>#${resolvedAd.id || '—'}</code> (${escapeHtml(resolvedAd.property_type || '')} - ${escapeHtml(resolvedAd.state_name || '')} - ${formatMoney(resolvedAd.price)}) — الحالة: <b>${resolvedAd.status_label || relatedAd?.status_label || ''}</b>` +
-      (resolvedAd.description ? `\n📝 <b>وصف العقار:</b> ${escapeHtml(resolvedAd.description)}` : '')
+    ? `\n📌 <b>الإعلان:</b> <code>#${resolvedAd.id || '—'}</code> (${escapeHtml(resolvedAd.property_type || '')} - ${escapeHtml(resolvedAd.state_name || '')} - ${formatMoney(resolvedAd.price)}) — الحالة: <b>${resolvedAd.status_label || relatedAd?.status_label || ''}</b>` +
+      (resolvedAd.description ? `\n📝 <b>الوصف:</b> ${escapeHtml(resolvedAd.description)}` : '')
     : '';
 
   const header =
-    `📩 <b>إعادة مراجعة وتذكرة — ${escapeHtml(ticketTitle)}</b>\n` +
-    `👤 <b>العميل:</b> ${fullName}\n` +
-    `🆔 <b>المعرف:</b> <code>${senderUserId}</code>${phoneLine}${pointsLine}${adBlock}\n` +
+    `📩 <b>طلب من العميل — ${escapeHtml(ticketTitle)}</b>\n` +
+    `👤 <b>الاسم:</b> ${fullName}\n` +
+    `🆔 <b>المعرف:</b> <code>${senderUserId}</code>${phoneLine}${adBlock}\n` +
     `━━━━━━━━━━━━━━━━━━━━\n`;
 
+  // أزرار الإدارة تكون دائماً داخل الرسالة (Inline) وليس في لوحة التحكم السفلية
   const inlineRows = [
     [Markup.button.callback(`✉️ رد على العميل (${senderUserId})`, `support_reply_${senderUserId}`)]
   ];
 
-  // إظهار أزرار القبول/الرفض للإدارة في حال كان الطلب في pending_properties (معلق أو مرفوض ويطلب إعادة مراجعة)
-  const canReviewDecision =
-    resolvedAd &&
-    resolvedAd.source === 'pending_properties' &&
-    resolvedAd.id &&
-    (resolvedAd.status === 'pending' || resolvedAd.status === 'rejected' || resolvedAd.ad_status === 'pending' || resolvedAd.ad_status === 'rejected');
-
-  if (canReviewDecision) {
-    inlineRows.push([
-      Markup.button.callback(`❌ رفض (#${resolvedAd.id})`, `reject_${resolvedAd.id}`),
-      Markup.button.callback(`✅ قبول ونشر (#${resolvedAd.id})`, `approve_${resolvedAd.id}`)
-    ]);
-  }
-
   const replyMarkup = Markup.inlineKeyboard(inlineRows);
-  const bodyText = detailText ? `💬 <b>التفاصيل:</b>\n${escapeHtml(detailText)}` : '';
+  const bodyText = detailText ? `💬 <b>الرسالة:</b>\n${escapeHtml(detailText)}` : '';
 
   for (const adminId of adminIds) {
     try {
@@ -1522,11 +1507,10 @@ async function sendStructuredTicketToAdmins(ctx, senderUserId, ticketTitle, deta
         const cap = header + (mediaContent.caption ? `💬 <b>الرسالة:</b> ${escapeHtml(mediaContent.caption)}` : '🎥 <b>مرفق فيديو من العميل</b>');
         await ctx.telegram.sendVideo(adminId, mediaContent.fileId, { caption: cap, parse_mode: 'HTML', ...replyMarkup });
       } else if (receiptRef) {
-        // إرسال وصل الدفع (الفيرسمون) الأصلي مع بطاقة المراجعة للإدارة
         const receiptCaption =
           header +
           bodyText +
-          `\n\n🧾 <b>وصل الدفع (الفيرسمون) المرفق سابقاً للمراجعة أعلاه 👆</b>`;
+          `\n\n🧾 <b>وصل الدفع (الفيرسمون) المرفق للمراجعة أعلاه 👆</b>`;
         try {
           await ctx.telegram.sendPhoto(adminId, receiptRef, {
             caption: receiptCaption,
@@ -1549,7 +1533,7 @@ async function sendStructuredTicketToAdmins(ctx, senderUserId, ticketTitle, deta
 }
 
 async function deliverAdminReplyToUser(ctx, adminId, targetUserId, payloadType, content) {
-  const header = `📩 <b>رد من مركز الدعم والإدارة:</b>\n━━━━━━━━━━━━━━━━━━━━\n`;
+  const header = `📩 <b>رد الإدارة:</b>\n━━━━━━━━━━━━━━━━━━━━\n`;
   if (payloadType === 'photo') {
     const cap = header + (content.caption ? escapeHtml(content.caption) : '🖼 <b>مرفق صورة من الإدارة</b>');
     await ctx.telegram.sendPhoto(targetUserId, content.fileId, { caption: cap, parse_mode: 'HTML' });
@@ -1585,18 +1569,13 @@ bot.hears('👤 ملفي الشخصي ورصيدي', async (ctx) => {
   const userId = ctx.from.id;
   const dbUser = await getUserRecord(userId);
   const allAds = await fetchUserOwnedAds(userId);
-  const botUsername = ctx.botInfo?.username || 'AqarDZ_bot';
-  const refLink = `https://t.me/${botUsername}?start=ref_${userId}`;
 
   const text =
     `👤 <b>الملف الشخصي والرصيد</b>\n` +
     `━━━━━━━━━━━━━━━━━━━━\n` +
     `• <b>الاسم:</b> ${escapeHtml(dbUser?.first_name || ctx.from.first_name || 'غير محدد')}\n` +
-    `• <b>معرف الحساب (ID):</b> <code>${userId}</code>\n` +
-    `• <b>رقم الهاتف:</b> <code>${escapeHtml(dbUser?.phone_number || 'غير مسجل')}</code>\n` +
     `• <b>رصيد النقاط:</b> <b>${dbUser?.points ?? 0} نقطة</b>\n` +
-    `• <b>عدد إعلاناتك المسجلة:</b> <b>${allAds.length}</b>\n` +
-    `• <b>رابط الدعوة:</b>\n<code>${refLink}</code>`;
+    `• <b>عدد إعلاناتك المسجلة:</b> <b>${allAds.length}</b>`;
 
   await replyTracked(ctx, userId, text, {
     parse_mode: 'HTML',
@@ -1738,9 +1717,8 @@ bot.hears(/^📄 إعلان #(\S+) \((.+)\)$/, async (ctx) => {
     `• <b>النوع:</b> ${escapeHtml(targetAd.property_type || '')}\n` +
     `• <b>الولاية:</b> ${escapeHtml(targetAd.state_name || '')}\n` +
     `• <b>السعر:</b> ${formatMoney(targetAd.price)}\n` +
-    `• <b>الهاتف:</b> <code>${escapeHtml(targetAd.phone || '')}</code>\n` +
     `• <b>الوصف:</b> ${escapeHtml(targetAd.description || targetAd.message || '')}\n\n` +
-    `👇 <b>اختر الإجراء أو التساؤل لإرساله مباشرة للإدارة (سيتم إرفاق وصل الدفع تلقائياً للمراجعة):</b>`;
+    `👇 <b>اختر التساؤل أو الإجراء من الأزرار أدناه:</b>`;
 
   await replyTracked(ctx, userId, cardText, {
     parse_mode: 'HTML',
@@ -1815,7 +1793,7 @@ bot.hears('💬 دعم واقتراحات وشكر', async (ctx) => {
   await replyTracked(
     ctx,
     userId,
-    `💬 <b>اختر نوع الرسالة أو الملاحظة:</b>\n\nيمكنك اختيار سبب التواصل من الأزرار أدناه دون الحاجة للكتابة العشوائية، أو اختيار <b>💬 استفسار عام / أخرى</b> للكتابة الحرة:`,
+    `💬 <b>اختر نوع الرسالة أو الملاحظة:</b>\n\nيمكنك اختيار سبب التواصل من الأزرار أدناه أو اختيار <b>💬 استفسار عام / أخرى</b> للكتابة الحرة:`,
     { parse_mode: 'HTML', ...getSupportCategoriesKeyboard() },
     true
   );
@@ -1831,7 +1809,7 @@ bot.hears(['💳 مشكلة في الدفع', '🏠 إعلان أو تصفح ع�
       ctx,
       userId,
       chosenCat,
-      'أرسل العميل رسالة شكر وتقدير للمنصة عبر الأزرار السريعة.',
+      'أرسل العميل رسالة شكر وتقدير للمنصة.',
       null,
       'text'
     );
@@ -1839,7 +1817,7 @@ bot.hears(['💳 مشكلة في الدفع', '🏠 إعلان أو تصفح ع�
     return replyTracked(
       ctx,
       userId,
-      '👏 <b>شكراً جزيلاً لك على كلماتك الطيبة وثقتك بمنصة عقار الجزائر!</b> تم إرسال رسالتك للإدارة.',
+      '👏 <b>شكراً جزيلاً لك على كلماتك الطيبة وثقتك بمنصة عقار الجزائر.</b>',
       { parse_mode: 'HTML', ...getSupportHubKeyboard() },
       true
     );
@@ -1855,7 +1833,7 @@ bot.hears(['💳 مشكلة في الدفع', '🏠 إعلان أو تصفح ع�
   await replyTracked(
     ctx,
     userId,
-    `✍️ <b>${escapeHtml(chosenCat)}</b>\n\nاكتب تفاصيل رسالتك أو أرسل صورة/فيديو توضيحي الآن (أو اضغط "⬅️ لوحة العميل" للرجوع):`,
+    `✍️ <b>${escapeHtml(chosenCat)}</b>\n\nاكتب رسالتك أو أرسل صورة/فيديو توضيحي الآن (أو اضغط "⬅️ لوحة العميل" للرجوع):`,
     {
       parse_mode: 'HTML',
       ...Markup.keyboard([['⬅️ لوحة العميل'], ['🏠 القائمة الرئيسية']]).resize()
@@ -1903,7 +1881,7 @@ async function handleSupportTextStep(ctx, userId, userText) {
     return true;
   }
 
-  // أزرار التساؤلات والتذكيرات الجاهزة المرتبطة بإعلان محدد (ترفق وصل الفيرسمون تلقائياً للإدارة)
+  // أزرار التساؤلات والتذكيرات الجاهزة المرتبطة بإعلان محدد
   const adQuickMatch = userText.match(/^(❓ لماذا إعلاني معلق؟|⏱️ تذكير الإدارة بمراجعة الطلب|📞 لماذا لم يتم التواصل معي؟|❌ لماذا تم رفض إعلاني؟|🔄 طلب إعادة مراجعة الإعلان|⚠️ ملاحظة أو استفسار حول الإعلان) \(#([^)]+)\)$/);
   if (adQuickMatch) {
     await safeDeleteUserMessage(ctx);
@@ -1916,15 +1894,16 @@ async function handleSupportTextStep(ctx, userId, userText) {
       ctx,
       userId,
       `${actionLabel} (#${reqId})`,
-      `استفسار/طلب إعادة مراجعة من العميل بخصوص الإعلان رقم #${reqId}.`,
+      `${actionLabel} — بخصوص الإعلان رقم #${reqId}.`,
       relatedAd,
       'text'
     );
 
+    // رسالة بسيطة ومباشرة للعميل دون تفاصيل إدارية لا تهمه
     await replyTracked(
       ctx,
       userId,
-      `✅ <b>تم إرسال طلبك (${escapeHtml(actionLabel)}) للإدارة بخصوص الإعلان <code>#${escapeHtml(reqId)}</code> مع إرفاق وصل الدفع للمراجعة.</b>`,
+      `✅ <b>تم إرسال استفسارك (${escapeHtml(actionLabel)}) إلى الإدارة.</b>`,
       {
         parse_mode: 'HTML',
         ...Markup.keyboard([
@@ -1948,7 +1927,7 @@ async function handleSupportTextStep(ctx, userId, userText) {
     await replyTracked(
       ctx,
       userId,
-      '✅ <b>تم إرسال رسالتك إلى مركز الدعم والإدارة بنجاح.</b> سيتم الرد عليك في أقرب وقت.',
+      '✅ <b>تم إرسال رسالتك إلى الإدارة بنجاح.</b>',
       { parse_mode: 'HTML', ...getSupportHubKeyboard() },
       true
     );
@@ -1984,7 +1963,7 @@ async function handleSupportMediaStep(ctx, userId, mediaType, fileId, captionTex
     await replyTracked(
       ctx,
       userId,
-      '✅ <b>تم إرسال المرفق إلى مركز الدعم والإدارة بنجاح.</b>',
+      '✅ <b>تم إرسال المرفق إلى الإدارة بنجاح.</b>',
       { parse_mode: 'HTML', ...getSupportHubKeyboard() },
       true
     );
