@@ -154,19 +154,13 @@ function chunkButtons(buttonsArray, chunkSize = 4) {
   return chunked;
 }
 
-function getMainMenuKeyboard() {
-  return Markup.keyboard([
-    ['🔍 تصفح العقارات المتاحة', '➕ إضافة عقار جديد'],
-    ['🎁 رصيدي وجمع النقاط', '📞 الدعم والإدارة'],
-    ['🌐 تغيير اللغة / Langue', 'ℹ️ عن المنصة'],
-    ['🌐 تصفح الموقع الرسمي (البروزر)']
-  ]).resize();
+function getHiddenKeyboard() {
+  return Markup.removeKeyboard();
 }
 
 function getBrowsingKeyboard(currentIndex, totalCount, photoIdx = 0, totalPhotos = 0) {
   const rows = [];
 
-  // صف أزرار التنقل بين صور العقار الحالي فقط عند وجود أكثر من صورة
   if (totalPhotos > 1) {
     const photoRow = [];
     if (photoIdx > 0) photoRow.push('🖼 الصورة السابقة');
@@ -181,7 +175,7 @@ function getBrowsingKeyboard(currentIndex, totalCount, photoIdx = 0, totalPhotos
   if (currentIndex < totalCount - 1) navRow.push('التالي ➡️');
 
   rows.push(navRow);
-  rows.push(['📍 تغيير الولاية', '🏠 القائمة الرئيسية']);
+  rows.push(['📍 تغيير الولاية', '❌ إخفاء القائمة']);
 
   return Markup.keyboard(rows).resize();
 }
@@ -202,8 +196,7 @@ function getBottomNumpadKeyboard(displayValue, isPrice = true) {
     ['7', '8', '9'],
     ['0', isPrice ? '+مليون' : '⌫', '🗑️ مسح'],
     ['✅ [ OK ] تأكيد'],
-    ['⬅️ رجوع', '🏠 القائمة الرئيسية'],
-    ['❌ إلغاء العملية والعودة']
+    ['⬅️ رجوع', '❌ إلغاء العملية والعودة']
   ]).resize();
 }
 
@@ -267,7 +260,6 @@ function normalizeMediaRef(v) {
   return clean.startsWith('tg:') ? clean.slice(3) : clean;
 }
 
-// 📸 استخراج قائمة الصور من عمود image_url فقط (يدعم مفصولة بـ | أو JSON أو رابط واحد)
 function parseImagesFromImageUrl(imageUrlField) {
   if (!imageUrlField || typeof imageUrlField !== 'string') return [];
   const trimmed = imageUrlField.trim();
@@ -285,7 +277,6 @@ function parseImagesFromImageUrl(imageUrlField) {
   return [...new Set(trimmed.split('|').map(normalizeMediaRef).filter(Boolean))];
 }
 
-// 📤 رفع عدة صور وإرجاع سلسلة مخزنة لعمود image_url
 async function uploadMultipleImagesToImageUrl(ctx, mediaItems = []) {
   const urls = [];
   for (let i = 0; i < mediaItems.length; i++) {
@@ -545,7 +536,6 @@ async function buildWizardText(state, opts = {}) {
 async function getStandardReplyKeyboard(state) {
   const stateStep = state.step;
   const backText = '⬅️ رجوع';
-  const homeText = '🏠 القائمة الرئيسية';
   const cancelText = '❌ إلغاء العملية والعودة';
 
   if (stateStep === 'waiting_for_type') {
@@ -554,7 +544,7 @@ async function getStandardReplyKeyboard(state) {
     const dynamicWilayas = await getDynamicWilayas();
     return Markup.keyboard([
       ...chunkButtons(dynamicWilayas.map(w => `📍 ${w}`), 4),
-      [backText, homeText]
+      [backText, cancelText]
     ]).resize();
   } else if (stateStep === 'waiting_for_price') {
     return getBottomNumpadKeyboard(state.tempInput || '', true);
@@ -569,20 +559,18 @@ async function getStandardReplyKeyboard(state) {
       rows.push([`✅ إنهاء إرفاق الصور (${count}) والانتقال`]);
       rows.push(['🗑️ مسح الصور المرفقة']);
     }
-    rows.push([backText, homeText]);
-    rows.push([cancelText]);
+    rows.push([backText, cancelText]);
     return Markup.keyboard(rows).resize();
   } else if (stateStep === 'waiting_for_payment_choice') {
     const publishCost = await getSetting('publish_cost_points', '100');
     return Markup.keyboard([
       ['💳 الدفع عبر BaridiMob / CCP'],
       [`🪙 النشر مجاناً (${publishCost} نقطة)`],
-      [backText, homeText]
+      [backText, cancelText]
     ]).resize();
   } else {
     return Markup.keyboard([
-      [backText, homeText],
-      [cancelText]
+      [backText, cancelText]
     ]).resize();
   }
 }
@@ -612,7 +600,7 @@ async function renderWizard(ctx, userId, opts = {}) {
     return;
   }
 
-  const replyKeyboard = opts.noKeyboard ? getMainMenuKeyboard() : await getStandardReplyKeyboard(state);
+  const replyKeyboard = opts.noKeyboard ? getHiddenKeyboard() : await getStandardReplyKeyboard(state);
 
   const sent = await ctx.reply(text, { parse_mode: 'HTML', ...replyKeyboard });
   const oldId = state.wizardMsgId;
@@ -647,12 +635,12 @@ bot.start(async (ctx) => {
   userLang[userId] = 'ar';
 
   const verified = await isUserVerified(userId);
-  const rawWelcomeTpl = await getSetting('welcome_msg_template', 'أهلاً بك يا <b>{name}</b> في <b>منصة عقار الجزائر (Aqar)</b> 🏠\n\nنظام رقمي احترافي لإدارة وعروض العقارات. اختر من القائمة أدناه:');
+  const rawWelcomeTpl = await getSetting('welcome_msg_template', 'أهلاً بك يا <b>{name}</b> في <b>منصة عقار الجزائر (Aqar)</b> 🏠\n\nنظام رقمي احترافي لإدارة وعروض العقارات.');
   const welcomeText = rawWelcomeTpl.replace('{name}', userName).replace(/\\n/g, '\n');
 
   if (verified) {
     delete userState[userId];
-    ctx.reply(welcomeText, { parse_mode: 'HTML', ...getMainMenuKeyboard() });
+    ctx.reply(welcomeText, { parse_mode: 'HTML', ...getHiddenKeyboard() });
   } else {
     const authText = await getSetting('auth_prompt_template', `أهلاً بك يا <b>${userName}</b> في <b>منصة عقار الجزائر (Aqar)</b> 🏠\n\n⚠️ <b>تنبيه أمني:</b>\nللاستفادة من خدمات المنصة وتصفح العقارات، يرجى <b>تأكيد رقم هاتفك</b> أولاً بضغطة زر واحدة:`);
     ctx.reply(authText.replace(/\\n/g, '\n'), { parse_mode: 'HTML', ...getAuthKeyboard() });
@@ -690,10 +678,10 @@ bot.on('contact', async (ctx) => {
     delete userState[userId];
     ctx.reply('🎉 <b>تم توثيق حسابك بنجاح!</b>', {
       parse_mode: 'HTML',
-      ...getMainMenuKeyboard()
+      ...getHiddenKeyboard()
     });
   } catch (err) {
-    ctx.reply('⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.');
+    ctx.reply('⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getHiddenKeyboard());
   }
 });
 
@@ -708,7 +696,7 @@ bot.use(async (ctx, next) => {
   return next();
 });
 
-bot.hears(['❌ إلغاء العملية والعودة', '🏠 القائمة الرئيسية'], async (ctx) => {
+bot.hears(['❌ إلغاء العملية والعودة', '🏠 القائمة الرئيسية', '❌ إخفاء القائمة'], async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   const oldWizard = userState[userId];
@@ -718,9 +706,9 @@ bot.hears(['❌ إلغاء العملية والعودة', '🏠 القائمة 
   delete userState[userId];
   delete browsingSession[userId];
 
-  ctx.reply('✅ العودة إلى القائمة الرئيسية:', {
+  ctx.reply('✅ تم إخفاء لوحة الأزرار.', {
     parse_mode: 'HTML',
-    ...getMainMenuKeyboard()
+    ...getHiddenKeyboard()
   });
 });
 
@@ -767,32 +755,22 @@ bot.hears('🎁 رصيدي وجمع النقاط', async (ctx) => {
     `🎁 <b>محفظة النقاط والمكافآت:</b>\n\n` +
     `🪙 <b>رصيدك الحالي:</b> <b>${points} نقطة</b>\n` +
     `📌 <b>تكلفة نشر عقار مجاناً:</b> ${publishCost} نقطة\n\n` +
-    `🎬 <b>الطريقة 1: مشاهدة إعلان (+${rewardPoints} نقطة)</b>\n` +
-    `اضغط على الزر في القائمة السفلية لمشاهدة إعلان الفيديو وربح النقاط فوراً.\n\n` +
-    `👥 <b>الطريقة 2: دعوة الأصدقاء (+50 نقطة لكل صديق)</b>\n` +
+    `👥 <b>دعوة الأصدقاء (+50 نقطة لكل صديق)</b>\n` +
     `شارك رابطك الخاص:\n<code>${refLink}</code>`;
-
-  const keyboardRows = [];
-  if (WEBHOOK_DOMAIN) {
-    keyboardRows.push([
-      Markup.button.webApp(`🎬 مشاهدة إعلان الفيديو (+${rewardPoints} نقطة)`, `${WEBHOOK_DOMAIN}/watch-ad?uid=${userId}`)
-    ]);
-  }
-  keyboardRows.push(['🏠 القائمة الرئيسية']);
 
   await ctx.reply(msg, {
     parse_mode: 'HTML',
-    ...Markup.keyboard(keyboardRows).resize()
+    ...getHiddenKeyboard()
   });
 });
 
 bot.hears('🌐 تصفح الموقع الرسمي (البروزر)', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   await ctx.reply(
-    '🌐 <b>رابط منصة عقار الجزائر (ويب):</b>\n\nانقر على الرابط التالي لفتحه في المتصفح:\nhttps://hosnihicham.github.io/testHTML',
+    '🌐 <b>رابط منصة عقار الجزائر (ويب):</b>\n\nhttps://hosnihicham.github.io/testHTML',
     {
       parse_mode: 'HTML',
-      ...getMainMenuKeyboard()
+      ...getHiddenKeyboard()
     }
   );
 });
@@ -800,13 +778,13 @@ bot.hears('🌐 تصفح الموقع الرسمي (البروزر)', async (ctx
 bot.hears('📞 الدعم والإدارة', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const supportMsg = await getSetting('support_text', '📞 <b>مركز الدعم التقني - منصة عقار الجزائر:</b>\n\nنحن في خدمتك دائماً.');
-  ctx.reply(supportMsg, { parse_mode: 'HTML', ...getMainMenuKeyboard() });
+  ctx.reply(supportMsg, { parse_mode: 'HTML', ...getHiddenKeyboard() });
 });
 
 bot.hears('ℹ️ عن المنصة', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const aboutMsg = await getSetting('about_text', '🏛 <b>عن منصة عقار الجزائر (Aqar System):</b>\n\nنظام رقمي ذكي ومتطور لإدارة المعاملات العقارية.');
-  ctx.reply(aboutMsg, { parse_mode: 'HTML', ...getMainMenuKeyboard() });
+  ctx.reply(aboutMsg, { parse_mode: 'HTML', ...getHiddenKeyboard() });
 });
 
 // =========================================================================
@@ -817,19 +795,19 @@ async function showStatesMenu(ctx) {
     const { data, error } = await supabase.from('test_messages').select('state_name');
     if (error) throw error;
     if (!data || data.length === 0) {
-      return ctx.reply('📭 عذراً، لا توجد أي عقارات مسجلة في المنصة حالياً.', getMainMenuKeyboard());
+      return ctx.reply('📭 عذراً، لا توجد أي عقارات مسجلة في المنصة حالياً.', getHiddenKeyboard());
     }
 
     const uniqueStates = [...new Set(data.map(item => item.state_name).filter(Boolean))];
     const stateButtons = uniqueStates.map(state => `📍 ${state}`);
     const chunkedStates = chunkButtons(stateButtons, 4);
-    chunkedStates.push(['🌐 الكل'], ['🏠 القائمة الرئيسية']);
+    chunkedStates.push(['🌐 الكل'], ['❌ إخفاء القائمة']);
 
     const browseTitle = await getSetting('browse_title', '🔍 <b>اختر الولاية المطلوبة لعرض العقارات من الأزرار أسفل الشاشة:</b>');
     ctx.reply(browseTitle, { parse_mode: 'HTML', ...Markup.keyboard(chunkedStates).resize() });
   } catch (err) {
     console.error('showStatesMenu error:', err);
-    ctx.reply('⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getMainMenuKeyboard());
+    ctx.reply('⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getHiddenKeyboard());
   }
 }
 
@@ -885,7 +863,7 @@ async function renderPropertyPage(ctx, userId, pageIndex, photoIndex = 0) {
     const { data, error } = await query;
     if (error) throw error;
     if (!data || data.length === 0) {
-      return ctx.reply('📭 عذراً، لا توجد عقارات مسجلة.', getMainMenuKeyboard());
+      return ctx.reply('📭 عذراً، لا توجد عقارات مسجلة.', getHiddenKeyboard());
     }
 
     if (pageIndex < 0) pageIndex = 0;
@@ -945,7 +923,7 @@ async function renderPropertyPage(ctx, userId, pageIndex, photoIndex = 0) {
     if (sentMsg) session.lastMessageIds.push(sentMsg.message_id);
   } catch (err) {
     console.error('renderPropertyPage error:', err);
-    await ctx.reply('⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getMainMenuKeyboard());
+    await ctx.reply('⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getHiddenKeyboard());
   }
 }
 
@@ -1102,8 +1080,8 @@ bot.hears(/^🪙 النشر مجاناً/, async (ctx) => {
 
   if (currentPoints < publishCost) {
     return ctx.reply(
-      `⚠️ <b>عذراً، رصيدك غير كافٍ!</b>\nرصيدك الحالي: <b>${currentPoints} نقطة</b> وتحتاج إلى <b>${publishCost} نقطة</b>.\n\nاضغط على زر <b>"🎁 رصيدي وجمع النقاط"</b> لمشاهدة إعلانات وربح نقاط مجانية!`,
-      { parse_mode: 'HTML' }
+      `⚠️ <b>عذراً، رصيدك غير كافٍ!</b>\nرصيدك الحالي: <b>${currentPoints} نقطة</b> وتحتاج إلى <b>${publishCost} نقطة</b>.`,
+      { parse_mode: 'HTML', ...getHiddenKeyboard() }
     );
   }
 
@@ -1139,12 +1117,12 @@ bot.hears(/^🪙 النشر مجاناً/, async (ctx) => {
 
     await ctx.reply(
       `🎉 <b>تم خصم ${publishCost} نقطة ونشر إعلانك بنجاح في المنصة مجاناً!</b>`,
-      { parse_mode: 'HTML', ...getMainMenuKeyboard() }
+      { parse_mode: 'HTML', ...getHiddenKeyboard() }
     );
     delete userState[userId];
   } catch (err) {
     console.error('Free publish error:', err);
-    ctx.reply('⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getMainMenuKeyboard());
+    ctx.reply('⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getHiddenKeyboard());
     delete userState[userId];
   }
 });
@@ -1404,12 +1382,12 @@ bot.on('photo', async (ctx) => {
 
       await ctx.reply(
         `⏳ <b>تم استلام وصل الدفع وحفظ طلبك برقم (#${requestId})!</b>\n\nالإعلان قيد المراجعة من طرف الإدارة وسيتم نشره فور تأكيد التحويل.`,
-        { parse_mode: 'HTML', ...getMainMenuKeyboard() }
+        { parse_mode: 'HTML', ...getHiddenKeyboard() }
       );
       delete userState[userId];
     } catch (err) {
       console.error('Receipt publish error:', err);
-      ctx.reply('⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getMainMenuKeyboard());
+      ctx.reply('⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getHiddenKeyboard());
       delete userState[userId];
     }
   }
