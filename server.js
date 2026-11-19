@@ -1215,19 +1215,13 @@ bot.hears(/^🪙 النشر مجاناً/, async (ctx) => {
 const supportUserSession = {};
 
 const AD_INQUIRY_TYPES = {
-  why_rejected: '❌ لماذا تم رفض إعلاني؟',
-  re_review: '🔄 طلب إعادة مراجعة الإعلان',
-  why_pending: '❓ لماذا إعلاني معلق؟',
-  remind_admin: '⏱️ تذكير الإدارة بمراجعة الطلب',
-  no_contact: '📞 لماذا لم يتم التواصل معي؟',
-  ad_note: '⚠️ ملاحظة أو استفسار حول الإعلان'
+  why_rejected: 'لماذا تم رفض إعلاني؟',
+  re_review: 'طلب إعادة مراجعة الإعلان',
+  why_pending: 'لماذا إعلاني معلق؟',
+  remind_admin: 'تذكير الإدارة بمراجعة الطلب',
+  no_contact: 'لماذا لم يتم التواصل معي؟',
+  ad_note: 'استفسار حول الإعلان'
 };
-
-const AD_QUICK_QUESTION_REGEX = /^(❓ لماذا إعلاني معلق\؟|⏱️ تذكير الإدارة بمراجعة الطلب|📞 لماذا لم يتم التواصل معي\؟|❌ لماذا تم رفض إعلاني\؟|🔄 طلب إعادة مراجعة الإعلان|⚠️ ملاحظة أو استفسار حول الإعلان) \(#([^)]+)\)$/;
-
-function isAdQuickQuestionText(txt) {
-  return AD_QUICK_QUESTION_REGEX.test(String(txt || '').trim());
-}
 
 async function fetchUserOwnedAds(userId) {
   const ads = [];
@@ -1302,7 +1296,7 @@ function getSupportCategoriesKeyboard() {
   ]).resize();
 }
 
-// 🎛 أزرار تفاعلية داخل الرسالة (InlineKeyboard) تظهر أسفل تفاصيل الإعلان في منتصف الشاشة
+// أزرار تفاعلية مباشرة أسفل بطاقة الإعلان
 function getInteractiveAdInlineKeyboard(ad) {
   const id = encodeURIComponent(String(ad.id || '0'));
   if (ad.ad_status === 'pending') {
@@ -1319,29 +1313,12 @@ function getInteractiveAdInlineKeyboard(ad) {
     ]);
   }
   return Markup.inlineKeyboard([
-    [Markup.button.callback('⚠️ ملاحظة أو استفسار حول الإعلان', `adinq:ad_note:${id}`)]
+    [Markup.button.callback('⚠️ استفسار حول الإعلان', `adinq:ad_note:${id}`)]
   ]);
 }
 
-function getAdActionButtonsForStatus(ad) {
-  const id = ad.id || 'غير_محدد';
-  if (ad.ad_status === 'pending') {
-    return Markup.keyboard([
-      [`❓ لماذا إعلاني معلق؟ (#${id})`],
-      [`⏱️ تذكير الإدارة بمراجعة الطلب (#${id})`],
-      [`📞 لماذا لم يتم التواصل معي؟ (#${id})`],
-      ['⬅️ قائمة الإعلانات', '🏠 القائمة الرئيسية']
-    ]).resize();
-  }
-  if (ad.ad_status === 'rejected') {
-    return Markup.keyboard([
-      [`❌ لماذا تم رفض إعلاني؟ (#${id})`],
-      [`🔄 طلب إعادة مراجعة الإعلان (#${id})`],
-      ['⬅️ قائمة الإعلانات', '🏠 القائمة الرئيسية']
-    ]).resize();
-  }
+function getAdScreenBottomKeyboard() {
   return Markup.keyboard([
-    [`⚠️ ملاحظة أو استفسار حول الإعلان (#${id})`],
     ['⬅️ قائمة الإعلانات', '🏠 القائمة الرئيسية']
   ]).resize();
 }
@@ -1517,7 +1494,7 @@ async function resolvePendingRecordForReview(relatedAd, senderUserId, fallbackAd
   return candidate;
 }
 
-// 📩 إرسال الاستفسار والتفاصيل الإدارية + وصل الدفع إلى adminIds مع أزرار الإدارة داخل الرسالة
+// إرسال مباشر للأدمنز (الاسم + رقم الآيدي + العقار #رقم + الاستفسار + وصل الدفع إن وجد + زر الرد للآيدي)
 async function sendStructuredTicketToAdmins(ctx, senderUserId, ticketTitle, detailText, relatedAd = null, payloadType = 'text', mediaContent = {}, fallbackAdId = null) {
   const adminIds = await getAdminIds();
   const dbUser = await getUserRecord(senderUserId);
@@ -1526,93 +1503,60 @@ async function sendStructuredTicketToAdmins(ctx, senderUserId, ticketTitle, deta
     dbUser?.first_name ||
     'مستخدم'
   );
-  const phoneLine = dbUser?.phone_number ? `\n📞 <b>هاتف العميل:</b> <code>${escapeHtml(dbUser.phone_number)}</code>` : '';
 
   const resolvedAd = await resolvePendingRecordForReview(relatedAd, senderUserId, fallbackAdId);
   const receiptRef = normalizeMediaRef(resolvedAd?.receipt_url);
 
-  const adBlock = resolvedAd
-    ? `\n📌 <b>الإعلان:</b> <code>#${resolvedAd.id || fallbackAdId || '—'}</code> (${escapeHtml(resolvedAd.property_type || '')} - ${escapeHtml(resolvedAd.state_name || '')} - ${formatMoney(resolvedAd.price)}) — الحالة: <b>${resolvedAd.status_label || relatedAd?.status_label || ''}</b>` +
-      (resolvedAd.description ? `\n📝 <b>الوصف:</b> ${escapeHtml(resolvedAd.description)}` : '')
-    : (fallbackAdId ? `\n📌 <b>رقم الإعلان:</b> <code>#${escapeHtml(String(fallbackAdId))}</code>` : '');
+  const adIdLabel = resolvedAd?.id || fallbackAdId || '—';
+  const adTypeLabel = escapeHtml(resolvedAd?.property_type || 'عقار');
+  const adStateLabel = resolvedAd?.state_name ? ` (${escapeHtml(resolvedAd.state_name)})` : '';
 
-  const header =
-    `📩 <b>استفسار من العميل — ${escapeHtml(ticketTitle)}</b>\n` +
-    `👤 <b>العميل:</b> ${fullName}\n` +
-    `🆔 <b>المعرف:</b> <code>${senderUserId}</code>${phoneLine}${adBlock}\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n`;
+  const adLine = (resolvedAd || fallbackAdId)
+    ? `\n🏠 <b>العقار:</b> ${adTypeLabel}${adStateLabel} <code>#${escapeHtml(String(adIdLabel))}</code>` +
+      (resolvedAd?.status_label ? ` — <b>${resolvedAd.status_label}</b>` : '') +
+      (resolvedAd?.price ? `\n💰 <b>السعر:</b> ${formatMoney(resolvedAd.price)}` : '')
+    : '';
 
-  // أزرار الإدارة داخل الرسالة مباشرة (InlineKeyboard) وليس في لوحة التحكم السفلية
-  const inlineRows = [
+  const text =
+    `📩 <b>طلب استفسار من العميل</b>\n` +
+    `━━━━━━━━━━━━━━━━━━━━\n` +
+    `👤 <b>الاسم:</b> ${fullName}\n` +
+    `🆔 <b>الآيدي (ID):</b> <code>${senderUserId}</code>${adLine}\n` +
+    `❓ <b>الاستفسار:</b> ${escapeHtml(ticketTitle)}` +
+    (detailText ? `\n📝 <b>التفاصيل:</b> ${escapeHtml(detailText)}` : '');
+
+  const replyMarkup = Markup.inlineKeyboard([
     [Markup.button.callback(`✉️ رد على العميل (${senderUserId})`, `support_reply_${senderUserId}`)]
-  ];
-
-  const replyMarkup = Markup.inlineKeyboard(inlineRows);
-  const bodyText = detailText ? `💬 <b>الرسالة:</b>\n${escapeHtml(detailText)}` : '';
+  ]);
 
   for (const adminId of adminIds) {
     try {
       if (payloadType === 'photo') {
-        const cap = header + (mediaContent.caption ? `💬 <b>الرسالة:</b> ${escapeHtml(mediaContent.caption)}` : '🖼 <b>مرفق صورة من العميل</b>');
+        const cap = text + (mediaContent.caption ? `\n💬 <b>مرفق:</b> ${escapeHtml(mediaContent.caption)}` : '');
         await ctx.telegram.sendPhoto(adminId, mediaContent.fileId, { caption: cap, parse_mode: 'HTML', ...replyMarkup });
       } else if (payloadType === 'video') {
-        const cap = header + (mediaContent.caption ? `💬 <b>الرسالة:</b> ${escapeHtml(mediaContent.caption)}` : '🎥 <b>مرفق فيديو من العميل</b>');
+        const cap = text + (mediaContent.caption ? `\n💬 <b>مرفق:</b> ${escapeHtml(mediaContent.caption)}` : '');
         await ctx.telegram.sendVideo(adminId, mediaContent.fileId, { caption: cap, parse_mode: 'HTML', ...replyMarkup });
       } else if (receiptRef) {
-        const receiptCaption =
-          header +
-          bodyText +
-          `\n\n🧾 <b>وصل الدفع (الفيرسمون) المرفق للمراجعة أعلاه 👆</b>`;
         try {
           await ctx.telegram.sendPhoto(adminId, receiptRef, {
-            caption: receiptCaption,
+            caption: `${text}\n🧾 <b>وصل الدفع للمراجعة</b>`,
             parse_mode: 'HTML',
             ...replyMarkup
           });
-        } catch (receiptSendErr) {
-          await ctx.telegram.sendMessage(adminId, header + bodyText + `\n🧾 <b>رابط الوصل:</b> ${escapeHtml(receiptRef)}`, {
+        } catch (e) {
+          await ctx.telegram.sendMessage(adminId, `${text}\n🧾 <b>الوصل:</b> ${escapeHtml(receiptRef)}`, {
             parse_mode: 'HTML',
             ...replyMarkup
           });
         }
       } else {
-        await ctx.telegram.sendMessage(adminId, header + bodyText, { parse_mode: 'HTML', ...replyMarkup });
+        await ctx.telegram.sendMessage(adminId, text, { parse_mode: 'HTML', ...replyMarkup });
       }
     } catch (err) {
       console.error(`Support ticket forward error to ${adminId}:`, err.message);
     }
   }
-}
-
-async function dispatchAdInquiryToAdmins(ctx, userId, actionLabel, reqId) {
-  const s = supportUserSession[userId];
-  const adsList = s?.ads || await fetchUserOwnedAds(userId);
-  const relatedAd = adsList.find(a => String(a.id) === String(reqId)) || s?.selectedAd || null;
-
-  await sendStructuredTicketToAdmins(
-    ctx,
-    userId,
-    `${actionLabel} (#${reqId})`,
-    `${actionLabel} — بخصوص الإعلان رقم #${reqId}.`,
-    relatedAd,
-    'text',
-    {},
-    reqId
-  );
-
-  await replyTracked(
-    ctx,
-    userId,
-    `✅ <b>تم إرسال استفسارك (${escapeHtml(actionLabel)}) إلى الإدارة.</b>`,
-    {
-      parse_mode: 'HTML',
-      ...Markup.keyboard([
-        ['📋 إعلاناتي وحالتها'],
-        ['⬅️ لوحة العميل', '🏠 القائمة الرئيسية']
-      ]).resize()
-    },
-    true
-  );
 }
 
 async function deliverAdminReplyToUser(ctx, adminId, targetUserId, payloadType, content) {
@@ -1631,21 +1575,42 @@ async function deliverAdminReplyToUser(ctx, adminId, targetUserId, payloadType, 
   await replyTracked(
     ctx,
     adminId,
-    `✅ <b>تم إرسال ردك بنجاح إلى العميل</b> <code>${targetUserId}</code>.`,
+    `✅ <b>تم إرسال ردك بنجاح إلى الآيدي</b> <code>${targetUserId}</code>.`,
     { parse_mode: 'HTML', ...getMainMenuKeyboard() },
     true
   );
 }
 
-// ⚡ معالج الأزرار التفاعلية (Inline) التي تظهر في منتصف الشاشة أسفل تفاصيل الإعلان
+// معالج الأزرار التفاعلية (Inline) أسفل الإعلان
 bot.action(/^adinq:([a-z_]+):(.+)$/, async (ctx) => {
   const userId = ctx.from.id;
   const inquiryKey = ctx.match[1];
   const reqId = decodeURIComponent(ctx.match[2]);
   const actionLabel = AD_INQUIRY_TYPES[inquiryKey] || 'استفسار حول الإعلان';
 
-  await ctx.answerCbQuery('✅ تم إرسال الاستفسار للإدارة');
-  await dispatchAdInquiryToAdmins(ctx, userId, actionLabel, reqId);
+  const s = supportUserSession[userId];
+  const adsList = s?.ads || await fetchUserOwnedAds(userId);
+  const relatedAd = adsList.find(a => String(a.id) === String(reqId)) || s?.selectedAd || null;
+
+  await ctx.answerCbQuery('✅ تم إرسال استفسارك للإدارة');
+  await sendStructuredTicketToAdmins(
+    ctx,
+    userId,
+    actionLabel,
+    '',
+    relatedAd,
+    'text',
+    {},
+    reqId
+  );
+
+  await replyTracked(
+    ctx,
+    userId,
+    `✅ <b>تم إرسال استفسارك (${escapeHtml(actionLabel)}) بخصوص الإعلان <code>#${escapeHtml(String(reqId))}</code> إلى الإدارة.</b>`,
+    { parse_mode: 'HTML', ...getAdScreenBottomKeyboard() },
+    true
+  );
 });
 
 bot.hears('📞 الدعم والإدارة', async (ctx) => {
@@ -1690,7 +1655,7 @@ bot.hears('📋 إعلاناتي وحالتها', async (ctx) => {
   await replyTracked(
     ctx,
     userId,
-    `📋 <b>إعلاناتي وحالتها</b>\n\nاختر الفئة لعرض إعلاناتك والتساؤل حول أي إعلان بضغطة زر:`,
+    `📋 <b>إعلاناتي وحالتها</b>\n\nاختر الفئة لعرض إعلاناتك والتساؤل حول أي إعلان:`,
     {
       parse_mode: 'HTML',
       ...Markup.keyboard([
@@ -1751,7 +1716,7 @@ bot.hears(/^(⏳ معلقة|✅ مقبولة|❌ مرفوضة|📌 الكل) \(\
   await replyTracked(
     ctx,
     userId,
-    `📋 <b>${escapeHtml(label)} (${filtered.length}):</b>\n\n${listLines.join('\n')}\n\n👇 <b>اختر إعلاناً من الأزرار لإرسال استفسار أو تذكير حوله:</b>`,
+    `📋 <b>${escapeHtml(label)} (${filtered.length}):</b>\n\n${listLines.join('\n')}\n\n👇 <b>اختر إعلاناً من الأزرار:</b>`,
     {
       parse_mode: 'HTML',
       ...Markup.keyboard([
@@ -1812,17 +1777,16 @@ bot.hears(/^📄 إعلان #(\S+) \((.+)\)$/, async (ctx) => {
     `• <b>الولاية:</b> ${escapeHtml(targetAd.state_name || '')}\n` +
     `• <b>السعر:</b> ${formatMoney(targetAd.price)}\n` +
     `• <b>الوصف:</b> ${escapeHtml(targetAd.description || targetAd.message || '')}\n\n` +
-    `👇 <b>اختر التساؤل أو الإجراء من الأزرار أدناه:</b>`;
+    `👇 <b>اختر التساؤل من الأزرار التفاعلية أدناه:</b>`;
 
-  // إرسال البطاقة ومعها الأزرار التفاعلية (InlineKeyboard) في منتصف الشاشة + لوحة التنقل بالأسفل
   await replyTracked(ctx, userId, cardText, {
     parse_mode: 'HTML',
     ...getInteractiveAdInlineKeyboard(targetAd),
-    ...getAdActionButtonsForStatus(targetAd)
+    ...getAdScreenBottomKeyboard()
   }, true);
 });
 
-// تصفح إعلانات العميل الخاصة بنفس منهجية التصفح
+// تصفح إعلانات العميل الخاصة
 bot.hears('🗂 تصفح إعلاناتي الخاصة', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   await renderUserOwnAdBrowser(ctx, ctx.from.id, 0, 0);
@@ -1875,7 +1839,7 @@ bot.hears(/^🗂 \d+ \/ \d+$/, async (ctx) => {
   );
 });
 
-// أزرار الدعم والتصنيفات العامة (شكر، اقتراح، مشكلة دفع، تصفح، نقاط، أخرى)
+// الدعم والاقتراحات والشكر
 bot.hears('💬 دعم واقتراحات وشكر', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
@@ -1889,7 +1853,7 @@ bot.hears('💬 دعم واقتراحات وشكر', async (ctx) => {
   await replyTracked(
     ctx,
     userId,
-    `💬 <b>اختر نوع الرسالة أو الملاحظة:</b>\n\nيمكنك اختيار سبب التواصل من الأزرار أدناه أو اختيار <b>💬 استفسار عام / أخرى</b> للكتابة الحرة:`,
+    `💬 <b>اختر نوع الرسالة أو الملاحظة:</b>`,
     { parse_mode: 'HTML', ...getSupportCategoriesKeyboard() },
     true
   );
@@ -1901,14 +1865,7 @@ bot.hears(['💳 مشكلة في الدفع', '🏠 إعلان أو تصفح ع�
   const chosenCat = ctx.message.text.trim();
 
   if (chosenCat === '👏 شكر أو ملاحظة إيجابية') {
-    await sendStructuredTicketToAdmins(
-      ctx,
-      userId,
-      chosenCat,
-      'أرسل العميل رسالة شكر وتقدير للمنصة.',
-      null,
-      'text'
-    );
+    await sendStructuredTicketToAdmins(ctx, userId, chosenCat, '', null, 'text');
     delete userState[userId];
     return replyTracked(
       ctx,
@@ -1929,7 +1886,7 @@ bot.hears(['💳 مشكلة في الدفع', '🏠 إعلان أو تصفح ع�
   await replyTracked(
     ctx,
     userId,
-    `✍️ <b>${escapeHtml(chosenCat)}</b>\n\nاكتب رسالتك أو أرسل صورة/فيديو توضيحي الآن (أو اضغط "⬅️ لوحة العميل" للرجوع):`,
+    `✍️ <b>${escapeHtml(chosenCat)}</b>\n\nاكتب رسالتك أو أرسل صورة/فيديو الآن:`,
     {
       parse_mode: 'HTML',
       ...Markup.keyboard([['⬅️ لوحة العميل'], ['🏠 القائمة الرئيسية']]).resize()
@@ -1958,7 +1915,7 @@ bot.action(/^support_reply_(\d+)$/, async (ctx) => {
   await replyTracked(
     ctx,
     adminId,
-    `✉️ <b>وضع الرد على العميل</b> <code>${targetUserId}</code>\n\nاكتب ردك الآن أو أرسل صورة/فيديو (أو اضغط "🏠 القائمة الرئيسية" للإلغاء):`,
+    `✉️ <b>الرد على العميل</b> <code>${targetUserId}</code>\n\nاكتب ردك الآن أو أرسل صورة/فيديو:`,
     {
       parse_mode: 'HTML',
       ...Markup.keyboard([['🏠 القائمة الرئيسية']]).resize()
@@ -1974,15 +1931,6 @@ async function handleSupportTextStep(ctx, userId, userText) {
     const num = parseInt(userText, 10) - 1;
     s.selectingPage = false;
     await renderUserOwnAdBrowser(ctx, userId, num, 0);
-    return true;
-  }
-
-  const adQuickMatch = userText.match(AD_QUICK_QUESTION_REGEX);
-  if (adQuickMatch) {
-    await safeDeleteUserMessage(ctx);
-    const actionLabel = adQuickMatch[1];
-    const reqId = adQuickMatch[2];
-    await dispatchAdInquiryToAdmins(ctx, userId, actionLabel, reqId);
     return true;
   }
 
