@@ -1432,6 +1432,41 @@ async function renderUserOwnAdBrowser(ctx, userId, adIndex = 0, mediaIndex = 0) 
   await clearTrackedBotMessages(ctx, userId, keepIds);
 }
 
+// 🔍 استرجاع سجل pending_properties الكامل (بما فيه وصل الفيرسمون receipt_url) لإعادة المراجعة
+async function resolvePendingRecordForReview(relatedAd, senderUserId) {
+  if (!relatedAd) return null;
+
+  if (relatedAd.source === 'pending_properties' && relatedAd.receipt_url) {
+    return relatedAd;
+  }
+
+  try {
+    if (relatedAd.source === 'pending_properties' && relatedAd.id) {
+      const { data } = await supabase
+        .from('pending_properties')
+        .select('*')
+        .eq('id', relatedAd.id)
+        .single();
+      if (data) return { ...data, source: 'pending_properties' };
+    }
+
+    const { data: matchedRows } = await supabase
+      .from('pending_properties')
+      .select('*')
+      .eq('user_id', senderUserId)
+      .eq('property_type', relatedAd.property_type || '')
+      .eq('state_name', relatedAd.state_name || '')
+      .order('id', { ascending: false })
+      .limit(1);
+
+    if (matchedRows && matchedRows.length > 0) {
+      return { ...matchedRows[0], source: 'pending_properties' };
+    }
+  } catch (e) {}
+
+  return relatedAd;
+}
+
 async function sendStructuredTicketToAdmins(ctx, senderUserId, ticketTitle, detailText, relatedAd = null, payloadType = 'text', mediaContent = {}) {
   const adminIds = await getAdminIds();
   const dbUser = await getUserRecord(senderUserId);
@@ -1443,12 +1478,16 @@ async function sendStructuredTicketToAdmins(ctx, senderUserId, ticketTitle, deta
   const phoneLine = dbUser?.phone_number ? `\n📞 <b>الهاتف:</b> <code>${escapeHtml(dbUser.phone_number)}</code>` : '';
   const pointsLine = `\n🪙 <b>الرصيد:</b> <b>${dbUser?.points ?? 0} نقطة</b>`;
 
-  const adBlock = relatedAd
-    ? `\n📌 <b>الإعلان المرتبط:</b> <code>#${relatedAd.id || '—'}</code> (${escapeHtml(relatedAd.property_type || '')} - ${escapeHtml(relatedAd.state_name || '')} - ${formatMoney(relatedAd.price)}) — الحالة: <b>${relatedAd.status_label}</b>`
+  const resolvedAd = await resolvePendingRecordForReview(relatedAd, senderUserId);
+  const receiptRef = normalizeMediaRef(resolvedAd?.receipt_url);
+
+  const adBlock = resolvedAd
+    ? `\n📌 <b>الإعلان المرتبط:</b> <code>#${resolvedAd.id || '—'}</code> (${escapeHtml(resolvedAd.property_type || '')} - ${escapeHtml(resolvedAd.state_name || '')} - ${formatMoney(resolvedAd.price)}) — الحالة: <b>${resolvedAd.status_label || relatedAd?.status_label || ''}</b>` +
+      (resolvedAd.description ? `\n📝 <b>وصف العقار:</b> ${escapeHtml(resolvedAd.description)}` : '')
     : '';
 
   const header =
-    `📩 <b>تذكرة جديدة — ${escapeHtml(ticketTitle)}</b>\n` +
+    `📩 <b>إعادة مراجعة وتذكرة — ${escapeHtml(ticketTitle)}</b>\n` +
     `👤 <b>العميل:</b> ${fullName}\n` +
     `🆔 <b>المعرف:</b> <code>${senderUserId}</code>${phoneLine}${pointsLine}${adBlock}\n` +
     `━━━━━━━━━━━━━━━━━━━━\n`;
@@ -1457,10 +1496,17 @@ async function sendStructuredTicketToAdmins(ctx, senderUserId, ticketTitle, deta
     [Markup.button.callback(`✉️ رد على العميل (${senderUserId})`, `support_reply_${senderUserId}`)]
   ];
 
-  if (relatedAd && relatedAd.source === 'pending_properties' && relatedAd.ad_status === 'pending' && relatedAd.id) {
+  // إظهار أزرار القبول/الرفض للإدارة في حال كان الطلب في pending_properties (معلق أو مرفوض ويطلب إعادة مراجعة)
+  const canReviewDecision =
+    resolvedAd &&
+    resolvedAd.source === 'pending_properties' &&
+    resolvedAd.id &&
+    (resolvedAd.status === 'pending' || resolvedAd.status === 'rejected' || resolvedAd.ad_status === 'pending' || resolvedAd.ad_status === 'rejected');
+
+  if (canReviewDecision) {
     inlineRows.push([
-      Markup.button.callback(`❌ رفض (#${relatedAd.id})`, `reject_${relatedAd.id}`),
-      Markup.button.callback(`✅ قبول ونشر (#${relatedAd.id})`, `approve_${relatedAd.id}`)
+      Markup.button.callback(`❌ رفض (#${resolvedAd.id})`, `reject_${resolvedAd.id}`),
+      Markup.button.callback(`✅ قبول ونشر (#${resolvedAd.id})`, `approve_${resolvedAd.id}`)
     ]);
   }
 
@@ -1475,6 +1521,24 @@ async function sendStructuredTicketToAdmins(ctx, senderUserId, ticketTitle, deta
       } else if (payloadType === 'video') {
         const cap = header + (mediaContent.caption ? `💬 <b>الرسالة:</b> ${escapeHtml(mediaContent.caption)}` : '🎥 <b>مرفق فيديو من العميل</b>');
         await ctx.telegram.sendVideo(adminId, mediaContent.fileId, { caption: cap, parse_mode: 'HTML', ...replyMarkup });
+      } else if (receiptRef) {
+        // إرسال وصل الدفع (الفيرسمون) الأصلي مع بطاقة المراجعة للإدارة
+        const receiptCaption =
+          header +
+          bodyText +
+          `\n\n🧾 <b>وصل الدفع (الفيرسمون) المرفق سابقاً للمراجعة أعلاه 👆</b>`;
+        try {
+          await ctx.telegram.sendPhoto(adminId, receiptRef, {
+            caption: receiptCaption,
+            parse_mode: 'HTML',
+            ...replyMarkup
+          });
+        } catch (receiptSendErr) {
+          await ctx.telegram.sendMessage(adminId, header + bodyText + `\n🧾 <b>رابط الوصل:</b> ${escapeHtml(receiptRef)}`, {
+            parse_mode: 'HTML',
+            ...replyMarkup
+          });
+        }
       } else {
         await ctx.telegram.sendMessage(adminId, header + bodyText, { parse_mode: 'HTML', ...replyMarkup });
       }
@@ -1676,7 +1740,7 @@ bot.hears(/^📄 إعلان #(\S+) \((.+)\)$/, async (ctx) => {
     `• <b>السعر:</b> ${formatMoney(targetAd.price)}\n` +
     `• <b>الهاتف:</b> <code>${escapeHtml(targetAd.phone || '')}</code>\n` +
     `• <b>الوصف:</b> ${escapeHtml(targetAd.description || targetAd.message || '')}\n\n` +
-    `👇 <b>اختر الإجراء أو التساؤل لإرساله مباشرة للإدارة:</b>`;
+    `👇 <b>اختر الإجراء أو التساؤل لإرساله مباشرة للإدارة (سيتم إرفاق وصل الدفع تلقائياً للمراجعة):</b>`;
 
   await replyTracked(ctx, userId, cardText, {
     parse_mode: 'HTML',
@@ -1839,7 +1903,7 @@ async function handleSupportTextStep(ctx, userId, userText) {
     return true;
   }
 
-  // أزرار التساؤلات والتذكيرات الجاهزة المرتبطة بإعلان محدد
+  // أزرار التساؤلات والتذكيرات الجاهزة المرتبطة بإعلان محدد (ترفق وصل الفيرسمون تلقائياً للإدارة)
   const adQuickMatch = userText.match(/^(❓ لماذا إعلاني معلق؟|⏱️ تذكير الإدارة بمراجعة الطلب|📞 لماذا لم يتم التواصل معي؟|❌ لماذا تم رفض إعلاني؟|🔄 طلب إعادة مراجعة الإعلان|⚠️ ملاحظة أو استفسار حول الإعلان) \(#([^)]+)\)$/);
   if (adQuickMatch) {
     await safeDeleteUserMessage(ctx);
@@ -1852,7 +1916,7 @@ async function handleSupportTextStep(ctx, userId, userText) {
       ctx,
       userId,
       `${actionLabel} (#${reqId})`,
-      `استفسار/إجراء سريع من العميل بخصوص الإعلان رقم #${reqId}.`,
+      `استفسار/طلب إعادة مراجعة من العميل بخصوص الإعلان رقم #${reqId}.`,
       relatedAd,
       'text'
     );
@@ -1860,7 +1924,7 @@ async function handleSupportTextStep(ctx, userId, userText) {
     await replyTracked(
       ctx,
       userId,
-      `✅ <b>تم إرسال طلبك (${escapeHtml(actionLabel)}) للإدارة بخصوص الإعلان <code>#${escapeHtml(reqId)}</code>.</b>`,
+      `✅ <b>تم إرسال طلبك (${escapeHtml(actionLabel)}) للإدارة بخصوص الإعلان <code>#${escapeHtml(reqId)}</code> مع إرفاق وصل الدفع للمراجعة.</b>`,
       {
         parse_mode: 'HTML',
         ...Markup.keyboard([
