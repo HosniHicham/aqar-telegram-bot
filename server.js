@@ -163,16 +163,27 @@ function getMainMenuKeyboard() {
   ]).resize();
 }
 
-function getBrowsingKeyboard(currentIndex, totalCount) {
+function getBrowsingKeyboard(currentIndex, totalCount, photoIdx = 0, totalPhotos = 0) {
+  const rows = [];
+
+  // صف أزرار التنقل بين صور العقار الحالي فقط عند وجود أكثر من صورة
+  if (totalPhotos > 1) {
+    const photoRow = [];
+    if (photoIdx > 0) photoRow.push('🖼 الصورة السابقة');
+    photoRow.push(`📸 صورة ${photoIdx + 1} / ${totalPhotos}`);
+    if (photoIdx < totalPhotos - 1) photoRow.push('الصورة التالية 🖼');
+    rows.push(photoRow);
+  }
+
   const navRow = [];
   if (currentIndex > 0) navRow.push('⬅️ السابق');
   navRow.push(`📄 ${currentIndex + 1} / ${totalCount}`);
   if (currentIndex < totalCount - 1) navRow.push('التالي ➡️');
 
-  return Markup.keyboard([
-    navRow,
-    ['📍 تغيير الولاية', '🏠 القائمة الرئيسية']
-  ]).resize();
+  rows.push(navRow);
+  rows.push(['📍 تغيير الولاية', '🏠 القائمة الرئيسية']);
+
+  return Markup.keyboard(rows).resize();
 }
 
 function getAuthKeyboard() {
@@ -799,7 +810,7 @@ bot.hears('ℹ️ عن المنصة', async (ctx) => {
 });
 
 // =========================================================================
-// 🔍 تصفح العقارات والمعاينة من عمود image_url فقط (مع دعم عدة صور)
+// 🔍 تصفح العقارات والمعاينة من عمود image_url مع أزرار تنقل بين الصور
 // =========================================================================
 async function showStatesMenu(ctx) {
   try {
@@ -849,23 +860,22 @@ bot.hears(/^📍 (.+)/, async (ctx) => {
 
   const stateList = await getUniqueStatesList();
   if (stateList.includes(selectedState)) {
-    browsingSession[userId] = { state: selectedState, page: 0 };
-    renderPropertyPage(ctx, userId, 0);
+    browsingSession[userId] = { state: selectedState, page: 0, photoIndex: 0 };
+    renderPropertyPage(ctx, userId, 0, 0);
   }
 });
 
 bot.hears('🌐 الكل', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
-  browsingSession[userId] = { state: 'ALL', page: 0 };
-  renderPropertyPage(ctx, userId, 0);
+  browsingSession[userId] = { state: 'ALL', page: 0, photoIndex: 0 };
+  renderPropertyPage(ctx, userId, 0, 0);
 });
 
-async function renderPropertyPage(ctx, userId, pageIndex) {
+async function renderPropertyPage(ctx, userId, pageIndex, photoIndex = 0) {
   const session = browsingSession[userId];
   if (!session) return;
 
-  session.page = pageIndex;
   session.selectingPage = false;
 
   try {
@@ -883,17 +893,24 @@ async function renderPropertyPage(ctx, userId, pageIndex) {
     session.page = pageIndex;
 
     const item = data[pageIndex];
-    const imagesList = parseImagesFromImageUrl(item.image_url);
-    const photosCountLine = imagesList.length > 0 ? `\n📸 <b>عدد الصور:</b> ${imagesList.length}` : '';
+    const imagesList = parseImagesFromImageUrl(item.image_url).slice(0, MAX_PROPERTY_IMAGES);
+    const totalPhotos = imagesList.length;
+
+    let safePhotoIndex = Number(photoIndex) || 0;
+    if (safePhotoIndex < 0) safePhotoIndex = 0;
+    if (totalPhotos > 0 && safePhotoIndex >= totalPhotos) safePhotoIndex = totalPhotos - 1;
+    session.photoIndex = safePhotoIndex;
+
+    const photosLine = totalPhotos > 0 ? `\n📸 <b>الصورة:</b> ${safePhotoIndex + 1} / ${totalPhotos}` : '';
 
     const caption =
       `🏛 <b>الولاية:</b> ${escapeHtml(item.state_name || '')} (${pageIndex + 1}/${data.length})\n\n` +
       `🏠 <b>العقار:</b> ${escapeHtml(item.property_type || '')}\n` +
       `💰 <b>السعر:</b> ${formatMoney(item.price)}\n` +
-      `📞 <b>هاتف المالك:</b> <code>${escapeHtml(item.phone || '')}</code>${photosCountLine}\n` +
+      `📞 <b>هاتف المالك:</b> <code>${escapeHtml(item.phone || '')}</code>${photosLine}\n` +
       `📝 <b>الوصف:</b> ${escapeHtml(item.description || item.message || '')}`;
 
-    const replyKb = getBrowsingKeyboard(pageIndex, data.length);
+    const replyKb = getBrowsingKeyboard(pageIndex, data.length, safePhotoIndex, totalPhotos);
 
     if (session.lastMessageIds && Array.isArray(session.lastMessageIds)) {
       for (const msgId of session.lastMessageIds) {
@@ -903,7 +920,7 @@ async function renderPropertyPage(ctx, userId, pageIndex) {
     session.lastMessageIds = [];
 
     const videoRef = normalizeMediaRef(item.video_url);
-    if (videoRef) {
+    if (videoRef && totalPhotos === 0) {
       try {
         const sentMsg = await ctx.replyWithVideo(videoRef, { caption, parse_mode: 'HTML', ...replyKb });
         if (sentMsg) session.lastMessageIds.push(sentMsg.message_id);
@@ -911,25 +928,14 @@ async function renderPropertyPage(ctx, userId, pageIndex) {
       } catch (e) {}
     }
 
-    if (imagesList.length > 1) {
+    if (totalPhotos > 0) {
+      const currentImage = imagesList[safePhotoIndex];
       try {
-        const mediaGroup = imagesList.slice(0, MAX_PROPERTY_IMAGES).map(media => ({
-          type: 'photo',
-          media
-        }));
-        const groupMsgs = await ctx.replyWithMediaGroup(mediaGroup);
-        if (Array.isArray(groupMsgs)) {
-          session.lastMessageIds.push(...groupMsgs.map(m => m.message_id));
-        }
-        const textMsg = await ctx.reply(caption, { parse_mode: 'HTML', ...replyKb });
-        if (textMsg) session.lastMessageIds.push(textMsg.message_id);
-        return;
-      } catch (albumErr) {}
-    }
-
-    if (imagesList.length === 1) {
-      try {
-        const sentMsg = await ctx.replyWithPhoto(imagesList[0], { caption, parse_mode: 'HTML', ...replyKb });
+        const sentMsg = await ctx.replyWithPhoto(currentImage, {
+          caption,
+          parse_mode: 'HTML',
+          ...replyKb
+        });
         if (sentMsg) session.lastMessageIds.push(sentMsg.message_id);
         return;
       } catch (photoErr) {}
@@ -942,6 +948,32 @@ async function renderPropertyPage(ctx, userId, pageIndex) {
     await ctx.reply('⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getMainMenuKeyboard());
   }
 }
+
+bot.hears('الصورة التالية 🖼', async (ctx) => {
+  await safeDeleteUserMessage(ctx);
+  const userId = ctx.from.id;
+  const session = browsingSession[userId];
+  if (!session) return;
+  const nextPhotoIdx = (session.photoIndex || 0) + 1;
+  return renderPropertyPage(ctx, userId, session.page, nextPhotoIdx);
+});
+
+bot.hears('🖼 الصورة السابقة', async (ctx) => {
+  await safeDeleteUserMessage(ctx);
+  const userId = ctx.from.id;
+  const session = browsingSession[userId];
+  if (!session) return;
+  const prevPhotoIdx = Math.max((session.photoIndex || 0) - 1, 0);
+  return renderPropertyPage(ctx, userId, session.page, prevPhotoIdx);
+});
+
+bot.hears(/^📸 صورة \d+ \/ \d+$/, async (ctx) => {
+  await safeDeleteUserMessage(ctx);
+  const userId = ctx.from.id;
+  const session = browsingSession[userId];
+  if (!session) return;
+  return renderPropertyPage(ctx, userId, session.page, session.photoIndex || 0);
+});
 
 bot.hears(/^📄 \d+ \/ \d+$/, async (ctx) => {
   await safeDeleteUserMessage(ctx);
@@ -983,7 +1015,7 @@ bot.hears(/^\d+$/, async (ctx, next) => {
     await safeDeleteUserMessage(ctx);
     const selectedNumber = parseInt(ctx.message.text.trim(), 10);
     session.selectingPage = false;
-    return renderPropertyPage(ctx, userId, selectedNumber - 1);
+    return renderPropertyPage(ctx, userId, selectedNumber - 1, 0);
   }
 
   return next();
@@ -995,7 +1027,7 @@ bot.hears('🔙 رجوع للعقار', async (ctx) => {
   const session = browsingSession[userId];
   if (session) {
     session.selectingPage = false;
-    renderPropertyPage(ctx, userId, session.page);
+    renderPropertyPage(ctx, userId, session.page, session.photoIndex || 0);
   }
 });
 
@@ -1004,7 +1036,7 @@ bot.hears('⬅️ السابق', async (ctx) => {
   const userId = ctx.from.id;
   const session = browsingSession[userId];
   if (session && session.page > 0) {
-    renderPropertyPage(ctx, userId, session.page - 1);
+    renderPropertyPage(ctx, userId, session.page - 1, 0);
   }
 });
 
@@ -1013,7 +1045,7 @@ bot.hears('التالي ➡️', async (ctx) => {
   const userId = ctx.from.id;
   const session = browsingSession[userId];
   if (session) {
-    renderPropertyPage(ctx, userId, session.page + 1);
+    renderPropertyPage(ctx, userId, session.page + 1, 0);
   }
 });
 
