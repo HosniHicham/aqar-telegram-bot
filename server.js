@@ -144,7 +144,7 @@ async function getDynamicDescriptionKeyboard() {
 }
 
 // =========================================================================
-// 📝 الأدوات ومساعدات واجهة المستخدم (كل الأزرار في القائمة السفلية فقط)
+// 📝 الأدوات ومساعدات واجهة المستخدم
 // =========================================================================
 function chunkButtons(buttonsArray, chunkSize = 4) {
   const chunked = [];
@@ -226,6 +226,14 @@ async function getUniqueStatesList() {
   } catch (e) {
     return [];
   }
+}
+
+function sanitizeNumericPrice(val) {
+  if (val === null || val === undefined) return 0;
+  const digitsOnly = String(val).replace(/\D/g, '');
+  if (!digitsOnly) return 0;
+  const num = Number(digitsOnly);
+  return Number.isFinite(num) ? num : 0;
 }
 
 function formatMoney(val) {
@@ -903,7 +911,6 @@ async function renderPropertyPage(ctx, userId, pageIndex) {
       } catch (e) {}
     }
 
-    // معاينة عدة صور من عمود image_url كألبوم صور
     if (imagesList.length > 1) {
       try {
         const mediaGroup = imagesList.slice(0, MAX_PROPERTY_IMAGES).map(media => ({
@@ -917,12 +924,9 @@ async function renderPropertyPage(ctx, userId, pageIndex) {
         const textMsg = await ctx.reply(caption, { parse_mode: 'HTML', ...replyKb });
         if (textMsg) session.lastMessageIds.push(textMsg.message_id);
         return;
-      } catch (albumErr) {
-        // إذا تعذر إرسال الألبوم نكمل لعرض الصورة الأولى أو النص دون خطأ
-      }
+      } catch (albumErr) {}
     }
 
-    // معاينة صورة واحدة من عمود image_url
     if (imagesList.length === 1) {
       try {
         const sentMsg = await ctx.replyWithPhoto(imagesList[0], { caption, parse_mode: 'HTML', ...replyKb });
@@ -931,7 +935,6 @@ async function renderPropertyPage(ctx, userId, pageIndex) {
       } catch (photoErr) {}
     }
 
-    // عرض التفاصيل كنص فقط كخيار أخير مضمون
     const sentMsg = await ctx.reply(caption, { parse_mode: 'HTML', ...replyKb });
     if (sentMsg) session.lastMessageIds.push(sentMsg.message_id);
   } catch (err) {
@@ -1084,13 +1087,13 @@ bot.hears(/^🪙 النشر مجاناً/, async (ctx) => {
 
     await supabase.from('users').update({ points: currentPoints - publishCost }).eq('id', userId);
 
-    const cleanPrice = String(state.data.price || '0').replace(/[^\d.]/g, '') || '0';
-    const cleanPhone = String(state.data.phone || '').trim();
+    const numericPrice = sanitizeNumericPrice(state.data.price);
+    const cleanPhone = String(state.data.phone || '').replace(/\D/g, '').trim();
 
     await supabase.from('test_messages').insert([{
       property_type: state.data.property_type,
       state_name: state.data.state_name,
-      price: cleanPrice,
+      price: numericPrice,
       phone: cleanPhone,
       description: state.data.description,
       message: state.data.description,
@@ -1298,8 +1301,8 @@ bot.on('photo', async (ctx) => {
         receiptUrl = receiptPhoto.file_id;
       }
 
-      const cleanPrice = String(state.data.price || '0').replace(/[^\d.]/g, '') || '0';
-      const cleanPhone = String(state.data.phone || '').trim();
+      const numericPrice = sanitizeNumericPrice(state.data.price);
+      const cleanPhone = String(state.data.phone || '').replace(/\D/g, '').trim();
 
       const { data: insertedRow, error: insertError } = await supabase
         .from('pending_properties')
@@ -1307,7 +1310,7 @@ bot.on('photo', async (ctx) => {
           user_id: userId,
           property_type: state.data.property_type,
           state_name: state.data.state_name,
-          price: cleanPrice,
+          price: numericPrice,
           phone: cleanPhone,
           description: state.data.description,
           image_url: combinedImagesUrl,
@@ -1328,15 +1331,17 @@ bot.on('photo', async (ctx) => {
         `👤 <b>معرف المستخدم:</b> <code>${userId}</code>\n` +
         `🏠 <b>النوع:</b> ${escapeHtml(state.data.property_type || '')}\n` +
         `📍 <b>الولاية:</b> ${escapeHtml(state.data.state_name || '')}\n` +
-        `💰 <b>السعر:</b> ${formatMoney(cleanPrice)}\n` +
+        `💰 <b>السعر:</b> ${formatMoney(numericPrice)}\n` +
         `📞 <b>الهاتف:</b> ${escapeHtml(cleanPhone)}\n` +
         `🖼 <b>عدد الصور:</b> ${isVideo ? 'فيديو' : photosCount}\n` +
         `📝 <b>الوصف:</b> ${escapeHtml(state.data.description || '')}`;
 
-      const adminFullText =
-        adminCaption +
-        `\n\n👇 <b>للقبول أرسل:</b> <code>/approve_${requestId}</code>` +
-        `\n❌ <b>للرفض أرسل:</b> <code>/reject_${requestId}</code>`;
+      const adminButtons = Markup.inlineKeyboard([
+        [
+          Markup.button.callback(`❌ رفض (#${requestId})`, `reject_${requestId}`),
+          Markup.button.callback(`✅ قبول ونشر (#${requestId})`, `approve_${requestId}`)
+        ]
+      ]);
 
       const photoSource =
         typeof receiptUrl === 'string' && receiptUrl.startsWith('http')
@@ -1348,13 +1353,15 @@ bot.on('photo', async (ctx) => {
       for (const currentAdminId of adminIds) {
         try {
           await ctx.telegram.sendPhoto(currentAdminId, photoSource, {
-            caption: adminFullText,
-            parse_mode: 'HTML'
+            caption: adminCaption + `\n\n👇 <b>يرجى مراجعة وصل الدفع أعلاه واتخاذ قرار:</b>`,
+            parse_mode: 'HTML',
+            ...adminButtons
           });
         } catch (sendErr) {
           console.error(`Failed to send admin notification to ${currentAdminId}:`, sendErr.message);
-          await ctx.telegram.sendMessage(currentAdminId, adminFullText, {
-            parse_mode: 'HTML'
+          await ctx.telegram.sendMessage(currentAdminId, adminCaption, {
+            parse_mode: 'HTML',
+            ...adminButtons
           }).catch(() => {});
         }
       }
@@ -1393,13 +1400,16 @@ bot.on('video', async (ctx) => {
 });
 
 // =========================================================================
-// 🛡️ معالج أوامر موافقة أو رفض الإدارة (للمدراء فقط وعبر عمود image_url)
+// 🛡️ معالج موافقة أو رفض الإدارة عبر الأزرار (النشر في جدول test_messages)
 // =========================================================================
-const handleAdminCommand = async (ctx, action, requestId) => {
+const handleAdminAction = async (ctx, action) => {
+  const requestId = Number(ctx.match[1]);
+  await ctx.answerCbQuery();
+
   try {
     const adminIds = await getAdminIds();
     if (!adminIds.includes(ctx.from.id)) {
-      return ctx.reply('⛔ <b>هذا الأمر مخصص للإدارة فقط.</b>', { parse_mode: 'HTML' });
+      return await ctx.answerCbQuery('⛔ هذا الإجراء مخصص للإدارة فقط.', { show_alert: true });
     }
 
     const { data: pendingItem, error: fetchError } = await supabase
@@ -1409,19 +1419,19 @@ const handleAdminCommand = async (ctx, action, requestId) => {
       .single();
 
     if (fetchError || !pendingItem) {
-      return ctx.reply(`⚠️ <b>الطلب (#${requestId}) غير موجود أو تم التعامل معه مسبقاً.</b>`, { parse_mode: 'HTML' });
+      return ctx.editMessageCaption(`⚠️ <b>الطلب (#${requestId}) غير موجود أو تم التعامل معه مسبقاً.</b>`, { parse_mode: 'HTML' }).catch(() => {});
     }
 
     const targetUserId = pendingItem.user_id;
 
     if (action === 'approve') {
-      const cleanPrice = String(pendingItem.price || '0').replace(/[^\d.]/g, '') || '0';
-      const cleanPhone = String(pendingItem.phone || '').trim();
+      const numericPrice = sanitizeNumericPrice(pendingItem.price);
+      const cleanPhone = String(pendingItem.phone || '').replace(/\D/g, '').trim();
 
       const { error: publishError } = await supabase.from('test_messages').insert([{
         property_type: pendingItem.property_type,
         state_name: pendingItem.state_name,
-        price: cleanPrice,
+        price: numericPrice,
         phone: cleanPhone,
         description: pendingItem.description,
         message: pendingItem.description,
@@ -1439,10 +1449,10 @@ const handleAdminCommand = async (ctx, action, requestId) => {
         { parse_mode: 'HTML' }
       ).catch(() => {});
 
-      await ctx.reply(
-        `✅ <b>تم قبول الطلب (#${requestId}) ونشره بنجاح!</b>\n👤 المستخدم: <code>${targetUserId}</code>`,
+      await ctx.editMessageCaption(
+        `✅ <b>تم قبول الطلب (#${requestId}) ونشره بنجاح!</b>\n👤 المستخدم: <code>${targetUserId}</code>\n📌 الحالة: <b>مقبول (مُحفظ في جدول test_messages)</b>`,
         { parse_mode: 'HTML' }
-      );
+      ).catch(() => {});
     } else {
       await supabase.from('pending_properties').update({ status: 'rejected' }).eq('id', requestId);
 
@@ -1452,18 +1462,19 @@ const handleAdminCommand = async (ctx, action, requestId) => {
         { parse_mode: 'HTML' }
       ).catch(() => {});
 
-      await ctx.reply(
-        `❌ <b>تم رفض الطلب (#${requestId}).</b>\n👤 المستخدم: <code>${targetUserId}</code>`,
+      await ctx.editMessageCaption(
+        `❌ <b>تم رفض الطلب (#${requestId}).</b>\n👤 المستخدم: <code>${targetUserId}</code>\n📌 الحالة: <b>مرفوض</b>`,
         { parse_mode: 'HTML' }
-      );
+      ).catch(() => {});
     }
   } catch (err) {
+    console.error(`Admin action error #${requestId}:`, err);
     await ctx.reply(`⚠️ حدث خطأ أثناء معالجة الطلب #${requestId}: ${err.message}`);
   }
 };
 
-bot.hears(/^\/approve_(\d+)$/, (ctx) => handleAdminCommand(ctx, 'approve', Number(ctx.match[1])));
-bot.hears(/^\/reject_(\d+)$/, (ctx) => handleAdminCommand(ctx, 'reject', Number(ctx.match[1])));
+bot.action(/^approve_(\d+)$/, (ctx) => handleAdminAction(ctx, 'approve'));
+bot.action(/^reject_(\d+)$/, (ctx) => handleAdminAction(ctx, 'reject'));
 
 // =========================================================================
 // 🚀 تشغيل السيرفر
