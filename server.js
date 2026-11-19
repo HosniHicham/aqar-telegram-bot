@@ -1223,6 +1223,15 @@ const AD_INQUIRY_TYPES = {
   ad_note: '⚠️ ملاحظة أو استفسار حول الإعلان'
 };
 
+const QUICK_SUPPORT_PRESETS = {
+  '💳 مشكلة في الدفع': 'العميل يبلغ عن مشكلة أو استفسار بخصوص الدفع.',
+  '🏠 إعلان أو تصفح عقاري': 'العميل لديه استفسار بخصوص الإعلانات أو التصفح العقاري.',
+  '🪙 النقاط والمكافآت': 'العميل يستفسر عن النقاط والمكافآت.',
+  '💡 اقتراح أو تحسين': 'العميل يشارك اقتراحاً أو فكرة لتحسين المنصة.',
+  '👏 شكر أو ملاحظة إيجابية': 'العميل يرسل رسالة شكر وتقدير للمنصة.',
+  '💬 استفسار عام / أخرى': 'العميل يطلب تواصلاً أو استفساراً عاماً مع الإدارة.'
+};
+
 async function fetchUserOwnedAds(userId) {
   const ads = [];
 
@@ -1534,7 +1543,7 @@ async function sendStructuredTicketToAdmins(ctx, senderUserId, ticketTitle, deta
     `📩 <b>طلب من العميل — ${escapeHtml(ticketTitle)}</b>\n` +
     `━━━━━━━━━━━━━━━━━━━━\n` +
     `👤 <b>الاسم:</b> ${fullName}\n` +
-    `🆔 <b>المعرف:</b> <code>${senderUserId}</code>${phoneLine}${adBlock}\n`;
+    `🆔 <b>الآيدي (ID):</b> <code>${senderUserId}</code>${phoneLine}${adBlock}\n`;
 
   const inlineRows = [
     [Markup.button.callback(`✉️ رد على العميل (${senderUserId})`, `support_reply_${senderUserId}`)]
@@ -1610,7 +1619,7 @@ bot.action(/^adinq:([a-z_]+):(.+)$/, async (ctx) => {
   const adsList = s?.ads || await fetchUserOwnedAds(userId);
   const relatedAd = adsList.find(a => String(a.id) === String(reqId)) || s?.selectedAd || null;
 
-  await ctx.answerCbQuery('✅ تم إرسال استفسارك للإدارة');
+  await ctx.answerCbQuery('✅ تم إرسال طلبك للإدارة');
   await sendStructuredTicketToAdmins(
     ctx,
     userId,
@@ -1625,7 +1634,7 @@ bot.action(/^adinq:([a-z_]+):(.+)$/, async (ctx) => {
   await replyTracked(
     ctx,
     userId,
-    `✅ <b>تم إرسال استفسارك (${escapeHtml(actionLabel)}) إلى الإدارة.</b>`,
+    `✅ <b>تم إرسال طلبك (${escapeHtml(actionLabel)}) إلى الإدارة.</b>`,
     {
       parse_mode: 'HTML',
       ...Markup.keyboard([
@@ -1679,7 +1688,7 @@ bot.hears('📋 إعلاناتي وحالتها', async (ctx) => {
   await replyTracked(
     ctx,
     userId,
-    `📋 <b>إعلاناتي وحالتها</b>\n\nاختر الفئة لعرض إعلاناتك والتساؤل حول أي إعلان بضغطة زر:`,
+    `📋 <b>إعلاناتي وحالتها</b>\n\nاختر الفئة لعرض إعلاناتك والتساؤل حول أي إعلان بالضغط على الزر التفاعلي:`,
     {
       parse_mode: 'HTML',
       ...Markup.keyboard([
@@ -1740,7 +1749,7 @@ bot.hears(/^(⏳ معلقة|✅ مقبولة|❌ مرفوضة|📌 الكل) \(\
   await replyTracked(
     ctx,
     userId,
-    `📋 <b>${escapeHtml(label)} (${filtered.length}):</b>\n\n${listLines.join('\n')}\n\n👇 <b>اختر إعلاناً من الأزرار لإرسال استفسار أو تذكير حوله:</b>`,
+    `📋 <b>${escapeHtml(label)} (${filtered.length}):</b>\n\n${listLines.join('\n')}\n\n👇 <b>اختر إعلاناً من الأزرار لعرض أزراره التفاعلية:</b>`,
     {
       parse_mode: 'HTML',
       ...Markup.keyboard([
@@ -1801,7 +1810,7 @@ bot.hears(/^📄 إعلان #(\S+) \((.+)\)$/, async (ctx) => {
     `• <b>الولاية:</b> ${escapeHtml(targetAd.state_name || '')}\n` +
     `• <b>السعر:</b> ${formatMoney(targetAd.price)}\n` +
     `• <b>الوصف:</b> ${escapeHtml(targetAd.description || targetAd.message || '')}\n\n` +
-    `👇 <b>اختر التساؤل أو الإجراء من الأزرار أدناه:</b>`;
+    `👇 <b>اضغط على الزر التفاعلي أسفل البطاقة لإرسال طلبك للإدارة:</b>`;
 
   await replyTracked(ctx, userId, cardText, {
     parse_mode: 'HTML',
@@ -1863,7 +1872,7 @@ bot.hears(/^🗂 \d+ \/ \d+$/, async (ctx) => {
   );
 });
 
-// أزرار الدعم والتصنيفات العامة (شكر، اقتراح، مشكلة دفع، تصفح، نقاط، أخرى)
+// أزرار الدعم والتصنيفات (إرسال مباشر بالأزرار دون إجبار العميل على الكتابة الحرة)
 bot.hears('💬 دعم واقتراحات وشكر', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
@@ -1877,7 +1886,7 @@ bot.hears('💬 دعم واقتراحات وشكر', async (ctx) => {
   await replyTracked(
     ctx,
     userId,
-    `💬 <b>اختر نوع الرسالة أو الملاحظة:</b>\n\nيمكنك اختيار سبب التواصل من الأزرار أدناه أو اختيار <b>💬 استفسار عام / أخرى</b> للكتابة الحرة:`,
+    `💬 <b>اختر نوع الطلب أو الملاحظة بالضغط على الزر المناسب:</b>`,
     { parse_mode: 'HTML', ...getSupportCategoriesKeyboard() },
     true
   );
@@ -1887,41 +1896,20 @@ bot.hears(['💳 مشكلة في الدفع', '🏠 إعلان أو تصفح ع�
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
   const chosenCat = ctx.message.text.trim();
+  const presetDetail = QUICK_SUPPORT_PRESETS[chosenCat] || chosenCat;
 
-  if (chosenCat === '👏 شكر أو ملاحظة إيجابية') {
-    await sendStructuredTicketToAdmins(
-      ctx,
-      userId,
-      chosenCat,
-      'أرسل العميل رسالة شكر وتقدير للمنصة.',
-      null,
-      'text'
-    );
-    delete userState[userId];
-    return replyTracked(
-      ctx,
-      userId,
-      '👏 <b>شكراً جزيلاً لك على كلماتك الطيبة وثقتك بمنصة عقار الجزائر.</b>',
-      { parse_mode: 'HTML', ...getSupportHubKeyboard() },
-      true
-    );
-  }
+  await sendStructuredTicketToAdmins(ctx, userId, chosenCat, presetDetail, null, 'text');
+  delete userState[userId];
 
-  userState[userId] = {
-    step: 'waiting_for_support_message',
-    data: { category: chosenCat },
-    chatId: ctx.chat.id,
-    wizardMsgId: null
-  };
+  const confirmMsg = chosenCat === '👏 شكر أو ملاحظة إيجابية'
+    ? '👏 <b>شكراً جزيلاً لك على كلماتك الطيبة وثقتك بمنصة عقار الجزائر. تم إرسال شكرك للإدارة.</b>'
+    : `✅ <b>تم إرسال طلبك (${escapeHtml(chosenCat)}) إلى الإدارة عبر الأزرار.</b>`;
 
   await replyTracked(
     ctx,
     userId,
-    `✍️ <b>${escapeHtml(chosenCat)}</b>\n\nاكتب رسالتك أو أرسل صورة/فيديو توضيحي الآن (أو اضغط "⬅️ لوحة العميل" للرجوع):`,
-    {
-      parse_mode: 'HTML',
-      ...Markup.keyboard([['⬅️ لوحة العميل'], ['🏠 القائمة الرئيسية']]).resize()
-    },
+    confirmMsg,
+    { parse_mode: 'HTML', ...getSupportHubKeyboard() },
     true
   );
 });
@@ -1965,7 +1953,7 @@ async function handleSupportTextStep(ctx, userId, userText) {
     return true;
   }
 
-  // أزرار التساؤلات والتذكيرات الجاهزة المرتبطة بإعلان محدد
+  // أزرار التساؤلات والتذكيرات المرتبطة بإعلان محدد
   const adQuickMatch = userText.match(/^(❓ لماذا إعلاني معلق؟|⏱️ تذكير الإدارة بمراجعة الطلب|📞 لماذا لم يتم التواصل معي؟|❌ لماذا تم رفض إعلاني؟|🔄 طلب إعادة مراجعة الإعلان|⚠️ ملاحظة أو استفسار حول الإعلان) \(#([^)]+)\)$/);
   if (adQuickMatch) {
     await safeDeleteUserMessage(ctx);
@@ -1988,7 +1976,7 @@ async function handleSupportTextStep(ctx, userId, userText) {
     await replyTracked(
       ctx,
       userId,
-      `✅ <b>تم إرسال استفسارك (${escapeHtml(actionLabel)}) إلى الإدارة.</b>`,
+      `✅ <b>تم إرسال طلبك (${escapeHtml(actionLabel)}) إلى الإدارة.</b>`,
       {
         parse_mode: 'HTML',
         ...Markup.keyboard([
@@ -2003,21 +1991,6 @@ async function handleSupportTextStep(ctx, userId, userText) {
 
   const state = userState[userId];
   if (!state) return false;
-
-  if (state.step === 'waiting_for_support_message') {
-    await safeDeleteUserMessage(ctx);
-    const categoryTitle = state.data?.category || 'دعم عام';
-    await sendStructuredTicketToAdmins(ctx, userId, categoryTitle, userText, null, 'text');
-    delete userState[userId];
-    await replyTracked(
-      ctx,
-      userId,
-      '✅ <b>تم إرسال رسالتك إلى الإدارة بنجاح.</b>',
-      { parse_mode: 'HTML', ...getSupportHubKeyboard() },
-      true
-    );
-    return true;
-  }
 
   if (state.step === 'replying_to_support_user') {
     await safeDeleteUserMessage(ctx);
@@ -2036,24 +2009,6 @@ async function handleSupportTextStep(ctx, userId, userText) {
 async function handleSupportMediaStep(ctx, userId, mediaType, fileId, captionText = '') {
   const state = userState[userId];
   if (!state) return false;
-
-  if (state.step === 'waiting_for_support_message') {
-    await safeDeleteUserMessage(ctx);
-    const categoryTitle = state.data?.category || 'دعم عام';
-    await sendStructuredTicketToAdmins(ctx, userId, categoryTitle, '', null, mediaType, {
-      fileId,
-      caption: captionText
-    });
-    delete userState[userId];
-    await replyTracked(
-      ctx,
-      userId,
-      '✅ <b>تم إرسال المرفق إلى الإدارة بنجاح.</b>',
-      { parse_mode: 'HTML', ...getSupportHubKeyboard() },
-      true
-    );
-    return true;
-  }
 
   if (state.step === 'replying_to_support_user') {
     await safeDeleteUserMessage(ctx);
