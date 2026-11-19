@@ -24,7 +24,55 @@ app.use(express.json());
 const userState = {};
 const userLang = {};
 const browsingSession = {};
+const botMessagesHistory = {}; // 🧹 تتبع رسائل البوت لتنظيفها تلقائياً
 const MAX_PROPERTY_IMAGES = 6;
+
+// =========================================================================
+// 🧹 دوال تنظيف وتتبع رسائل البوت للحفاظ على نظافة المحادثة
+// =========================================================================
+function trackBotMessage(userId, chatId, messageId) {
+  if (!userId || !chatId || !messageId) return;
+  if (!botMessagesHistory[userId]) {
+    botMessagesHistory[userId] = { chatId, ids: [] };
+  }
+  botMessagesHistory[userId].chatId = chatId;
+  if (!botMessagesHistory[userId].ids.includes(messageId)) {
+    botMessagesHistory[userId].ids.push(messageId);
+  }
+}
+
+async function clearTrackedBotMessages(ctx, userId, keepMessageIds = []) {
+  const history = botMessagesHistory[userId];
+  const keepSet = new Set(Array.isArray(keepMessageIds) ? keepMessageIds : [keepMessageIds].filter(Boolean));
+  const chatId = ctx?.chat?.id || history?.chatId;
+
+  if (!history || !chatId) return;
+
+  const remaining = [];
+  for (const msgId of history.ids) {
+    if (keepSet.has(msgId)) {
+      remaining.push(msgId);
+      continue;
+    }
+    try {
+      await ctx.telegram.deleteMessage(chatId, msgId);
+    } catch (e) {
+      // قد تفشل الرسائل الأقدم من 48 ساعة أو المحذوفة مسبقاً؛ نتركها ولا نوقف التنظيف
+    }
+  }
+  botMessagesHistory[userId].ids = remaining;
+}
+
+async function replyTracked(ctx, userId, text, extra = {}, cleanPrevious = false, keepIds = []) {
+  if (cleanPrevious) {
+    await clearTrackedBotMessages(ctx, userId, keepIds);
+  }
+  const sent = await ctx.reply(text, extra);
+  if (sent && sent.message_id) {
+    trackBotMessage(userId, ctx.chat.id, sent.message_id);
+  }
+  return sent;
+}
 
 // =========================================================================
 // 🔄 دوال الجلب الديناميكي من Supabase
@@ -166,7 +214,6 @@ function getMainMenuKeyboard() {
 function getBrowsingKeyboard(currentIndex, totalCount, mediaIdx = 0, totalMedia = 0) {
   const rows = [];
 
-  // صف أزرار التنقل بين وسائط العقار الحالي (الفيديو أولاً ثم الصور) عند وجود أكثر من عنصر
   if (totalMedia > 1) {
     const mediaRow = [];
     if (mediaIdx > 0) mediaRow.push('🖼 الصورة السابقة');
@@ -267,7 +314,6 @@ function normalizeMediaRef(v) {
   return clean.startsWith('tg:') ? clean.slice(3) : clean;
 }
 
-// 📸 استخراج قائمة العناصر من عمود نصي (يدعم مفصولة بـ | أو JSON أو عنصر واحد)
 function parseMediaListFromField(fieldVal) {
   if (!fieldVal || typeof fieldVal !== 'string') return [];
   const trimmed = fieldVal.trim();
@@ -302,7 +348,6 @@ function buildOrderedBrowsingMedia(item) {
   return [...videos, ...photos];
 }
 
-// 📤 رفع قائمة وسائط (صور أو فيديوهات) وإرجاع سلسلة مخزنة مفصولة بـ |
 async function uploadMediaListByType(ctx, mediaItems = [], targetType) {
   const filtered = mediaItems.filter(item => item.type === targetType);
   const urls = [];
@@ -646,6 +691,9 @@ async function renderWizard(ctx, userId, opts = {}) {
   const oldId = state.wizardMsgId;
   state.wizardMsgId = sent.message_id;
   state.chatId = ctx.chat.id;
+  if (sent.message_id) {
+    trackBotMessage(userId, ctx.chat.id, sent.message_id);
+  }
 
   if (oldId && oldId !== sent.message_id) {
     await ctx.telegram.deleteMessage(state.chatId, oldId).catch(() => {});
@@ -680,10 +728,10 @@ bot.start(async (ctx) => {
 
   if (verified) {
     delete userState[userId];
-    ctx.reply(welcomeText, { parse_mode: 'HTML', ...getMainMenuKeyboard() });
+    await replyTracked(ctx, userId, welcomeText, { parse_mode: 'HTML', ...getMainMenuKeyboard() }, true);
   } else {
     const authText = await getSetting('auth_prompt_template', `أهلاً بك يا <b>${userName}</b> في <b>منصة عقار الجزائر (Aqar)</b> 🏠\n\n⚠️ <b>تنبيه أمني:</b>\nللاستفادة من خدمات المنصة وتصفح العقارات، يرجى <b>تأكيد رقم هاتفك</b> أولاً بضغطة زر واحدة:`);
-    ctx.reply(authText.replace(/\\n/g, '\n'), { parse_mode: 'HTML', ...getAuthKeyboard() });
+    await replyTracked(ctx, userId, authText.replace(/\\n/g, '\n'), { parse_mode: 'HTML', ...getAuthKeyboard() }, true);
   }
 });
 
@@ -716,12 +764,12 @@ bot.on('contact', async (ctx) => {
     }
 
     delete userState[userId];
-    ctx.reply('🎉 <b>تم توثيق حسابك بنجاح!</b>', {
+    await replyTracked(ctx, userId, '🎉 <b>تم توثيق حسابك بنجاح!</b>', {
       parse_mode: 'HTML',
       ...getMainMenuKeyboard()
-    });
+    }, true);
   } catch (err) {
-    ctx.reply('⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.');
+    await replyTracked(ctx, userId, '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.');
   }
 });
 
@@ -730,7 +778,7 @@ bot.use(async (ctx, next) => {
   if (ctx.from && ctx.message && (ctx.message.text?.includes('تصفح') || ctx.message.text?.includes('إضافة') || ctx.message.text?.includes('رصيدي'))) {
     const verified = await isUserVerified(ctx.from.id);
     if (!verified) {
-      return ctx.reply('⚠️ عذراً، يجب عليك تأكيد رقم هاتفك أولاً عبر الزر أدناه:', getAuthKeyboard());
+      return replyTracked(ctx, ctx.from.id, '⚠️ عذراً، يجب عليك تأكيد رقم هاتفك أولاً عبر الزر أدناه:', getAuthKeyboard());
     }
   }
   return next();
@@ -739,17 +787,13 @@ bot.use(async (ctx, next) => {
 bot.hears(['❌ إلغاء العملية والعودة', '🏠 القائمة الرئيسية'], async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
-  const oldWizard = userState[userId];
-  if (oldWizard && oldWizard.wizardMsgId) {
-    await ctx.telegram.deleteMessage(oldWizard.chatId, oldWizard.wizardMsgId).catch(() => {});
-  }
   delete userState[userId];
   delete browsingSession[userId];
 
-  ctx.reply('✅ العودة إلى القائمة الرئيسية:', {
+  await replyTracked(ctx, userId, '✅ العودة إلى القائمة الرئيسية:', {
     parse_mode: 'HTML',
     ...getMainMenuKeyboard()
-  });
+  }, true);
 });
 
 bot.hears('⬅️ رجوع', async (ctx) => {
@@ -808,44 +852,46 @@ bot.hears('🎁 رصيدي وجمع النقاط', async (ctx) => {
   }
   keyboardRows.push(['🏠 القائمة الرئيسية']);
 
-  await ctx.reply(msg, {
+  await replyTracked(ctx, userId, msg, {
     parse_mode: 'HTML',
     ...Markup.keyboard(keyboardRows).resize()
-  });
+  }, true);
 });
 
 bot.hears('🌐 تصفح الموقع الرسمي (البروزر)', async (ctx) => {
   await safeDeleteUserMessage(ctx);
-  await ctx.reply(
+  await replyTracked(ctx, ctx.from.id,
     '🌐 <b>رابط منصة عقار الجزائر (ويب):</b>\n\nانقر على الرابط التالي لفتحه في المتصفح:\nhttps://hosnihicham.github.io/testHTML',
     {
       parse_mode: 'HTML',
       ...getMainMenuKeyboard()
-    }
+    },
+    true
   );
 });
 
 bot.hears('📞 الدعم والإدارة', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const supportMsg = await getSetting('support_text', '📞 <b>مركز الدعم التقني - منصة عقار الجزائر:</b>\n\nنحن في خدمتك دائماً.');
-  ctx.reply(supportMsg, { parse_mode: 'HTML', ...getMainMenuKeyboard() });
+  await replyTracked(ctx, ctx.from.id, supportMsg, { parse_mode: 'HTML', ...getMainMenuKeyboard() }, true);
 });
 
 bot.hears('ℹ️ عن المنصة', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const aboutMsg = await getSetting('about_text', '🏛 <b>عن منصة عقار الجزائر (Aqar System):</b>\n\nنظام رقمي ذكي ومتطور لإدارة المعاملات العقارية.');
-  ctx.reply(aboutMsg, { parse_mode: 'HTML', ...getMainMenuKeyboard() });
+  await replyTracked(ctx, ctx.from.id, aboutMsg, { parse_mode: 'HTML', ...getMainMenuKeyboard() }, true);
 });
 
 // =========================================================================
 // 🔍 تصفح العقارات والمعاينة (الفيديو أولاً ثم الصور ضمن نفس قائمة التنقل)
 // =========================================================================
 async function showStatesMenu(ctx) {
+  const userId = ctx.from.id;
   try {
     const { data, error } = await supabase.from('test_messages').select('state_name');
     if (error) throw error;
     if (!data || data.length === 0) {
-      return ctx.reply('📭 عذراً، لا توجد أي عقارات مسجلة في المنصة حالياً.', getMainMenuKeyboard());
+      return replyTracked(ctx, userId, '📭 عذراً، لا توجد أي عقارات مسجلة في المنصة حالياً.', getMainMenuKeyboard(), true);
     }
 
     const uniqueStates = [...new Set(data.map(item => item.state_name).filter(Boolean))];
@@ -854,10 +900,10 @@ async function showStatesMenu(ctx) {
     chunkedStates.push(['🌐 الكل'], ['🏠 القائمة الرئيسية']);
 
     const browseTitle = await getSetting('browse_title', '🔍 <b>اختر الولاية المطلوبة لعرض العقارات من الأزرار أسفل الشاشة:</b>');
-    ctx.reply(browseTitle, { parse_mode: 'HTML', ...Markup.keyboard(chunkedStates).resize() });
+    await replyTracked(ctx, userId, browseTitle, { parse_mode: 'HTML', ...Markup.keyboard(chunkedStates).resize() }, true);
   } catch (err) {
     console.error('showStatesMenu error:', err);
-    ctx.reply('⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getMainMenuKeyboard());
+    await replyTracked(ctx, userId, '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getMainMenuKeyboard(), true);
   }
 }
 
@@ -913,7 +959,7 @@ async function renderPropertyPage(ctx, userId, pageIndex, mediaIndex = 0) {
     const { data, error } = await query;
     if (error) throw error;
     if (!data || data.length === 0) {
-      return ctx.reply('📭 عذراً، لا توجد عقارات مسجلة.', getMainMenuKeyboard());
+      return replyTracked(ctx, userId, '📭 عذراً، لا توجد عقارات مسجلة.', getMainMenuKeyboard(), true);
     }
 
     if (pageIndex < 0) pageIndex = 0;
@@ -921,7 +967,6 @@ async function renderPropertyPage(ctx, userId, pageIndex, mediaIndex = 0) {
     session.page = pageIndex;
 
     const item = data[pageIndex];
-    // الفيديو أولاً ثم الصور في قائمة واحدة
     const orderedMedia = buildOrderedBrowsingMedia(item);
     const totalMedia = orderedMedia.length;
 
@@ -948,28 +993,28 @@ async function renderPropertyPage(ctx, userId, pageIndex, mediaIndex = 0) {
 
     const replyKb = getBrowsingKeyboard(pageIndex, data.length, safeMediaIndex, totalMedia);
 
-    if (session.lastMessageIds && Array.isArray(session.lastMessageIds)) {
-      for (const msgId of session.lastMessageIds) {
-        await ctx.telegram.deleteMessage(ctx.chat.id, msgId).catch(() => {});
-      }
-    }
-    session.lastMessageIds = [];
-
+    let sentMsg = null;
     if (currentMedia) {
       try {
-        const sentMsg = currentMedia.type === 'video'
+        sentMsg = currentMedia.type === 'video'
           ? await ctx.replyWithVideo(currentMedia.ref, { caption, parse_mode: 'HTML', ...replyKb })
           : await ctx.replyWithPhoto(currentMedia.ref, { caption, parse_mode: 'HTML', ...replyKb });
-        if (sentMsg) session.lastMessageIds.push(sentMsg.message_id);
-        return;
       } catch (mediaErr) {}
     }
 
-    const sentMsg = await ctx.reply(caption, { parse_mode: 'HTML', ...replyKb });
-    if (sentMsg) session.lastMessageIds.push(sentMsg.message_id);
+    if (!sentMsg) {
+      sentMsg = await ctx.reply(caption, { parse_mode: 'HTML', ...replyKb });
+    }
+
+    const keepId = sentMsg?.message_id ? [sentMsg.message_id] : [];
+    if (sentMsg?.message_id) {
+      trackBotMessage(userId, ctx.chat.id, sentMsg.message_id);
+    }
+    session.lastMessageIds = keepId;
+    await clearTrackedBotMessages(ctx, userId, keepId);
   } catch (err) {
     console.error('renderPropertyPage error:', err);
-    await ctx.reply('⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getMainMenuKeyboard());
+    await replyTracked(ctx, userId, '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getMainMenuKeyboard(), true);
   }
 }
 
@@ -1025,10 +1070,10 @@ bot.hears(/^📄 \d+ \/ \d+$/, async (ctx) => {
   if (row.length > 0) numberButtons.push(row);
   numberButtons.push(['🔙 رجوع للعقار']);
 
-  await ctx.reply(`🔢 <b>اختر رقم العقار للانتقال إليه مباشرة (من 1 إلى ${totalCount}):</b>`, {
+  await replyTracked(ctx, userId, `🔢 <b>اختر رقم العقار للانتقال إليه مباشرة (من 1 إلى ${totalCount}):</b>`, {
     parse_mode: 'HTML',
     ...Markup.keyboard(numberButtons).resize()
-  });
+  }, true);
 });
 
 bot.hears(/^\d+$/, async (ctx, next) => {
@@ -1079,8 +1124,7 @@ bot.hears('التالي ➡️', async (ctx) => {
 bot.hears('➕ إضافة عقار جديد', async (ctx) => {
   await safeDeleteUserMessage(ctx);
   const userId = ctx.from.id;
-  const old = userState[userId];
-  if (old && old.wizardMsgId) await ctx.telegram.deleteMessage(old.chatId, old.wizardMsgId).catch(() => {});
+  await clearTrackedBotMessages(ctx, userId);
 
   userState[userId] = {
     step: 'waiting_for_type',
@@ -1125,10 +1169,12 @@ bot.hears(/^🪙 النشر مجاناً/, async (ctx) => {
   const publishCost = Number(await getSetting('publish_cost_points', '100'));
 
   if (currentPoints < publishCost) {
-    return ctx.reply(
+    const warnMsg = await ctx.reply(
       `⚠️ <b>عذراً، رصيدك غير كافٍ!</b>\nرصيدك الحالي: <b>${currentPoints} نقطة</b> وتحتاج إلى <b>${publishCost} نقطة</b>.\n\nاضغط على زر <b>"🎁 رصيدي وجمع النقاط"</b> لمشاهدة إعلانات وربح نقاط مجانية!`,
       { parse_mode: 'HTML' }
     );
+    setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warnMsg.message_id).catch(() => {}), 3500);
+    return;
   }
 
   state.step = 'publishing';
@@ -1156,19 +1202,16 @@ bot.hears(/^🪙 النشر مجاناً/, async (ctx) => {
       video_url: videoUrl
     }]);
 
-    if (state.wizardMsgId) {
-      await ctx.telegram.deleteMessage(state.chatId, state.wizardMsgId).catch(() => {});
-    }
-
-    await ctx.reply(
-      `🎉 <b>تم خصم ${publishCost} نقطة ونشر إعلانك بنجاح في المنصة مجاناً!</b>`,
-      { parse_mode: 'HTML', ...getMainMenuKeyboard() }
-    );
     delete userState[userId];
+    await replyTracked(ctx, userId,
+      `🎉 <b>تم خصم ${publishCost} نقطة ونشر إعلانك بنجاح في المنصة مجاناً!</b>`,
+      { parse_mode: 'HTML', ...getMainMenuKeyboard() },
+      true
+    );
   } catch (err) {
     console.error('Free publish error:', err);
-    ctx.reply('⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getMainMenuKeyboard());
     delete userState[userId];
+    await replyTracked(ctx, userId, '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getMainMenuKeyboard(), true);
   }
 });
 
@@ -1417,19 +1460,16 @@ bot.on('photo', async (ctx) => {
         }
       }
 
-      if (state.wizardMsgId) {
-        await ctx.telegram.deleteMessage(state.chatId, state.wizardMsgId).catch(() => {});
-      }
-
-      await ctx.reply(
-        `⏳ <b>تم استلام وصل الدفع وحفظ طلبك برقم (#${requestId})!</b>\n\nالإعلان قيد المراجعة من طرف الإدارة وسيتم نشره فور تأكيد التحويل.`,
-        { parse_mode: 'HTML', ...getMainMenuKeyboard() }
-      );
       delete userState[userId];
+      await replyTracked(ctx, userId,
+        `⏳ <b>تم استلام وصل الدفع وحفظ طلبك برقم (#${requestId})!</b>\n\nالإعلان قيد المراجعة من طرف الإدارة وسيتم نشره فور تأكيد التحويل.`,
+        { parse_mode: 'HTML', ...getMainMenuKeyboard() },
+        true
+      );
     } catch (err) {
       console.error('Receipt publish error:', err);
-      ctx.reply('⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getMainMenuKeyboard());
       delete userState[userId];
+      await replyTracked(ctx, userId, '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getMainMenuKeyboard(), true);
     }
   }
 });
