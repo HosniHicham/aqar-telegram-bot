@@ -1326,20 +1326,37 @@ bot.on('photo', async (ctx) => {
       const adminCaption =
         `🚨 <b>طلب إعلان عقاري جديد (#${requestId})</b>\n\n` +
         `👤 <b>معرف المستخدم:</b> <code>${userId}</code>\n` +
-        `🏠 <b>النوع:</b> ${state.data.property_type}\n` +
-        `📍 <b>الولاية:</b> ${state.data.state_name}\n` +
+        `🏠 <b>النوع:</b> ${escapeHtml(state.data.property_type || '')}\n` +
+        `📍 <b>الولاية:</b> ${escapeHtml(state.data.state_name || '')}\n` +
         `💰 <b>السعر:</b> ${formatMoney(cleanPrice)}\n` +
-        `📞 <b>الهاتف:</b> ${cleanPhone}\n` +
+        `📞 <b>الهاتف:</b> ${escapeHtml(cleanPhone)}\n` +
         `🖼 <b>عدد الصور:</b> ${isVideo ? 'فيديو' : photosCount}\n` +
-        `📝 <b>الوصف:</b> ${state.data.description}`;
+        `📝 <b>الوصف:</b> ${escapeHtml(state.data.description || '')}`;
+
+      const adminFullText =
+        adminCaption +
+        `\n\n👇 <b>للقبول أرسل:</b> <code>/approve_${requestId}</code>` +
+        `\n❌ <b>للرفض أرسل:</b> <code>/reject_${requestId}</code>`;
+
+      const photoSource =
+        typeof receiptUrl === 'string' && receiptUrl.startsWith('http')
+          ? receiptUrl
+          : receiptPhoto.file_id;
 
       const adminIds = await getAdminIds();
 
       for (const currentAdminId of adminIds) {
-        await ctx.telegram.sendPhoto(currentAdminId, receiptPhoto.file_id, {
-          caption: adminCaption + `\n\n👇 <b>للقبول أرسل:</b> <code>/approve_${requestId}</code>\n❌ <b>للرفض أرسل:</b> <code>/reject_${requestId}</code>`,
-          parse_mode: 'HTML'
-        }).catch(() => {});
+        try {
+          await ctx.telegram.sendPhoto(currentAdminId, photoSource, {
+            caption: adminFullText,
+            parse_mode: 'HTML'
+          });
+        } catch (sendErr) {
+          console.error(`Failed to send admin notification to ${currentAdminId}:`, sendErr.message);
+          await ctx.telegram.sendMessage(currentAdminId, adminFullText, {
+            parse_mode: 'HTML'
+          }).catch(() => {});
+        }
       }
 
       if (state.wizardMsgId) {
@@ -1376,10 +1393,15 @@ bot.on('video', async (ctx) => {
 });
 
 // =========================================================================
-// 🛡️ معالج أوامر موافقة أو رفض الإدارة (النشر عبر عمود image_url فقط)
+// 🛡️ معالج أوامر موافقة أو رفض الإدارة (للمدراء فقط وعبر عمود image_url)
 // =========================================================================
 const handleAdminCommand = async (ctx, action, requestId) => {
   try {
+    const adminIds = await getAdminIds();
+    if (!adminIds.includes(ctx.from.id)) {
+      return ctx.reply('⛔ <b>هذا الأمر مخصص للإدارة فقط.</b>', { parse_mode: 'HTML' });
+    }
+
     const { data: pendingItem, error: fetchError } = await supabase
       .from('pending_properties')
       .select('*')
