@@ -181,7 +181,6 @@ function getAuthKeyboard() {
   ]).resize().oneTime();
 }
 
-// 🔢 لوحة الأرقام في القائمة السفلية فقط (بدون أي أزرار في المحادثة)
 function getBottomNumpadKeyboard(displayValue, isPrice = true) {
   const displayText = displayValue ? (isPrice ? formatMoney(displayValue) : displayValue) : '0';
 
@@ -229,18 +228,50 @@ async function getUniqueStatesList() {
   }
 }
 
-function formatMoney(numStr) {
-  if (!numStr) return '0 دج';
-  const clean = String(numStr).replace(/\D/g, '');
+function formatMoney(val) {
+  if (!val) return '0 دج';
+  const str = String(val).trim();
+  if (/[ا-يa-zA-Z]/.test(str)) return str;
+  const clean = str.replace(/\D/g, '');
   if (!clean) return '0 دج';
   return Number(clean).toLocaleString('en-US') + ' دج';
 }
 
-async function uploadMediaItems(ctx, mediaItems = []) {
-  const uploadedUrls = [];
+function escapeHtml(str) {
+  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function normalizeMediaRef(v) {
+  if (typeof v !== 'string') return null;
+  const clean = v.trim();
+  if (!clean || clean === 'EMPTY') return null;
+  return clean.startsWith('tg:') ? clean.slice(3) : clean;
+}
+
+// 📸 استخراج قائمة الصور من عمود image_url فقط (يدعم مفصولة بـ | أو JSON أو رابط واحد)
+function parseImagesFromImageUrl(imageUrlField) {
+  if (!imageUrlField || typeof imageUrlField !== 'string') return [];
+  const trimmed = imageUrlField.trim();
+  if (!trimmed || trimmed === 'EMPTY') return [];
+
+  if (trimmed.startsWith('[')) {
+    try {
+      const arr = JSON.parse(trimmed);
+      if (Array.isArray(arr)) {
+        return [...new Set(arr.map(normalizeMediaRef).filter(Boolean))];
+      }
+    } catch (e) {}
+  }
+
+  return [...new Set(trimmed.split('|').map(normalizeMediaRef).filter(Boolean))];
+}
+
+// 📤 رفع عدة صور وإرجاع سلسلة مخزنة لعمود image_url
+async function uploadMultipleImagesToImageUrl(ctx, mediaItems = []) {
+  const urls = [];
   for (let i = 0; i < mediaItems.length; i++) {
     const item = mediaItems[i];
-    let mediaUrl = `tg:${item.file_id}`;
+    let url = `tg:${item.file_id}`;
     try {
       const fileLink = await ctx.telegram.getFileLink(item.file_id);
       const res = await fetch(fileLink.href);
@@ -250,11 +281,11 @@ async function uploadMediaItems(ctx, mediaItems = []) {
       const fileName = `${Date.now()}_${i}_aqar.${ext}`;
       await supabase.storage.from('test_media').upload(fileName, buf, { contentType: mime, upsert: true });
       const { data: pubUrl } = supabase.storage.from('test_media').getPublicUrl(fileName);
-      if (pubUrl && pubUrl.publicUrl) mediaUrl = pubUrl.publicUrl;
+      if (pubUrl && pubUrl.publicUrl) url = pubUrl.publicUrl;
     } catch (e) {}
-    uploadedUrls.push(mediaUrl);
+    urls.push(url);
   }
-  return uploadedUrls;
+  return urls.length > 0 ? urls.join('|') : 'EMPTY';
 }
 
 // =========================================================================
@@ -426,7 +457,7 @@ const WIZ_STEPS = [
   'waiting_for_payment_receipt'
 ];
 const WIZ_KEYS = ['property_type', 'state_name', 'price', 'phone', 'description', 'media_label', null, null];
-const WIZ_LABELS = ['🏠 النوع', '📍 الولاية', '💰 السعر', '📞 الهاتف', '📝 الوصف', '📸 الوسائط', '💳 الدفع'];
+const WIZ_LABELS = ['🏠 النوع', '📍 الولاية', '💰 السعر', '📞 الهاتف', '📝 الوصف', '📸 الصور', '💳 الدفع'];
 
 async function getWizardPrompt(stepIndex) {
   const prompts = [
@@ -435,15 +466,11 @@ async function getWizardPrompt(stepIndex) {
     'استخدم لوحة الأرقام في الأسفل لتشكيل السعر، ثم اضغط <b>✅ [ OK ] تأكيد</b>:',
     'استخدم لوحة الأرقام في الأسفل لإدخال رقم الهاتف، ثم اضغط <b>✅ [ OK ] تأكيد</b>:',
     'اختر <b>مزايا ومواصفات العقار</b> من القائمة في الأسفل (يمكنك اختيار أكثر من ميزة)، ثم اضغط <b>✅ تأكيد الوصف والانتقال</b>:',
-    `أرسل الآن <b>صور العقار</b> من عدة زوايا (حتى ${MAX_PROPERTY_IMAGES} صور) أو فيديو، ثم اضغط <b>✅ إنهاء إرفاق الصور والانتقال</b>:`,
+    `أرسل الآن <b>عدة صور للعقار</b> (حتى ${MAX_PROPERTY_IMAGES} صور) أو فيديو، ثم اضغط <b>✅ إنهاء إرفاق الصور والانتقال</b>:`,
     'اختر طريقة الدفع من القائمة في الأسفل:',
     'أرسل الآن <b>صورة وصل الدفع (BaridiMob / CCP)</b>:'
   ];
   return prompts[stepIndex] || '';
-}
-
-function escapeHtml(str) {
-  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 async function buildWizardText(state, opts = {}) {
@@ -568,7 +595,6 @@ async function renderWizard(ctx, userId, opts = {}) {
 
   const replyKeyboard = opts.noKeyboard ? getMainMenuKeyboard() : await getStandardReplyKeyboard(state);
 
-  // نرسل رسالة محدثة تحمل نفس الكيبورد السفلي ونحذف القديمة حتى يتحدث الكيبورد السفلي دائماً
   const sent = await ctx.reply(text, { parse_mode: 'HTML', ...replyKeyboard });
   const oldId = state.wizardMsgId;
   state.wizardMsgId = sent.message_id;
@@ -603,14 +629,14 @@ bot.start(async (ctx) => {
 
   const verified = await isUserVerified(userId);
   const rawWelcomeTpl = await getSetting('welcome_msg_template', 'أهلاً بك يا <b>{name}</b> في <b>منصة عقار الجزائر (Aqar)</b> 🏠\n\nنظام رقمي احترافي لإدارة وعروض العقارات. اختر من القائمة أدناه:');
-  const welcomeText = rawWelcomeTpl.replace('{name}', userName);
+  const welcomeText = rawWelcomeTpl.replace('{name}', userName).replace(/\\n/g, '\n');
 
   if (verified) {
     delete userState[userId];
     ctx.reply(welcomeText, { parse_mode: 'HTML', ...getMainMenuKeyboard() });
   } else {
     const authText = await getSetting('auth_prompt_template', `أهلاً بك يا <b>${userName}</b> في <b>منصة عقار الجزائر (Aqar)</b> 🏠\n\n⚠️ <b>تنبيه أمني:</b>\nللاستفادة من خدمات المنصة وتصفح العقارات، يرجى <b>تأكيد رقم هاتفك</b> أولاً بضغطة زر واحدة:`);
-    ctx.reply(authText, { parse_mode: 'HTML', ...getAuthKeyboard() });
+    ctx.reply(authText.replace(/\\n/g, '\n'), { parse_mode: 'HTML', ...getAuthKeyboard() });
   }
 });
 
@@ -765,12 +791,15 @@ bot.hears('ℹ️ عن المنصة', async (ctx) => {
 });
 
 // =========================================================================
-// 🔍 تصفح العقارات (من جدول test_messages مع دعم عرض عدة صور)
+// 🔍 تصفح العقارات والمعاينة من عمود image_url فقط (مع دعم عدة صور)
 // =========================================================================
 async function showStatesMenu(ctx) {
   try {
-    const { data } = await supabase.from('test_messages').select('state_name');
-    if (!data || data.length === 0) return ctx.reply('📭 عذراً، لا توجد أي عقارات مسجلة في المنصة حالياً.', getMainMenuKeyboard());
+    const { data, error } = await supabase.from('test_messages').select('state_name');
+    if (error) throw error;
+    if (!data || data.length === 0) {
+      return ctx.reply('📭 عذراً، لا توجد أي عقارات مسجلة في المنصة حالياً.', getMainMenuKeyboard());
+    }
 
     const uniqueStates = [...new Set(data.map(item => item.state_name).filter(Boolean))];
     const stateButtons = uniqueStates.map(state => `📍 ${state}`);
@@ -780,7 +809,8 @@ async function showStatesMenu(ctx) {
     const browseTitle = await getSetting('browse_title', '🔍 <b>اختر الولاية المطلوبة لعرض العقارات من الأزرار أسفل الشاشة:</b>');
     ctx.reply(browseTitle, { parse_mode: 'HTML', ...Markup.keyboard(chunkedStates).resize() });
   } catch (err) {
-    ctx.reply('⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.');
+    console.error('showStatesMenu error:', err);
+    ctx.reply('⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getMainMenuKeyboard());
   }
 }
 
@@ -834,15 +864,27 @@ async function renderPropertyPage(ctx, userId, pageIndex) {
     let query = supabase.from('test_messages').select('*').order('id', { ascending: false });
     if (session.state !== 'ALL') query = query.eq('state_name', session.state);
 
-    const { data } = await query;
-    if (!data || data.length === 0) return ctx.reply('📭 عذراً، لا توجد عقارات مسجلة.', getMainMenuKeyboard());
+    const { data, error } = await query;
+    if (error) throw error;
+    if (!data || data.length === 0) {
+      return ctx.reply('📭 عذراً، لا توجد عقارات مسجلة.', getMainMenuKeyboard());
+    }
 
     if (pageIndex < 0) pageIndex = 0;
     if (pageIndex >= data.length) pageIndex = data.length - 1;
     session.page = pageIndex;
 
     const item = data[pageIndex];
-    const caption = `🏛 <b>الولاية:</b> ${item.state_name} (${pageIndex + 1}/${data.length})\n\n🏠 <b>العقار:</b> ${item.property_type}\n💰 <b>السعر:</b> ${formatMoney(item.price)}\n📞 <b>هاتف المالك:</b> <code>${item.phone}</code>\n📝 <b>الوصف:</b> ${item.description || item.message}`;
+    const imagesList = parseImagesFromImageUrl(item.image_url);
+    const photosCountLine = imagesList.length > 0 ? `\n📸 <b>عدد الصور:</b> ${imagesList.length}` : '';
+
+    const caption =
+      `🏛 <b>الولاية:</b> ${escapeHtml(item.state_name || '')} (${pageIndex + 1}/${data.length})\n\n` +
+      `🏠 <b>العقار:</b> ${escapeHtml(item.property_type || '')}\n` +
+      `💰 <b>السعر:</b> ${formatMoney(item.price)}\n` +
+      `📞 <b>هاتف المالك:</b> <code>${escapeHtml(item.phone || '')}</code>${photosCountLine}\n` +
+      `📝 <b>الوصف:</b> ${escapeHtml(item.description || item.message || '')}`;
+
     const replyKb = getBrowsingKeyboard(pageIndex, data.length);
 
     if (session.lastMessageIds && Array.isArray(session.lastMessageIds)) {
@@ -852,32 +894,49 @@ async function renderPropertyPage(ctx, userId, pageIndex) {
     }
     session.lastMessageIds = [];
 
-    const mediaRef = (v) => (v.startsWith('tg:')) ? v.slice(3) : v;
-    const extraImages = Array.isArray(item.images) ? item.images.filter(u => u && u !== 'EMPTY') : [];
-
-    if (item.video_url && item.video_url !== 'EMPTY') {
-      const sentMsg = await ctx.replyWithVideo(mediaRef(item.video_url), { caption, parse_mode: 'HTML', ...replyKb });
-      if (sentMsg) session.lastMessageIds.push(sentMsg.message_id);
-    } else if (extraImages.length > 1) {
-      const mediaGroup = extraImages.slice(0, MAX_PROPERTY_IMAGES).map(url => ({
-        type: 'photo',
-        media: mediaRef(url)
-      }));
-      const groupMsgs = await ctx.replyWithMediaGroup(mediaGroup);
-      if (Array.isArray(groupMsgs)) {
-        session.lastMessageIds.push(...groupMsgs.map(m => m.message_id));
-      }
-      const textMsg = await ctx.reply(caption, { parse_mode: 'HTML', ...replyKb });
-      if (textMsg) session.lastMessageIds.push(textMsg.message_id);
-    } else if (item.image_url && item.image_url !== 'EMPTY') {
-      const sentMsg = await ctx.replyWithPhoto(mediaRef(item.image_url), { caption, parse_mode: 'HTML', ...replyKb });
-      if (sentMsg) session.lastMessageIds.push(sentMsg.message_id);
-    } else {
-      const sentMsg = await ctx.reply(caption, { parse_mode: 'HTML', ...replyKb });
-      if (sentMsg) session.lastMessageIds.push(sentMsg.message_id);
+    const videoRef = normalizeMediaRef(item.video_url);
+    if (videoRef) {
+      try {
+        const sentMsg = await ctx.replyWithVideo(videoRef, { caption, parse_mode: 'HTML', ...replyKb });
+        if (sentMsg) session.lastMessageIds.push(sentMsg.message_id);
+        return;
+      } catch (e) {}
     }
+
+    // معاينة عدة صور من عمود image_url كألبوم صور
+    if (imagesList.length > 1) {
+      try {
+        const mediaGroup = imagesList.slice(0, MAX_PROPERTY_IMAGES).map(media => ({
+          type: 'photo',
+          media
+        }));
+        const groupMsgs = await ctx.replyWithMediaGroup(mediaGroup);
+        if (Array.isArray(groupMsgs)) {
+          session.lastMessageIds.push(...groupMsgs.map(m => m.message_id));
+        }
+        const textMsg = await ctx.reply(caption, { parse_mode: 'HTML', ...replyKb });
+        if (textMsg) session.lastMessageIds.push(textMsg.message_id);
+        return;
+      } catch (albumErr) {
+        // إذا تعذر إرسال الألبوم نكمل لعرض الصورة الأولى أو النص دون خطأ
+      }
+    }
+
+    // معاينة صورة واحدة من عمود image_url
+    if (imagesList.length === 1) {
+      try {
+        const sentMsg = await ctx.replyWithPhoto(imagesList[0], { caption, parse_mode: 'HTML', ...replyKb });
+        if (sentMsg) session.lastMessageIds.push(sentMsg.message_id);
+        return;
+      } catch (photoErr) {}
+    }
+
+    // عرض التفاصيل كنص فقط كخيار أخير مضمون
+    const sentMsg = await ctx.reply(caption, { parse_mode: 'HTML', ...replyKb });
+    if (sentMsg) session.lastMessageIds.push(sentMsg.message_id);
   } catch (err) {
-    ctx.reply('⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.');
+    console.error('renderPropertyPage error:', err);
+    await ctx.reply('⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getMainMenuKeyboard());
   }
 }
 
@@ -956,7 +1015,7 @@ bot.hears('التالي ➡️', async (ctx) => {
 });
 
 // =========================================================================
-// ➕ إضافة عقار والدفع (الإدراج في جدول test_messages)
+// ➕ إضافة عقار والدفع (تخزين الصور المتعددة في عمود image_url فقط)
 // =========================================================================
 bot.hears('➕ إضافة عقار جديد', async (ctx) => {
   await safeDeleteUserMessage(ctx);
@@ -1019,28 +1078,25 @@ bot.hears(/^🪙 النشر مجاناً/, async (ctx) => {
     await renderWizard(ctx, userId, { footer: publishingText });
 
     const mediaItems = state.data.media_items || [];
-    const uploadedUrls = await uploadMediaItems(ctx, mediaItems);
     const isVideo = state.data.media_type === 'video';
-    const primaryMediaUrl = uploadedUrls[0] || 'EMPTY';
+    const combinedImagesUrl = isVideo ? 'EMPTY' : await uploadMultipleImagesToImageUrl(ctx, mediaItems);
+    const videoUrl = isVideo ? await uploadMultipleImagesToImageUrl(ctx, mediaItems) : 'EMPTY';
 
     await supabase.from('users').update({ points: currentPoints - publishCost }).eq('id', userId);
 
     const cleanPrice = String(state.data.price || '0').replace(/[^\d.]/g, '') || '0';
     const cleanPhone = String(state.data.phone || '').trim();
 
-    const payload = {
+    await supabase.from('test_messages').insert([{
       property_type: state.data.property_type,
       state_name: state.data.state_name,
       price: cleanPrice,
       phone: cleanPhone,
       description: state.data.description,
       message: state.data.description,
-      image_url: isVideo ? 'EMPTY' : primaryMediaUrl,
-      video_url: isVideo ? primaryMediaUrl : 'EMPTY'
-    };
-    if (!isVideo && uploadedUrls.length > 0) payload.images = uploadedUrls;
-
-    await supabase.from('test_messages').insert([payload]);
+      image_url: combinedImagesUrl,
+      video_url: videoUrl
+    }]);
 
     if (state.wizardMsgId) {
       await ctx.telegram.deleteMessage(state.chatId, state.wizardMsgId).catch(() => {});
@@ -1052,6 +1108,7 @@ bot.hears(/^🪙 النشر مجاناً/, async (ctx) => {
     );
     delete userState[userId];
   } catch (err) {
+    console.error('Free publish error:', err);
     ctx.reply('⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getMainMenuKeyboard());
     delete userState[userId];
   }
@@ -1068,7 +1125,6 @@ bot.on('text', async (ctx) => {
   const state = userState[userId];
   if (!state) return;
 
-  // 1. اختيار النوع
   if (state.step === 'waiting_for_type') {
     const validTypes = await getDynamicPropertyTypes();
     const allowedTitles = validTypes.map(item => item.title);
@@ -1083,7 +1139,6 @@ bot.on('text', async (ctx) => {
     return;
   }
 
-  // 2. لوحة الأرقام في القائمة السفلية (السعر أو الهاتف)
   if (state.step === 'waiting_for_price' || state.step === 'waiting_for_phone') {
     await safeDeleteUserMessage(ctx);
     state.tempInput = state.tempInput || '';
@@ -1130,7 +1185,6 @@ bot.on('text', async (ctx) => {
     return;
   }
 
-  // 3. بناء الوصف التفاعلي
   if (state.step === 'waiting_for_description') {
     await safeDeleteUserMessage(ctx);
     state.data.features_list = state.data.features_list || [];
@@ -1171,7 +1225,6 @@ bot.on('text', async (ctx) => {
     }
   }
 
-  // 4. التحكم في إرفاق عدة صور
   if (state.step === 'waiting_for_media') {
     await safeDeleteUserMessage(ctx);
 
@@ -1228,9 +1281,9 @@ bot.on('photo', async (ctx) => {
       await renderWizard(ctx, userId, { footer: publishingText });
 
       const mediaItems = state.data.media_items || [];
-      const uploadedUrls = await uploadMediaItems(ctx, mediaItems);
       const isVideo = state.data.media_type === 'video';
-      const primaryMediaUrl = uploadedUrls[0] || 'EMPTY';
+      const combinedImagesUrl = isVideo ? 'EMPTY' : await uploadMultipleImagesToImageUrl(ctx, mediaItems);
+      const videoUrl = isVideo ? await uploadMultipleImagesToImageUrl(ctx, mediaItems) : 'EMPTY';
 
       let receiptUrl = '';
       try {
@@ -1248,29 +1301,27 @@ bot.on('photo', async (ctx) => {
       const cleanPrice = String(state.data.price || '0').replace(/[^\d.]/g, '') || '0';
       const cleanPhone = String(state.data.phone || '').trim();
 
-      const pendingPayload = {
-        user_id: userId,
-        property_type: state.data.property_type,
-        state_name: state.data.state_name,
-        price: cleanPrice,
-        phone: cleanPhone,
-        description: state.data.description,
-        image_url: isVideo ? 'EMPTY' : primaryMediaUrl,
-        video_url: isVideo ? primaryMediaUrl : 'EMPTY',
-        receipt_url: receiptUrl,
-        status: 'pending'
-      };
-      if (!isVideo && uploadedUrls.length > 0) pendingPayload.images = uploadedUrls;
-
       const { data: insertedRow, error: insertError } = await supabase
         .from('pending_properties')
-        .insert([pendingPayload])
+        .insert([{
+          user_id: userId,
+          property_type: state.data.property_type,
+          state_name: state.data.state_name,
+          price: cleanPrice,
+          phone: cleanPhone,
+          description: state.data.description,
+          image_url: combinedImagesUrl,
+          video_url: videoUrl,
+          receipt_url: receiptUrl,
+          status: 'pending'
+        }])
         .select()
         .single();
 
       if (insertError) throw insertError;
 
       const requestId = insertedRow.id;
+      const photosCount = isVideo ? 0 : parseImagesFromImageUrl(combinedImagesUrl).length;
 
       const adminCaption =
         `🚨 <b>طلب إعلان عقاري جديد (#${requestId})</b>\n\n` +
@@ -1279,7 +1330,7 @@ bot.on('photo', async (ctx) => {
         `📍 <b>الولاية:</b> ${state.data.state_name}\n` +
         `💰 <b>السعر:</b> ${formatMoney(cleanPrice)}\n` +
         `📞 <b>الهاتف:</b> ${cleanPhone}\n` +
-        `🖼 <b>عدد الصور:</b> ${isVideo ? 'فيديو' : uploadedUrls.length}\n` +
+        `🖼 <b>عدد الصور:</b> ${isVideo ? 'فيديو' : photosCount}\n` +
         `📝 <b>الوصف:</b> ${state.data.description}`;
 
       const adminIds = await getAdminIds();
@@ -1301,6 +1352,7 @@ bot.on('photo', async (ctx) => {
       );
       delete userState[userId];
     } catch (err) {
+      console.error('Receipt publish error:', err);
       ctx.reply('⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getMainMenuKeyboard());
       delete userState[userId];
     }
@@ -1324,7 +1376,7 @@ bot.on('video', async (ctx) => {
 });
 
 // =========================================================================
-// 🛡️ معالج أوامر موافقة أو رفض الإدارة (بدون أزرار داخل المحادثة)
+// 🛡️ معالج أوامر موافقة أو رفض الإدارة (النشر عبر عمود image_url فقط)
 // =========================================================================
 const handleAdminCommand = async (ctx, action, requestId) => {
   try {
@@ -1344,21 +1396,17 @@ const handleAdminCommand = async (ctx, action, requestId) => {
       const cleanPrice = String(pendingItem.price || '0').replace(/[^\d.]/g, '') || '0';
       const cleanPhone = String(pendingItem.phone || '').trim();
 
-      const publishPayload = {
+      const { error: publishError } = await supabase.from('test_messages').insert([{
         property_type: pendingItem.property_type,
         state_name: pendingItem.state_name,
         price: cleanPrice,
         phone: cleanPhone,
         description: pendingItem.description,
         message: pendingItem.description,
-        image_url: pendingItem.image_url,
-        video_url: pendingItem.video_url
-      };
-      if (Array.isArray(pendingItem.images) && pendingItem.images.length > 0) {
-        publishPayload.images = pendingItem.images;
-      }
+        image_url: pendingItem.image_url || 'EMPTY',
+        video_url: pendingItem.video_url || 'EMPTY'
+      }]);
 
-      const { error: publishError } = await supabase.from('test_messages').insert([publishPayload]);
       if (publishError) throw publishError;
 
       await supabase.from('pending_properties').update({ status: 'approved' }).eq('id', requestId);
