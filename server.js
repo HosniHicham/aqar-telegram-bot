@@ -16,7 +16,7 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const WEBHOOK_DOMAIN = process.env.WEBHOOK_DOMAIN;
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://jjrisfyotyryanhbsvlz.supabase.co';
 const SUPABASE_KEY = process.env.SUPABASE_KEY || 'sb_publishable_t7kVxzmOtz16C95U_B52FA_AJl_WK-h';
-const WEBSITE_URL = process.env.WEBSITE_URL || 'https://hosnihicham.github.io/testHTML';
+const DEFAULT_WEBSITE_URL = process.env.WEBSITE_URL || 'https://hosnihicham.github.io/testHTML';
 const MAX_PROPERTY_IMAGES = 6;
 const BACK_TO_ADMIN = '🔙 العودة لوضع الأدمن';
 
@@ -90,6 +90,18 @@ async function getSetting(key, defaultValue = '') {
     return defaultValue;
   }
 }
+
+// 🌐 رابط الموقع من جدول app_settings (key = website_url) مع كاش 30 ثانية
+let websiteUrl = DEFAULT_WEBSITE_URL;
+let websiteUrlAt = 0;
+async function refreshWebsiteUrl() {
+  if (Date.now() - websiteUrlAt < 30000) return websiteUrl;
+  websiteUrlAt = Date.now();
+  const v = await getSetting('website_url', '');
+  if (v && /^https:\/\//i.test(String(v).trim())) websiteUrl = String(v).trim();
+  return websiteUrl;
+}
+function getWebsiteUrl() { return websiteUrl; }
 
 let adminCache = { ids: null, at: 0 };
 async function getAdminIds() {
@@ -203,7 +215,7 @@ function buildOrderedBrowsingMedia(item) {
 // ------------------------- لوحات المفاتيح المشتركة -------------------------
 // 🌐 زر الموقع: WebApp => يفتح الموقع مباشرة داخل تيليجرام بدون إظهار أي رابط في المحادثة
 function getWebsiteButton() {
-  return Markup.button.webApp('🌐 تصفح الموقع الرسمي', WEBSITE_URL);
+  return Markup.button.webApp('🌐 تصفح الموقع الرسمي', websiteUrl);
 }
 
 function getMainMenuKeyboard(userId) {
@@ -226,7 +238,7 @@ function getAuthKeyboard() {
 // ------------------------- بناء الـ core وتسجيل الوحدتين -------------------------
 const core = {
   bot, app, supabase, Markup,
-  WEBHOOK_DOMAIN, WEBSITE_URL, MAX_PROPERTY_IMAGES, BACK_TO_ADMIN,
+  WEBHOOK_DOMAIN, getWebsiteUrl, MAX_PROPERTY_IMAGES, BACK_TO_ADMIN,
   userState, userLang, browsingSession, supportUserSession, previewMode, resetSessions,
   trackBotMessage, clearTrackedBotMessages, replyTracked, safeDeleteUserMessage,
   getSetting, getAdminIds, isAdmin, getUserRecord, isUserVerified,
@@ -260,6 +272,21 @@ const adminComposer = new Composer();
 core.modules.admin = require('./admin')(adminComposer, core);
 core.modules.user = require('./users')(userComposer, core);
 
+// 🔙 أثناء المعاينة: نضيف زر "العودة لوضع الأدمن" تلقائياً لكل لوحة مفاتيح يرسلها البوت
+function injectBackButton(ctx) {
+  const addBack = (extra) => {
+    const kb = extra && extra.reply_markup && extra.reply_markup.keyboard;
+    if (!Array.isArray(kb)) return extra;
+    const hasBack = kb.some(row => Array.isArray(row) && row.includes(BACK_TO_ADMIN));
+    if (hasBack) return extra;
+    return { ...extra, reply_markup: { ...extra.reply_markup, keyboard: [...kb, [BACK_TO_ADMIN]] } };
+  };
+  for (const m of ['reply', 'replyWithPhoto', 'replyWithVideo']) {
+    const orig = ctx[m].bind(ctx);
+    ctx[m] = (first, extra, ...rest) => orig(first, addBack(extra), ...rest);
+  }
+}
+
 const userMw = userComposer.middleware();
 const adminMw = adminComposer.middleware();
 
@@ -289,6 +316,7 @@ bot.use(async (ctx, next) => {
 bot.use(async (ctx, next) => {
   if (!ctx.from) return next();
   const userId = ctx.from.id;
+  await refreshWebsiteUrl();
 
   // مستخدم عادي => serverUsers
   if (!(await isAdmin(userId))) return userMw(ctx, next);
@@ -308,6 +336,7 @@ bot.use(async (ctx, next) => {
     /^(approve_|reject_|support_reply_)\d+$/.test(cbData) ||
     userState[userId]?.step === 'replying_to_support_user';
 
+  if (previewMode[userId]) injectBackButton(ctx);
   if (forceAdmin || !previewMode[userId]) return adminMw(ctx, next);
   return userMw(ctx, next);
 });
