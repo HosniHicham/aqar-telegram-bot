@@ -337,8 +337,13 @@ bot.use(async (ctx, next) => {
     userState[userId]?.step === 'replying_to_support_user';
 
   if (previewMode[userId]) injectBackButton(ctx);
-  if (forceAdmin || !previewMode[userId]) return adminMw(ctx, next);
-  return userMw(ctx, next);
+  try {
+    if (forceAdmin || !previewMode[userId]) return await adminMw(ctx, next);
+    return await userMw(ctx, next);
+  } catch (err) {
+    console.error('Admin routing error:', err);
+    await ctx.reply(`⚠️ خطأ: ${String(err.message || err).slice(0, 300)}`).catch(() => {});
+  }
 });
 
 bot.catch((err, ctx) => {
