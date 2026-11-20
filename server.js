@@ -551,6 +551,11 @@ const WIZ_STEPS = [
 const WIZ_KEYS = ['property_type', 'state_name', 'price', 'phone', 'description', 'media_label', null, null];
 const WIZ_LABELS = ['🏠 النوع', '📍 الولاية', '💰 السعر', '📞 الهاتف', '📝 الوصف', '📸 الصور والفيديو', '💳 الدفع'];
 
+async function isFreeDirectPublishEnabled() {
+  const val = await getSetting('allow_free_publish', 'true');
+  return !['false', '0', 'off', 'no'].includes(String(val).trim().toLowerCase());
+}
+
 async function getWizardPrompt(stepIndex) {
   const prompts = [
     'اختر <b>نوع العقار</b> من القائمة في الأسفل:',
@@ -647,11 +652,16 @@ async function getStandardReplyKeyboard(state) {
     return Markup.keyboard(rows).resize();
   } else if (stateStep === 'waiting_for_payment_choice') {
     const publishCost = await getSetting('publish_cost_points', '100');
-    return Markup.keyboard([
+    const freeEnabled = await isFreeDirectPublishEnabled();
+    const rows = [
       ['💳 الدفع عبر BaridiMob / CCP'],
-      [`🪙 النشر مجاناً (${publishCost} نقطة)`],
-      [backText, homeText]
-    ]).resize();
+      [`🪙 النشر مجاناً (${publishCost} نقطة)`]
+    ];
+    if (freeEnabled) {
+      rows.push(['🆓 نشر مجاني']);
+    }
+    rows.push([backText, homeText]);
+    return Markup.keyboard(rows).resize();
   } else {
     return Markup.keyboard([
       [backText, homeText],
@@ -667,12 +677,14 @@ async function renderWizard(ctx, userId, opts = {}) {
   const user = await getUserRecord(userId);
   const currentPoints = user ? (user.points || 0) : 0;
   const publishCost = await getSetting('publish_cost_points', '100');
+  const freeEnabled = await isFreeDirectPublishEnabled();
 
   if (state.step === 'waiting_for_payment_choice' && !opts.footer) {
     opts.footer =
       `💰 <b>اختر طريقة إتمام ونشر الإعلان:</b>\n\n` +
       `1️⃣ <b>الدفع السريع (BaridiMob / CCP):</b> 500 دج (أولوية ومراجعة فورية).\n` +
       `2️⃣ <b>النشر المجاني بالنقاط:</b> يتطلب <b>${publishCost} نقطة</b>\n` +
+      (freeEnabled ? `3️⃣ <b>نشر مجاني:</b> إرسال ونشر الإعلان مجاناً مباشرة.\n` : '') +
       `🪙 <b>رصيدك الحالي:</b> <b>${currentPoints} نقطة</b>`;
   }
 
@@ -1150,6 +1162,56 @@ bot.hears('💳 الدفع عبر BaridiMob / CCP', async (ctx) => {
   state.data.payment_label = '💳 تحويل بريدي موب / CCP';
   state.step = 'waiting_for_payment_receipt';
   await renderWizard(ctx, userId, { footer: ccpInstructions });
+});
+
+bot.hears('🆓 نشر مجاني', async (ctx) => {
+  await safeDeleteUserMessage(ctx);
+  const userId = ctx.from.id;
+  const state = userState[userId];
+  if (!state || state.step !== 'waiting_for_payment_choice') return;
+
+  if (!(await isFreeDirectPublishEnabled())) {
+    const warnMsg = await ctx.reply('⚠️ <b>خيار النشر المجاني المباشر غير مفعل حالياً.</b>', { parse_mode: 'HTML' });
+    setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warnMsg.message_id).catch(() => {}), 3000);
+    return;
+  }
+
+  state.data.payment_label = '🆓 نشر مجاني';
+  state.step = 'publishing';
+  try {
+    const publishingText = await getSetting('publishing_text', '⏳ جاري المعالجة والحفظ...');
+    await renderWizard(ctx, userId, { footer: publishingText });
+
+    const mediaItems = state.data.media_items || [];
+    const combinedImagesUrl = await uploadMediaListByType(ctx, mediaItems, 'photo');
+    const videoUrl = await uploadMediaListByType(ctx, mediaItems, 'video');
+
+    const numericPrice = sanitizeNumericPrice(state.data.price);
+    const cleanPhone = String(state.data.phone || '').replace(/\D/g, '').trim();
+
+    await supabase.from('test_messages').insert([{
+      user_id: userId,
+      property_type: state.data.property_type,
+      state_name: state.data.state_name,
+      price: numericPrice,
+      phone: cleanPhone,
+      description: state.data.description,
+      message: state.data.description,
+      image_url: combinedImagesUrl,
+      video_url: videoUrl
+    }]);
+
+    delete userState[userId];
+    await replyTracked(ctx, userId,
+      '🎉 <b>تم إرسال ونشر إعلانك مجاناً بنجاح في المنصة!</b>',
+      { parse_mode: 'HTML', ...getMainMenuKeyboard() },
+      true
+    );
+  } catch (err) {
+    console.error('Direct free publish error:', err);
+    delete userState[userId];
+    await replyTracked(ctx, userId, '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getMainMenuKeyboard(), true);
+  }
 });
 
 bot.hears(/^🪙 النشر مجاناً/, async (ctx) => {
