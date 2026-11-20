@@ -22,6 +22,8 @@ const app = express();
 app.use(express.json());
 
 const previewMode = {};
+const ENTER_PREVIEW_BTN = '👁 معاينة كـ يوزر';
+const EXIT_PREVIEW_BTN = '🔙 الرجوع من المعاينة';
 
 async function getAdminIds() {
   try {
@@ -40,10 +42,17 @@ async function isAdmin(userId) {
   return ids.includes(Number(userId));
 }
 
-function getPreviewKeyboard(isPreview) {
+function getAdminKeyboard() {
   return Markup.keyboard([
-    [isPreview ? '🛡️ العودة لوضع الأدمن' : '👁 معاينة كـ يوزر'],
+    [ENTER_PREVIEW_BTN],
     ['🏠 القائمة الرئيسية']
+  ]).resize();
+}
+
+function getPreviewBarKeyboard() {
+  return Markup.keyboard([
+    ['👁 وضع المعاينة مفعل — أنت ترى واجهة اليوزر'],
+    [EXIT_PREVIEW_BTN]
   ]).resize();
 }
 
@@ -62,7 +71,7 @@ bot.on('callback_query', async (ctx) => {
 bot.on('contact', async (ctx) => {
   const userId = ctx.from?.id;
   if (await isAdmin(userId) && !previewMode[userId]) {
-    return admin.handleStart(ctx, getPreviewKeyboard(false));
+    return admin.handleStart(ctx, getAdminKeyboard());
   }
   return users.handleContact(ctx);
 });
@@ -70,7 +79,7 @@ bot.on('contact', async (ctx) => {
 bot.on('photo', async (ctx) => {
   const userId = ctx.from?.id;
   if (await isAdmin(userId) && !previewMode[userId]) {
-    return admin.handlePhoto(ctx, getPreviewKeyboard(false));
+    return admin.handlePhoto(ctx, getAdminKeyboard());
   }
   return users.handlePhoto(ctx);
 });
@@ -78,7 +87,7 @@ bot.on('photo', async (ctx) => {
 bot.on('video', async (ctx) => {
   const userId = ctx.from?.id;
   if (await isAdmin(userId) && !previewMode[userId]) {
-    return admin.handleVideo(ctx, getPreviewKeyboard(false));
+    return admin.handleVideo(ctx, getAdminKeyboard());
   }
   return users.handleVideo(ctx);
 });
@@ -88,30 +97,45 @@ bot.on('text', async (ctx) => {
   const text = (ctx.message?.text || '').trim();
   const adminUser = await isAdmin(userId);
 
-  if (adminUser && (text === '👁 معاينة كـ يوزر' || text === '🛡️ العودة لوضع الأدمن')) {
+  if (adminUser && text === ENTER_PREVIEW_BTN) {
     await ctx.telegram.deleteMessage(ctx.chat.id, ctx.message.message_id).catch(() => {});
-    const enable = text === '👁 معاينة كـ يوزر';
-    previewMode[userId] = enable;
+    previewMode[userId] = true;
 
-    if (enable) {
-      await ctx.reply('👁 <b>تم تفعيل وضع المعاينة كـ يوزر.</b>', {
-        parse_mode: 'HTML',
-        ...getPreviewKeyboard(true)
-      });
-      return users.handleStart(ctx);
-    }
-    return admin.handleStart(ctx, getPreviewKeyboard(false));
+    await ctx.reply('👁 <b>تم تفعيل وضع المعاينة لليوزرز.</b>\nاختر <b>"🔙 الرجوع من المعاينة"</b> في الأسفل للعودة.', {
+      parse_mode: 'HTML',
+      ...getPreviewBarKeyboard()
+    });
+    return users.handleStart(ctx);
+  }
+
+  if (adminUser && (text === EXIT_PREVIEW_BTN || text === '🛡️ العودة لوضع الأدمن')) {
+    await ctx.telegram.deleteMessage(ctx.chat.id, ctx.message.message_id).catch(() => {});
+    previewMode[userId] = false;
+
+    await ctx.reply('✅ <b>تم الرجوع من المعاينة إلى وضع الأدمن.</b>', {
+      parse_mode: 'HTML',
+      ...getAdminKeyboard()
+    });
+    return admin.handleStart(ctx, getAdminKeyboard());
+  }
+
+  if (adminUser && previewMode[userId] && text === '👁 وضع المعاينة مفعل — أنت ترى واجهة اليوزر') {
+    await ctx.telegram.deleteMessage(ctx.chat.id, ctx.message.message_id).catch(() => {});
+    return ctx.reply('👁 <b>أنت حالياً في وضع المعاينة لليوزرز.</b> اضغط <b>"🔙 الرجوع من المعاينة"</b> للخروج.', {
+      parse_mode: 'HTML',
+      ...getPreviewBarKeyboard()
+    });
   }
 
   if (text === '/start') {
     if (adminUser && !previewMode[userId]) {
-      return admin.handleStart(ctx, getPreviewKeyboard(false));
+      return admin.handleStart(ctx, getAdminKeyboard());
     }
     return users.handleStart(ctx);
   }
 
   if (adminUser && !previewMode[userId]) {
-    return admin.handleText(ctx, getPreviewKeyboard(false));
+    return admin.handleText(ctx, getAdminKeyboard());
   }
   return users.handleText(ctx);
 });
