@@ -1,10 +1,6 @@
 'use strict';
 // =========================================================================
 // 🧠 SERVER FATHER — العقل المدبّر
-// - يحمّل الأدوات المشتركة (Supabase, حالات المستخدمين, دوال التنسيق)
-// - يفصل بين المستخدم والأدمن حسب الـ ID
-// - يمنح الأدمن زر "معاينة كمستخدم" (يستدعي users.js) وزر "العودة لوضع الأدمن"
-// - يشغّل السيرفر / الـ Webhook
 // =========================================================================
 
 const { Telegraf, Markup, Composer } = require('telegraf');
@@ -17,7 +13,7 @@ const WEBHOOK_DOMAIN = process.env.WEBHOOK_DOMAIN;
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://jjrisfyotyryanhbsvlz.supabase.co';
 const SUPABASE_KEY = process.env.SUPABASE_KEY || 'sb_publishable_t7kVxzmOtz16C95U_B52FA_AJl_WK-h';
 const MAX_PROPERTY_IMAGES = 6;
-const BACK_TO_ADMIN = '🔙 العودة لوضع الأدمن';
+const BACK_TO_ADMIN = '🔙 العودة لوضع الإدارة';
 
 if (!BOT_TOKEN) {
   console.error('Error: Required environment variables are missing!');
@@ -35,7 +31,7 @@ const userLang = {};
 const browsingSession = {};
 const supportUserSession = {};
 const botMessagesHistory = {};
-const previewMode = {}; // adminId -> true عندما يعاين الأدمن المنصة كمستخدم
+const previewMode = {};
 
 function resetSessions(userId) {
   delete userState[userId];
@@ -90,8 +86,7 @@ async function getSetting(key, defaultValue = '') {
   }
 }
 
-// 🌐 رابط الموقع من جدول app_settings (key = website_url) مع كاش 30 ثانية
-let websiteUrl = ''; // يأتي حصراً من الجدول؛ إن كان فارغاً يختفي الزر
+let websiteUrl = '';
 let websiteUrlAt = 0;
 async function refreshWebsiteUrl() {
   if (Date.now() - websiteUrlAt < 30000) return websiteUrl;
@@ -132,7 +127,7 @@ async function getUserRecord(telegramId) {
 }
 
 async function isUserVerified(telegramId) {
-  if (previewMode[telegramId]) return true; // الأدمن في وضع المعاينة لا يحتاج توثيق
+  if (previewMode[telegramId]) return true;
   const user = await getUserRecord(telegramId);
   return !!user;
 }
@@ -202,7 +197,6 @@ function parseImagesFromImageUrl(imageUrlField) {
   return parseMediaListFromField(imageUrlField);
 }
 
-// الفيديوهات أولاً ثم الصور
 function buildOrderedBrowsingMedia(item) {
   const videos = parseMediaListFromField(item.video_url)
     .slice(0, MAX_PROPERTY_IMAGES).map(ref => ({ type: 'video', ref }));
@@ -212,7 +206,6 @@ function buildOrderedBrowsingMedia(item) {
 }
 
 // ------------------------- لوحات المفاتيح المشتركة -------------------------
-// 🌐 زر الموقع: WebApp => يفتح الموقع مباشرة داخل تيليجرام بدون إظهار أي رابط في المحادثة
 function getWebsiteButton() {
   return websiteUrl ? Markup.button.webApp('🌐 تصفح الموقع الرسمي', websiteUrl) : null;
 }
@@ -231,7 +224,7 @@ function getMainMenuKeyboard(userId) {
 
 function getAuthKeyboard() {
   return Markup.keyboard([
-    [Markup.button.contactRequest('📱 اضغط هنا لمشاركة رقم هاتفك والبدء')]
+    [Markup.button.contactRequest('📱 مشاركة رقم الهاتف لتفعيل الحساب')]
   ]).resize().oneTime();
 }
 
@@ -248,18 +241,16 @@ const core = {
   modules: {}
 };
 
-// 👁 الدخول لوضع المعاينة (الأدمن يرى المنصة كمستخدم)
 core.enterPreview = async (ctx) => {
   const id = ctx.from.id;
   previewMode[id] = true;
   resetSessions(id);
   await core.modules.user.openUserHome(
     ctx,
-    `👁 <b>وضع المعاينة:</b> أنت الآن ترى المنصة كمستخدم عادي.\nللرجوع اضغط <b>${BACK_TO_ADMIN}</b> أو أرسل /admin\n\n`
+    `👁 <b>وضع معاينة المنصة</b> — تتصفح الآن بصلاحية مستخدم عادي.\nللعودة إلى الإدارة اضغط <b>${BACK_TO_ADMIN}</b>\n\n`
   );
 };
 
-// 🔙 الخروج من وضع المعاينة
 core.exitPreview = async (ctx) => {
   const id = ctx.from.id;
   delete previewMode[id];
@@ -272,7 +263,6 @@ const adminComposer = new Composer();
 core.modules.admin = require('./admin')(adminComposer, core);
 core.modules.user = require('./users')(userComposer, core);
 
-// 🔙 أثناء المعاينة: نضيف زر "العودة لوضع الأدمن" تلقائياً لكل لوحة مفاتيح يرسلها البوت
 function injectBackButton(ctx) {
   const addBack = (extra) => {
     const kb = extra && extra.reply_markup && extra.reply_markup.keyboard;
@@ -290,18 +280,23 @@ function injectBackButton(ctx) {
 const userMw = userComposer.middleware();
 const adminMw = adminComposer.middleware();
 
-// ------------------------- ميدلوير وضع النوم (Cold Start) -------------------------
+// ------------------------- ميدلوير الاستجابة السلسة -------------------------
 bot.use(async (ctx, next) => {
   let waitMsgId = null;
   let isResponded = false;
+
+  if (ctx.chat && ctx.message) {
+    ctx.sendChatAction('typing').catch(() => {});
+  }
+
   const timer = setTimeout(async () => {
     if (!isResponded && ctx.message && ctx.message.text) {
       try {
-        const waitMsg = await ctx.reply('⏳ <b>جاري إيقاظ الخادم والاتصال... يرجى الانتظار لحظة.</b>', { parse_mode: 'HTML' });
+        const waitMsg = await ctx.reply('⏳ <i>جاري تحميل البيانات، لحظات من فضلك...</i>', { parse_mode: 'HTML' });
         waitMsgId = waitMsg.message_id;
       } catch (e) {}
     }
-  }, 1500);
+  }, 1800);
 
   try {
     await next();
@@ -318,22 +313,18 @@ bot.use(async (ctx, next) => {
   const userId = ctx.from.id;
   await refreshWebsiteUrl();
 
-  // مستخدم عادي => serverUsers
   if (!(await isAdmin(userId))) return userMw(ctx, next);
 
-  // أدمن
   const text = ctx.message?.text;
   const cbData = ctx.callbackQuery?.data || '';
 
-  // العودة لوضع الأدمن (من أي مكان)
   if (text === BACK_TO_ADMIN || text === '/admin') {
     await safeDeleteUserMessage(ctx);
     return core.exitPreview(ctx);
   }
 
-  // أفعال الإدارة تبقى للأدمن حتى لو كان في وضع المعاينة
   const forceAdmin =
-    /^(approve_|reject_|requeue_|del_pub_|support_reply_|adm_nav:|adm_home|adm_noop)/.test(cbData) ||
+    /^(approve_|reject_|requeue_|del_pub_|support_reply_)\d+/.test(cbData) ||
     userState[userId]?.step === 'replying_to_support_user';
 
   if (previewMode[userId]) injectBackButton(ctx);
@@ -342,7 +333,7 @@ bot.use(async (ctx, next) => {
     return await userMw(ctx, next);
   } catch (err) {
     console.error('Admin routing error:', err);
-    await ctx.reply(`⚠️ خطأ: ${String(err.message || err).slice(0, 300)}`).catch(() => {});
+    await ctx.reply(`⚠️ تعذر إتمام العملية: ${escapeHtml(String(err.message || err).slice(0, 200))}`, { parse_mode: 'HTML' }).catch(() => {});
   }
 });
 
