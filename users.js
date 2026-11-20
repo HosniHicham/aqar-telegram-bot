@@ -619,6 +619,9 @@ module.exports = function registerUsers(bot, core) {
   bot.hears(['🌐 تصفح الموقع الرسمي (البروزر)', '🌐 تصفح الموقع الرسمي'], async (ctx) => {
     await safeDeleteUserMessage(ctx);
     const userId = ctx.from.id;
+    if (!getWebsiteUrl()) {
+      return replyTracked(ctx, userId, '⚠️ الموقع غير متاح حالياً.', { ...getMainMenuKeyboard(userId) }, true);
+    }
     await replyTracked(ctx, userId, '🌐 <b>منصة عقار الجزائر</b>', {
       parse_mode: 'HTML',
       ...Markup.inlineKeyboard([[Markup.button.url('🌐 فتح الموقع الرسمي', getWebsiteUrl())]])
@@ -1946,4 +1949,3 @@ module.exports = function registerUsers(bot, core) {
   // واجهة عامة يستدعيها الأب
   return { openUserHome };
 };
-
