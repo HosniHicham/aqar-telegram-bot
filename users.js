@@ -1946,3 +1946,4 @@ module.exports = function registerUsers(bot, core) {
   // واجهة عامة يستدعيها الأب
   return { openUserHome };
 };
+
