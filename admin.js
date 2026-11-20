@@ -2,8 +2,8 @@
 // =========================================================================
 // 🛡️ SERVER ADMIN — كل ما يخص الأدمن
 // يستدعيه server.js (الأب).
-// - أزرار التنقل والتحكم في لوحة التحكم السفلية (أسفل خانة الإدخال)
-// - أزرار القبول / الرفض / الحذف / المراسلة أسفل بطاقة الإعلان نفسه مع رقم الإعلان
+// - أزرار التنقل والتحكم والمراسلة بخصوص الإعلان (#ID) في لوحة التحكم السفلية
+// - أزرار القبول / الرفض / الحذف / الإعادة أسفل بطاقة الإعلان نفسه
 // - بحث سريع للأدمن برقم الطلب أو رقم الهاتف أو آيدي العميل
 // - تنظيف الرسائل والأوامر غير المهمة
 // =========================================================================
@@ -32,7 +32,7 @@ module.exports = function registerAdmin(bot, core) {
     return Markup.keyboard(rows).resize();
   }
 
-  function getAdminBrowsingKeyboard(idx, total, filterType) {
+  function getAdminBrowsingKeyboard(idx, total, filterType, currentItem = null) {
     const navRow = [];
     if (idx > 0) navRow.push('⬅️ السابق');
     navRow.push(`📄 ${idx + 1} / ${total}`);
@@ -40,6 +40,12 @@ module.exports = function registerAdmin(bot, core) {
 
     const rows = [];
     if (navRow.length > 0) rows.push(navRow);
+
+    // زر المراسلة بخصوص الإعلان مع الهاشتاج في لوحة التحكم السفلية
+    if (currentItem && currentItem.user_id && currentItem.id) {
+      rows.push([`✉️ مراسلة بخصوص #${currentItem.id}`]);
+    }
+
     rows.push(['🔎 بحث سريع', '🎛 لوحة الإدارة']);
     rows.push(['👁 معاينة المنصة كمستخدم']);
 
@@ -144,7 +150,6 @@ module.exports = function registerAdmin(bot, core) {
     };
 
     try {
-      // 1. بحث برقم الطلب (id) في pending_properties و test_messages
       if (digitsOnly) {
         const numId = Number(digitsOnly);
         if (Number.isSafeInteger(numId) && numId > 0) {
@@ -160,7 +165,6 @@ module.exports = function registerAdmin(bot, core) {
         }
       }
 
-      // 2. بحث برقم الهاتف أو آيدي العميل في pending_properties
       const { data: pendingAll } = await supabase
         .from('pending_properties')
         .select('*')
@@ -182,7 +186,6 @@ module.exports = function registerAdmin(bot, core) {
         }
       }
 
-      // 3. بحث برقم الهاتف أو آيدي العميل في test_messages
       const { data: pubAll } = await supabase
         .from('test_messages')
         .select('*')
@@ -212,33 +215,22 @@ module.exports = function registerAdmin(bot, core) {
   function buildAdInlineButtons(item, filterType) {
     const rows = [];
     const adId = item.id;
-    const targetUser = item.user_id || 0;
-    const replyCallbackData = `support_reply_${targetUser}_${adId}`;
 
     if (filterType === 'pending') {
       rows.push([
         Markup.button.callback(`❌ رفض (#${adId})`, `reject_${adId}`),
         Markup.button.callback(`✅ قبول ونشر (#${adId})`, `approve_${adId}`)
       ]);
-      if (targetUser) {
-        rows.push([Markup.button.callback(`✉️ مراسلة بخصوص #${adId}`, replyCallbackData)]);
-      }
     } else if (filterType === 'rejected') {
       rows.push([
         Markup.button.callback(`♻️ إعادة للمعلقة (#${adId})`, `requeue_${adId}`),
         Markup.button.callback(`✅ قبول ونشر (#${adId})`, `approve_${adId}`)
       ]);
-      if (targetUser) {
-        rows.push([Markup.button.callback(`✉️ مراسلة بخصوص #${adId}`, replyCallbackData)]);
-      }
     } else if (filterType === 'published') {
       rows.push([Markup.button.callback(`🗑 حذف (#${adId})`, `del_pub_${adId}`)]);
-      if (targetUser) {
-        rows.push([Markup.button.callback(`✉️ مراسلة بخصوص #${adId}`, replyCallbackData)]);
-      }
     }
 
-    return Markup.inlineKeyboard(rows);
+    return rows.length > 0 ? Markup.inlineKeyboard(rows) : undefined;
   }
 
   function formatAdminAdCaption(item, idx, total, filterType, stats, searchQuery = '') {
@@ -320,24 +312,25 @@ module.exports = function registerAdmin(bot, core) {
 
     const caption = formatAdminAdCaption(item, safeIdx, st.items.length, cardFilter, stats, st.query || '');
     const inlineKb = buildAdInlineButtons(item, cardFilter);
-    const controlKb = getAdminBrowsingKeyboard(safeIdx, st.items.length, filterType);
+    const controlKb = getAdminBrowsingKeyboard(safeIdx, st.items.length, filterType, item);
 
     let sentCard = null;
     const mediaPhoto = receiptRef || firstPhoto;
+    const cardExtra = inlineKb ? { caption, parse_mode: 'HTML', ...inlineKb } : { caption, parse_mode: 'HTML' };
 
     try {
       if (mediaPhoto) {
-        sentCard = await ctx.replyWithPhoto(mediaPhoto, { caption, parse_mode: 'HTML', ...inlineKb });
+        sentCard = await ctx.replyWithPhoto(mediaPhoto, cardExtra);
       } else if (firstVideo) {
-        sentCard = await ctx.replyWithVideo(firstVideo, { caption, parse_mode: 'HTML', ...inlineKb });
+        sentCard = await ctx.replyWithVideo(firstVideo, cardExtra);
       } else {
-        sentCard = await ctx.reply(caption, { parse_mode: 'HTML', ...inlineKb });
+        sentCard = await ctx.reply(caption, cardExtra);
       }
     } catch (e) {
-      sentCard = await ctx.reply(caption, { parse_mode: 'HTML', ...inlineKb }).catch(() => null);
+      sentCard = await ctx.reply(caption, cardExtra).catch(() => null);
     }
 
-    // لوحة التحكم السفلية (التنقل + التحكم + إخفاء لوحة الأحرف الأصلية للهاتف)
+    // لوحة التحكم السفلية (التنقل + المراسلة بخصوص #ID + التحكم)
     const ctrlMsg = await ctx.reply(
       `🎛 <b>أزرار التنقل والتحكم (${safeIdx + 1} / ${st.items.length})</b>`,
       { parse_mode: 'HTML', ...controlKb }
@@ -439,6 +432,36 @@ module.exports = function registerAdmin(bot, core) {
     const st = adminBrowseState[adminId];
     if (!st) return openAdminHome(ctx);
     await renderAdminAdAt(ctx, adminId, st.filter, st.index || 0, false);
+  });
+
+  // زر المراسلة من لوحة التحكم السفلية مع الهاشتاج #ID
+  bot.hears(/^✉️ مراسلة بخصوص #(\d+)$/, async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    const adminId = ctx.from.id;
+    const adId = Number(ctx.match[1]);
+    const st = adminBrowseState[adminId];
+    const currentItem = st?.items?.find(i => Number(i.id) === adId) || st?.items?.[st?.index || 0];
+    const targetUserId = currentItem?.user_id ? Number(currentItem.user_id) : null;
+
+    if (!targetUserId) {
+      return replyTracked(ctx, adminId, `⚠️ لا يوجد آيدي عميل مرتبط بالإعلان <code>#${adId}</code>.`, {
+        parse_mode: 'HTML', ...getAdminMenuKeyboard()
+      }, true);
+    }
+
+    userState[adminId] = {
+      step: 'replying_to_support_user',
+      data: { targetUserId, adId },
+      chatId: ctx.chat.id,
+      wizardMsgId: null
+    };
+
+    await replyTracked(
+      ctx, adminId,
+      `✉️ <b>وضع المراسلة مع العميل</b> <code>${targetUserId}</code> بخصوص الإعلان <code>#${adId}</code>\n\nاكتب رسالتك الآن أو أرسل صورة/فيديو (أو اضغط "🎛 لوحة الإدارة" للإلغاء):`,
+      { parse_mode: 'HTML', ...Markup.keyboard([['🎛 لوحة الإدارة']]).resize() },
+      true
+    );
   });
 
   // ------------------------- المراسلة المرتبطة بالإعلان والعميل -------------------------
