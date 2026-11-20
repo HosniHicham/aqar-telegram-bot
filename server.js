@@ -1,15 +1,24 @@
 'use strict';
+// =========================================================================
+// 🧠 SERVER FATHER — العقل المدبّر
+// - يحمّل الأدوات المشتركة (Supabase, حالات المستخدمين, دوال التنسيق)
+// - يفصل بين المستخدم والأدمن حسب الـ ID
+// - يمنح الأدمن زر "معاينة كمستخدم" (يستدعي users.js) وزر "العودة لوضع الأدمن"
+// - يشغّل السيرفر / الـ Webhook
+// =========================================================================
 
-const { Telegraf, Markup } = require('telegraf');
+const { Telegraf, Markup, Composer } = require('telegraf');
 const express = require('express');
 const { createClient } = require('@supabase/supabase-js');
-const { createUsersHandler } = require('./users');
-const { createAdminHandler } = require('./admin');
 
+// ------------------------- الإعدادات -------------------------
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const WEBHOOK_DOMAIN = process.env.WEBHOOK_DOMAIN;
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://jjrisfyotyryanhbsvlz.supabase.co';
 const SUPABASE_KEY = process.env.SUPABASE_KEY || 'sb_publishable_t7kVxzmOtz16C95U_B52FA_AJl_WK-h';
+const WEBSITE_URL = process.env.WEBSITE_URL || 'https://hosnihicham.github.io/testHTML';
+const MAX_PROPERTY_IMAGES = 6;
+const BACK_TO_ADMIN = '🔙 العودة لوضع الأدمن';
 
 if (!BOT_TOKEN) {
   console.error('Error: Required environment variables are missing!');
@@ -21,134 +30,300 @@ const bot = new Telegraf(BOT_TOKEN);
 const app = express();
 app.use(express.json());
 
-const previewMode = {};
-const ENTER_PREVIEW_BTN = '👁 معاينة كـ يوزر';
-const EXIT_PREVIEW_BTN = '🔙 الرجوع من المعاينة';
+// ------------------------- الحالات المشتركة -------------------------
+const userState = {};
+const userLang = {};
+const browsingSession = {};
+const supportUserSession = {};
+const botMessagesHistory = {};
+const previewMode = {}; // adminId -> true عندما يعاين الأدمن المنصة كمستخدم
 
-async function getAdminIds() {
+function resetSessions(userId) {
+  delete userState[userId];
+  delete browsingSession[userId];
+  delete supportUserSession[userId];
+}
+
+// ------------------------- تنظيف رسائل البوت -------------------------
+function trackBotMessage(userId, chatId, messageId) {
+  if (!userId || !chatId || !messageId) return;
+  if (!botMessagesHistory[userId]) botMessagesHistory[userId] = { chatId, ids: [] };
+  botMessagesHistory[userId].chatId = chatId;
+  if (!botMessagesHistory[userId].ids.includes(messageId)) botMessagesHistory[userId].ids.push(messageId);
+}
+
+async function clearTrackedBotMessages(ctx, userId, keepMessageIds = []) {
+  const history = botMessagesHistory[userId];
+  const keepSet = new Set(Array.isArray(keepMessageIds) ? keepMessageIds : [keepMessageIds].filter(Boolean));
+  const chatId = ctx?.chat?.id || history?.chatId;
+  if (!history || !chatId) return;
+
+  const remaining = [];
+  for (const msgId of history.ids) {
+    if (keepSet.has(msgId)) { remaining.push(msgId); continue; }
+    try { await ctx.telegram.deleteMessage(chatId, msgId); } catch (e) {}
+  }
+  botMessagesHistory[userId].ids = remaining;
+}
+
+async function replyTracked(ctx, userId, text, extra = {}, cleanPrevious = false, keepIds = []) {
+  if (cleanPrevious) await clearTrackedBotMessages(ctx, userId, keepIds);
+  const sent = await ctx.reply(text, extra);
+  if (sent && sent.message_id) trackBotMessage(userId, ctx.chat.id, sent.message_id);
+  return sent;
+}
+
+async function safeDeleteUserMessage(ctx) {
   try {
-    const { data } = await supabase.from('app_settings').select('value').eq('key', 'admin_id').limit(1);
-    const raw = data && data[0] ? data[0].value : '';
-    if (!raw) return [];
-    return String(raw).split(/[,،\s]+/).map(id => Number(id.trim())).filter(n => Number.isFinite(n) && n > 0);
+    if (ctx.message && ctx.message.message_id) {
+      await ctx.telegram.deleteMessage(ctx.chat.id, ctx.message.message_id).catch(() => {});
+    }
+  } catch (e) {}
+}
+
+// ------------------------- Supabase مشترك -------------------------
+async function getSetting(key, defaultValue = '') {
+  try {
+    const { data } = await supabase.from('app_settings').select('value').eq('key', key).single();
+    return data ? data.value : defaultValue;
   } catch (e) {
-    return [];
+    return defaultValue;
   }
 }
 
+let adminCache = { ids: null, at: 0 };
+async function getAdminIds() {
+  if (adminCache.ids && Date.now() - adminCache.at < 30000) return adminCache.ids;
+  let ids = [5883330772];
+  try {
+    const { data } = await supabase.from('app_settings').select('value').eq('key', 'admin_id').single();
+    if (data && data.value) {
+      const parsed = data.value.split(/[,،\s]+/).map(id => Number(id.trim())).filter(Boolean);
+      if (parsed.length) ids = parsed;
+    }
+  } catch (e) {}
+  adminCache = { ids, at: Date.now() };
+  return ids;
+}
+
 async function isAdmin(userId) {
-  if (!userId) return false;
   const ids = await getAdminIds();
   return ids.includes(Number(userId));
 }
 
-function getAdminKeyboard() {
-  return Markup.keyboard([
-    [ENTER_PREVIEW_BTN],
-    ['🏠 القائمة الرئيسية']
-  ]).resize();
+async function getUserRecord(telegramId) {
+  try {
+    const { data } = await supabase.from('users').select('*').eq('id', telegramId).limit(1);
+    return data && data.length > 0 ? data[0] : null;
+  } catch (err) {
+    return null;
+  }
 }
 
-function getPreviewBarKeyboard() {
-  return Markup.keyboard([
-    ['👁 وضع المعاينة مفعل — أنت ترى واجهة اليوزر'],
-    [EXIT_PREVIEW_BTN]
-  ]).resize();
+async function isUserVerified(telegramId) {
+  if (previewMode[telegramId]) return true; // الأدمن في وضع المعاينة لا يحتاج توثيق
+  const user = await getUserRecord(telegramId);
+  return !!user;
 }
 
-const users = createUsersHandler({ bot, app, supabase, WEBHOOK_DOMAIN, getAdminIds });
-const admin = createAdminHandler({ bot, supabase, getAdminIds });
+// ------------------------- أدوات التنسيق -------------------------
+function chunkButtons(buttonsArray, chunkSize = 4) {
+  const chunked = [];
+  for (let i = 0; i < buttonsArray.length; i += chunkSize) chunked.push(buttonsArray.slice(i, i + chunkSize));
+  return chunked;
+}
 
-bot.on('callback_query', async (ctx) => {
-  const userId = ctx.from?.id;
-  const adminUser = await isAdmin(userId);
-  if (adminUser && !previewMode[userId]) {
-    return admin.handleCallback(ctx);
-  }
-  return users.handleCallback(ctx);
-});
+function sanitizeNumericPrice(val) {
+  if (val === null || val === undefined) return 0;
+  const digitsOnly = String(val).replace(/\D/g, '');
+  if (!digitsOnly) return 0;
+  const num = Number(digitsOnly);
+  return Number.isFinite(num) ? num : 0;
+}
 
-bot.on('contact', async (ctx) => {
-  const userId = ctx.from?.id;
-  if (await isAdmin(userId) && !previewMode[userId]) {
-    return admin.handleStart(ctx, getAdminKeyboard());
-  }
-  return users.handleContact(ctx);
-});
+function formatMoney(val) {
+  if (!val) return '0 دج';
+  const str = String(val).trim();
+  if (/[ا-يa-zA-Z]/.test(str)) return str;
+  const clean = str.replace(/\D/g, '');
+  if (!clean) return '0 دج';
+  return Number(clean).toLocaleString('en-US') + ' دج';
+}
 
-bot.on('photo', async (ctx) => {
-  const userId = ctx.from?.id;
-  if (await isAdmin(userId) && !previewMode[userId]) {
-    return admin.handlePhoto(ctx, getAdminKeyboard());
-  }
-  return users.handlePhoto(ctx);
-});
-
-bot.on('video', async (ctx) => {
-  const userId = ctx.from?.id;
-  if (await isAdmin(userId) && !previewMode[userId]) {
-    return admin.handleVideo(ctx, getAdminKeyboard());
-  }
-  return users.handleVideo(ctx);
-});
-
-bot.on('text', async (ctx) => {
-  const userId = ctx.from?.id;
-  const text = (ctx.message?.text || '').trim();
-  const adminUser = await isAdmin(userId);
-
-  if (adminUser && text === ENTER_PREVIEW_BTN) {
-    await ctx.telegram.deleteMessage(ctx.chat.id, ctx.message.message_id).catch(() => {});
-    previewMode[userId] = true;
-
-    await ctx.reply('👁 <b>تم تفعيل وضع المعاينة لليوزرز.</b>\nاختر <b>"🔙 الرجوع من المعاينة"</b> في الأسفل للعودة.', {
-      parse_mode: 'HTML',
-      ...getPreviewBarKeyboard()
+function formatDateTime(dateInput) {
+  const target = dateInput ? new Date(dateInput) : new Date();
+  if (isNaN(target.getTime())) return String(dateInput || 'غير محدد');
+  try {
+    return target.toLocaleString('fr-DZ', {
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', hour12: false
     });
-    return users.handleStart(ctx);
+  } catch (e) {
+    return target.toISOString().replace('T', ' ').slice(0, 16);
   }
+}
 
-  if (adminUser && (text === EXIT_PREVIEW_BTN || text === '🛡️ العودة لوضع الأدمن')) {
-    await ctx.telegram.deleteMessage(ctx.chat.id, ctx.message.message_id).catch(() => {});
-    previewMode[userId] = false;
+function escapeHtml(str) {
+  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
 
-    await ctx.reply('✅ <b>تم الرجوع من المعاينة إلى وضع الأدمن.</b>', {
-      parse_mode: 'HTML',
-      ...getAdminKeyboard()
-    });
-    return admin.handleStart(ctx, getAdminKeyboard());
+function normalizeMediaRef(v) {
+  if (typeof v !== 'string') return null;
+  const clean = v.trim();
+  if (!clean || clean === 'EMPTY' || clean === 'FREE_NO_RECEIPT') return null;
+  return clean.startsWith('tg:') ? clean.slice(3) : clean;
+}
+
+function parseMediaListFromField(fieldVal) {
+  if (!fieldVal || typeof fieldVal !== 'string') return [];
+  const trimmed = fieldVal.trim();
+  if (!trimmed || trimmed === 'EMPTY') return [];
+  if (trimmed.startsWith('[')) {
+    try {
+      const arr = JSON.parse(trimmed);
+      if (Array.isArray(arr)) return [...new Set(arr.map(normalizeMediaRef).filter(Boolean))];
+    } catch (e) {}
   }
+  return [...new Set(trimmed.split('|').map(normalizeMediaRef).filter(Boolean))];
+}
 
-  if (adminUser && previewMode[userId] && text === '👁 وضع المعاينة مفعل — أنت ترى واجهة اليوزر') {
-    await ctx.telegram.deleteMessage(ctx.chat.id, ctx.message.message_id).catch(() => {});
-    return ctx.reply('👁 <b>أنت حالياً في وضع المعاينة لليوزرز.</b> اضغط <b>"🔙 الرجوع من المعاينة"</b> للخروج.', {
-      parse_mode: 'HTML',
-      ...getPreviewBarKeyboard()
-    });
-  }
+function parseImagesFromImageUrl(imageUrlField) {
+  return parseMediaListFromField(imageUrlField);
+}
 
-  if (text === '/start') {
-    if (adminUser && !previewMode[userId]) {
-      return admin.handleStart(ctx, getAdminKeyboard());
+// الفيديوهات أولاً ثم الصور
+function buildOrderedBrowsingMedia(item) {
+  const videos = parseMediaListFromField(item.video_url)
+    .slice(0, MAX_PROPERTY_IMAGES).map(ref => ({ type: 'video', ref }));
+  const photos = parseImagesFromImageUrl(item.image_url)
+    .slice(0, MAX_PROPERTY_IMAGES).map(ref => ({ type: 'photo', ref }));
+  return [...videos, ...photos];
+}
+
+// ------------------------- لوحات المفاتيح المشتركة -------------------------
+// 🌐 زر الموقع: WebApp => يفتح الموقع مباشرة داخل تيليجرام بدون إظهار أي رابط في المحادثة
+function getWebsiteButton() {
+  return Markup.button.webApp('🌐 تصفح الموقع الرسمي', WEBSITE_URL);
+}
+
+function getMainMenuKeyboard(userId) {
+  const rows = [
+    ['🔍 تصفح العقارات المتاحة', '➕ إضافة عقار جديد'],
+    ['🎁 رصيدي وجمع النقاط', '📞 الدعم والإدارة'],
+    ['🌐 تغيير اللغة / Langue', 'ℹ️ عن المنصة'],
+    [getWebsiteButton()]
+  ];
+  if (userId && previewMode[userId]) rows.push([BACK_TO_ADMIN]);
+  return Markup.keyboard(rows).resize();
+}
+
+function getAuthKeyboard() {
+  return Markup.keyboard([
+    [Markup.button.contactRequest('📱 اضغط هنا لمشاركة رقم هاتفك والبدء')]
+  ]).resize().oneTime();
+}
+
+// ------------------------- بناء الـ core وتسجيل الوحدتين -------------------------
+const core = {
+  bot, app, supabase, Markup,
+  WEBHOOK_DOMAIN, WEBSITE_URL, MAX_PROPERTY_IMAGES, BACK_TO_ADMIN,
+  userState, userLang, browsingSession, supportUserSession, previewMode, resetSessions,
+  trackBotMessage, clearTrackedBotMessages, replyTracked, safeDeleteUserMessage,
+  getSetting, getAdminIds, isAdmin, getUserRecord, isUserVerified,
+  chunkButtons, sanitizeNumericPrice, formatMoney, formatDateTime, escapeHtml,
+  normalizeMediaRef, parseMediaListFromField, parseImagesFromImageUrl, buildOrderedBrowsingMedia,
+  getWebsiteButton, getMainMenuKeyboard, getAuthKeyboard,
+  modules: {}
+};
+
+// 👁 الدخول لوضع المعاينة (الأدمن يرى المنصة كمستخدم)
+core.enterPreview = async (ctx) => {
+  const id = ctx.from.id;
+  previewMode[id] = true;
+  resetSessions(id);
+  await core.modules.user.openUserHome(
+    ctx,
+    `👁 <b>وضع المعاينة:</b> أنت الآن ترى المنصة كمستخدم عادي.\nللرجوع اضغط <b>${BACK_TO_ADMIN}</b> أو أرسل /admin\n\n`
+  );
+};
+
+// 🔙 الخروج من وضع المعاينة
+core.exitPreview = async (ctx) => {
+  const id = ctx.from.id;
+  delete previewMode[id];
+  resetSessions(id);
+  await core.modules.admin.openAdminHome(ctx);
+};
+
+const userComposer = new Composer();
+const adminComposer = new Composer();
+core.modules.admin = require('./admin')(adminComposer, core);
+core.modules.user = require('./users')(userComposer, core);
+
+const userMw = userComposer.middleware();
+const adminMw = adminComposer.middleware();
+
+// ------------------------- ميدلوير وضع النوم (Cold Start) -------------------------
+bot.use(async (ctx, next) => {
+  let waitMsgId = null;
+  let isResponded = false;
+  const timer = setTimeout(async () => {
+    if (!isResponded && ctx.message && ctx.message.text) {
+      try {
+        const waitMsg = await ctx.reply('⏳ <b>جاري إيقاظ الخادم والاتصال... يرجى الانتظار لحظة.</b>', { parse_mode: 'HTML' });
+        waitMsgId = waitMsg.message_id;
+      } catch (e) {}
     }
-    return users.handleStart(ctx);
-  }
+  }, 1500);
 
-  if (adminUser && !previewMode[userId]) {
-    return admin.handleText(ctx, getAdminKeyboard());
+  try {
+    await next();
+  } finally {
+    isResponded = true;
+    clearTimeout(timer);
+    if (waitMsgId) await ctx.telegram.deleteMessage(ctx.chat.id, waitMsgId).catch(() => {});
   }
-  return users.handleText(ctx);
 });
 
+// ------------------------- 🧭 توزيع الأدوار حسب الـ ID -------------------------
+bot.use(async (ctx, next) => {
+  if (!ctx.from) return next();
+  const userId = ctx.from.id;
+
+  // مستخدم عادي => serverUsers
+  if (!(await isAdmin(userId))) return userMw(ctx, next);
+
+  // أدمن
+  const text = ctx.message?.text;
+  const cbData = ctx.callbackQuery?.data || '';
+
+  // العودة لوضع الأدمن (من أي مكان)
+  if (text === BACK_TO_ADMIN || text === '/admin') {
+    await safeDeleteUserMessage(ctx);
+    return core.exitPreview(ctx);
+  }
+
+  // أفعال الإدارة تبقى للأدمن حتى لو كان في وضع المعاينة
+  const forceAdmin =
+    /^(approve_|reject_|support_reply_)\d+$/.test(cbData) ||
+    userState[userId]?.step === 'replying_to_support_user';
+
+  if (forceAdmin || !previewMode[userId]) return adminMw(ctx, next);
+  return userMw(ctx, next);
+});
+
+bot.catch((err, ctx) => {
+  console.error(`Bot error (${ctx?.updateType}):`, err);
+});
+
+// ------------------------- 🚀 تشغيل السيرفر -------------------------
 const PORT = process.env.PORT || 3000;
 if (WEBHOOK_DOMAIN) {
   app.post(`/bot${BOT_TOKEN}`, async (req, res) => {
     res.sendStatus(200);
-    if (req.body && req.body.update_id) {
-      bot.handleUpdate(req.body).catch(err => console.error('handleUpdate error:', err));
-    }
+    if (req.body && req.body.update_id) bot.handleUpdate(req.body);
   });
-  bot.telegram.setWebhook(`${WEBHOOK_DOMAIN}/bot${BOT_TOKEN}`).catch(err => console.error('setWebhook error:', err));
+  bot.telegram.setWebhook(`${WEBHOOK_DOMAIN}/bot${BOT_TOKEN}`);
   app.get('/', (req, res) => res.send('Aqar Algeria Production System is online 🚀'));
   app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
 } else {
