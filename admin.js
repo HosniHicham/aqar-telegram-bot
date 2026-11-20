@@ -2,7 +2,7 @@
 
 const { Markup } = require('telegraf');
 
-function initAdminServer({ bot, supabase }) {
+function createAdminHandler({ bot, supabase, getAdminIds }) {
   const adminState = {};
   const adminMsgHistory = {};
 
@@ -53,16 +53,6 @@ function initAdminServer({ bot, supabase }) {
         await ctx.telegram.deleteMessage(ctx.chat.id, ctx.message.message_id).catch(() => {});
       }
     } catch (e) {}
-  }
-
-  async function getAdminIds() {
-    try {
-      const { data } = await supabase.from('app_settings').select('value').eq('key', 'admin_id').single();
-      if (!data || !data.value) return [5883330772];
-      return data.value.split(/[,،\s]+/).map(id => Number(id.trim())).filter(Boolean);
-    } catch (e) {
-      return [5883330772];
-    }
   }
 
   function sanitizeNumericPrice(val) {
@@ -116,42 +106,13 @@ function initAdminServer({ bot, supabase }) {
     );
   }
 
-  bot.action(/^support_reply_(\d+)$/, async (ctx) => {
-    const adminId = ctx.from.id;
-    const targetUserId = Number(ctx.match[1]);
-    await ctx.answerCbQuery();
-
-    const adminIds = await getAdminIds();
-    if (!adminIds.includes(adminId)) {
-      return await ctx.answerCbQuery('⛔ هذا الإجراء مخصص للإدارة فقط.', { show_alert: true });
-    }
-
-    adminState[adminId] = {
-      step: 'replying_to_support_user',
-      data: { targetUserId },
-      chatId: ctx.chat.id
-    };
-
-    await replyAdminTracked(
-      ctx,
-      adminId,
-      `✉️ <b>وضع الرد على العميل</b> <code>${targetUserId}</code>\n\nاكتب ردك الآن أو أرسل صورة/فيديو (أو اضغط "🏠 القائمة الرئيسية" للإلغاء):`,
-      {
-        parse_mode: 'HTML',
-        ...Markup.keyboard([['🏠 القائمة الرئيسية']]).resize()
-      },
-      true
-    );
-  });
-
-  const handleAdminAction = async (ctx, action) => {
-    const requestId = Number(ctx.match[1]);
-    await ctx.answerCbQuery();
+  async function processAction(ctx, action, requestId) {
+    await ctx.answerCbQuery().catch(() => {});
 
     try {
       const adminIds = await getAdminIds();
       if (!adminIds.includes(ctx.from.id)) {
-        return await ctx.answerCbQuery('⛔ هذا الإجراء مخصص للإدارة فقط.', { show_alert: true });
+        return await ctx.answerCbQuery('⛔ هذا الإجراء مخصص للإدارة فقط.', { show_alert: true }).catch(() => {});
       }
 
       const { data: pendingItem, error: fetchError } = await supabase
@@ -233,112 +194,139 @@ function initAdminServer({ bot, supabase }) {
       }
     } catch (err) {
       console.error(`Admin action error #${requestId}:`, err);
-      await ctx.reply(`⚠️ حدث خطأ أثناء معالجة الطلب #${requestId}: ${err.message}`);
+      await ctx.reply(`⚠️ حدث خطأ أثناء معالجة الطلب #${requestId}: ${err.message}`).catch(() => {});
     }
-  };
-
-  bot.action(/^approve_(\d+)$/, (ctx) => handleAdminAction(ctx, 'approve'));
-  bot.action(/^reject_(\d+)$/, (ctx) => handleAdminAction(ctx, 'reject'));
-
-  bot.on('text', async (ctx, next) => {
-    const adminId = ctx.from.id;
-    const userText = ctx.message.text ? ctx.message.text.trim() : '';
-    const state = adminState[adminId];
-
-    if (userText === '🏠 القائمة الرئيسية' || userText === '❌ إلغاء العملية والعودة') {
-      await safeDeleteAdminMessage(ctx);
-      delete adminState[adminId];
-      await replyAdminTracked(ctx, adminId, '🛡️ <b>لوحة الأدمن</b>', {
-        parse_mode: 'HTML',
-        ...Markup.keyboard([
-          ['👁 معاينة كـ يوزر'],
-          ['🏠 القائمة الرئيسية']
-        ]).resize()
-      }, true);
-      return;
-    }
-
-    if (state && state.step === 'replying_to_support_user') {
-      await safeDeleteAdminMessage(ctx);
-      const targetUserId = state.data?.targetUserId;
-      if (!targetUserId) {
-        delete adminState[adminId];
-        return;
-      }
-      await deliverAdminReplyToUser(
-        ctx,
-        adminId,
-        targetUserId,
-        'text',
-        { text: userText },
-        Markup.keyboard([['👁 معاينة كـ يوزر'], ['🏠 القائمة الرئيسية']]).resize()
-      );
-      return;
-    }
-
-    return next();
-  });
-
-  bot.on('photo', async (ctx, next) => {
-    const adminId = ctx.from.id;
-    const state = adminState[adminId];
-    if (state && state.step === 'replying_to_support_user') {
-      await safeDeleteAdminMessage(ctx);
-      const targetUserId = state.data?.targetUserId;
-      if (!targetUserId) {
-        delete adminState[adminId];
-        return;
-      }
-      const photo = ctx.message.photo[ctx.message.photo.length - 1];
-      await deliverAdminReplyToUser(
-        ctx,
-        adminId,
-        targetUserId,
-        'photo',
-        { fileId: photo.file_id, caption: ctx.message.caption || '' },
-        Markup.keyboard([['👁 معاينة كـ يوزر'], ['🏠 القائمة الرئيسية']]).resize()
-      );
-      return;
-    }
-    return next();
-  });
-
-  bot.on('video', async (ctx, next) => {
-    const adminId = ctx.from.id;
-    const state = adminState[adminId];
-    if (state && state.step === 'replying_to_support_user') {
-      await safeDeleteAdminMessage(ctx);
-      const targetUserId = state.data?.targetUserId;
-      if (!targetUserId) {
-        delete adminState[adminId];
-        return;
-      }
-      await deliverAdminReplyToUser(
-        ctx,
-        adminId,
-        targetUserId,
-        'video',
-        { fileId: ctx.message.video.file_id, caption: ctx.message.caption || '' },
-        Markup.keyboard([['👁 معاينة كـ يوزر'], ['🏠 القائمة الرئيسية']]).resize()
-      );
-      return;
-    }
-    return next();
-  });
+  }
 
   return {
-    onStart: async (ctx, keyboard) => {
+    handleStart: async (ctx, keyboard) => {
       delete adminState[ctx.from.id];
-      await ctx.telegram.deleteMessage(ctx.chat.id, ctx.message.message_id).catch(() => {});
+      await safeDeleteAdminMessage(ctx);
       await replyAdminTracked(ctx, ctx.from.id, '🛡️ <b>لوحة الأدمن</b>', {
         parse_mode: 'HTML',
         ...(keyboard || Markup.keyboard([['👁 معاينة كـ يوزر'], ['🏠 القائمة الرئيسية']]).resize())
       }, true);
     },
-    route: async (ctx, next) => {
-      return next();
+
+    handleCallback: async (ctx) => {
+      const data = ctx.callbackQuery?.data || '';
+      const adminId = ctx.from.id;
+
+      const replyMatch = data.match(/^support_reply_(\d+)$/);
+      if (replyMatch) {
+        const targetUserId = Number(replyMatch[1]);
+        await ctx.answerCbQuery().catch(() => {});
+
+        const adminIds = await getAdminIds();
+        if (!adminIds.includes(adminId)) {
+          return await ctx.answerCbQuery('⛔ هذا الإجراء مخصص للإدارة فقط.', { show_alert: true }).catch(() => {});
+        }
+
+        adminState[adminId] = {
+          step: 'replying_to_support_user',
+          data: { targetUserId },
+          chatId: ctx.chat.id
+        };
+
+        await replyAdminTracked(
+          ctx,
+          adminId,
+          `✉️ <b>وضع الرد على العميل</b> <code>${targetUserId}</code>\n\nاكتب ردك الآن أو أرسل صورة/فيديو (أو اضغط "🏠 القائمة الرئيسية" للإلغاء):`,
+          {
+            parse_mode: 'HTML',
+            ...Markup.keyboard([['🏠 القائمة الرئيسية']]).resize()
+          },
+          true
+        );
+        return;
+      }
+
+      const approveMatch = data.match(/^approve_(\d+)$/);
+      if (approveMatch) {
+        return processAction(ctx, 'approve', Number(approveMatch[1]));
+      }
+
+      const rejectMatch = data.match(/^reject_(\d+)$/);
+      if (rejectMatch) {
+        return processAction(ctx, 'reject', Number(rejectMatch[1]));
+      }
+
+      await ctx.answerCbQuery().catch(() => {});
+    },
+
+    handleText: async (ctx, panelKeyboard) => {
+      const adminId = ctx.from.id;
+      const userText = ctx.message?.text ? ctx.message.text.trim() : '';
+      const state = adminState[adminId];
+      const kb = panelKeyboard || Markup.keyboard([['👁 معاينة كـ يوزر'], ['🏠 القائمة الرئيسية']]).resize();
+
+      if (userText === '🏠 القائمة الرئيسية' || userText === '❌ إلغاء العملية والعودة') {
+        await safeDeleteAdminMessage(ctx);
+        delete adminState[adminId];
+        await replyAdminTracked(ctx, adminId, '🛡️ <b>لوحة الأدمن</b>', {
+          parse_mode: 'HTML',
+          ...kb
+        }, true);
+        return;
+      }
+
+      if (state && state.step === 'replying_to_support_user') {
+        await safeDeleteAdminMessage(ctx);
+        const targetUserId = state.data?.targetUserId;
+        if (!targetUserId) {
+          delete adminState[adminId];
+          return;
+        }
+        await deliverAdminReplyToUser(ctx, adminId, targetUserId, 'text', { text: userText }, kb);
+        return;
+      }
+
+      await safeDeleteAdminMessage(ctx);
+      await replyAdminTracked(ctx, adminId, '🛡️ <b>لوحة الأدمن</b>', {
+        parse_mode: 'HTML',
+        ...kb
+      }, true);
+    },
+
+    handlePhoto: async (ctx, panelKeyboard) => {
+      const adminId = ctx.from.id;
+      const state = adminState[adminId];
+      const kb = panelKeyboard || Markup.keyboard([['👁 معاينة كـ يوزر'], ['🏠 القائمة الرئيسية']]).resize();
+      await safeDeleteAdminMessage(ctx);
+
+      if (state && state.step === 'replying_to_support_user') {
+        const targetUserId = state.data?.targetUserId;
+        if (!targetUserId) {
+          delete adminState[adminId];
+          return;
+        }
+        const photo = ctx.message.photo[ctx.message.photo.length - 1];
+        await deliverAdminReplyToUser(ctx, adminId, targetUserId, 'photo', {
+          fileId: photo.file_id,
+          caption: ctx.message.caption || ''
+        }, kb);
+      }
+    },
+
+    handleVideo: async (ctx, panelKeyboard) => {
+      const adminId = ctx.from.id;
+      const state = adminState[adminId];
+      const kb = panelKeyboard || Markup.keyboard([['👁 معاينة كـ يوزر'], ['🏠 القائمة الرئيسية']]).resize();
+      await safeDeleteAdminMessage(ctx);
+
+      if (state && state.step === 'replying_to_support_user') {
+        const targetUserId = state.data?.targetUserId;
+        if (!targetUserId) {
+          delete adminState[adminId];
+          return;
+        }
+        await deliverAdminReplyToUser(ctx, adminId, targetUserId, 'video', {
+          fileId: ctx.message.video.file_id,
+          caption: ctx.message.caption || ''
+        }, kb);
+      }
     }
   };
 }
 
-module.exports = { initAdminServer };
+module.exports = { createAdminHandler };
