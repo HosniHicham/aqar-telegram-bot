@@ -29,7 +29,10 @@ module.exports = function registerAdmin(bot, core) {
     try {
       let q = supabase.from(table).select('*', { count: 'exact', head: true });
       if (filter) q = q.eq(filter[0], filter[1]);
-      const { count } = await q;
+      const { count } = await Promise.race([
+        q,
+        new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 4000))
+      ]);
       return count ?? 0;
     } catch (e) {
       return 0;
@@ -198,7 +201,10 @@ module.exports = function registerAdmin(bot, core) {
     const adminId = ctx.from.id;
     const state = userState[adminId];
     const text = ctx.message.text.trim();
-    if (text.startsWith('/')) return next();
+    if (text.startsWith('/') && text !== '/start') {
+      await safeDeleteUserMessage(ctx);
+      return openAdminHome(ctx);
+    }
 
     if (state && state.step === 'replying_to_support_user') {
       await safeDeleteUserMessage(ctx);
@@ -206,7 +212,9 @@ module.exports = function registerAdmin(bot, core) {
       if (!targetUserId) { delete userState[adminId]; return; }
       return deliverAdminReplyToUser(ctx, adminId, targetUserId, 'text', { text });
     }
-    return next();
+    // نص غير معروف (مثلاً زر قديم من لوحة المستخدم): نعيد عرض لوحة الأدمن بدل الصمت
+    await safeDeleteUserMessage(ctx);
+    return openAdminHome(ctx);
   });
 
   bot.on('photo', async (ctx, next) => {
