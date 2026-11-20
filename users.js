@@ -1,1198 +1,745 @@
 'use strict';
 
 const { Markup } = require('telegraf');
-const { createClient } = require('@supabase/supabase-js');
 
-const SUPABASE_URL = process.env.SUPABASE_URL || 'https://jjrisfyotyryanhbsvlz.supabase.co';
-const SUPABASE_KEY = process.env.SUPABASE_KEY || 'sb_publishable_t7kVxzmOtz16C95U_B52FA_AJl_WK-h';
-const usersSupabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+function initUsersServer({ bot, app, supabase, WEBHOOK_DOMAIN }) {
+  const userState = {};
+  const userLang = {};
+  const browsingSession = {};
+  const botMessagesHistory = {};
+  const supportUserSession = {};
+  const MAX_PROPERTY_IMAGES = 6;
 
-const userState = {};
-const userLang = {};
-const browsingSession = {};
-const botMessagesHistory = {};
-const supportUserSession = {};
-const MAX_PROPERTY_IMAGES = 6;
-
-const WIZ_STEPS = [
-  'waiting_for_type',
-  'waiting_for_state',
-  'waiting_for_price',
-  'waiting_for_phone',
-  'waiting_for_description',
-  'waiting_for_media',
-  'waiting_for_payment_choice',
-  'waiting_for_payment_receipt'
-];
-const WIZ_KEYS = ['property_type', 'state_name', 'price', 'phone', 'description', 'media_label', null, null];
-const WIZ_LABELS = ['🏠 النوع', '📍 الولاية', '💰 السعر', '📞 الهاتف', '📝 الوصف', '📸 الصور والفيديو', '💳 الدفع'];
-
-const AD_INQUIRY_TYPES = {
-  why_rejected: '❌ لماذا تم رفض إعلاني؟',
-  re_review: '🔄 طلب إعادة مراجعة الإعلان',
-  why_pending: '❓ لماذا إعلاني معلق؟',
-  remind_admin: '⏱️ تذكير الإدارة بمراجعة الطلب',
-  no_contact: '📞 لماذا لم يتم التواصل معي؟',
-  ad_note: '⚠️ ملاحظة أو استفسار حول الإعلان'
-};
-
-const QUICK_SUPPORT_PRESETS = {
-  '💳 مشكلة في الدفع': 'العميل يبلغ عن مشكلة أو استفسار بخصوص الدفع.',
-  '🏠 إعلان أو تصفح عقاري': 'العميل لديه استفسار بخصوص الإعلانات أو التصفح العقاري.',
-  '🪙 النقاط والمكافآت': 'العميل يستفسر عن النقاط والمكافآت.',
-  '💡 اقتراح أو تحسين': 'العميل يشارك اقتراحاً أو فكرة لتحسين المنصة.',
-  '👏 شكر أو ملاحظة إيجابية': 'العميل يرسل رسالة شكر وتقدير للمنصة.',
-  '💬 استفسار عام / أخرى': 'العميل يطلب تواصلاً أو استفساراً عاماً مع الإدارة.'
-};
-
-function trackBotMessage(userId, chatId, messageId) {
-  if (!userId || !chatId || !messageId) return;
-  if (!botMessagesHistory[userId]) {
-    botMessagesHistory[userId] = { chatId, ids: [] };
-  }
-  botMessagesHistory[userId].chatId = chatId;
-  if (!botMessagesHistory[userId].ids.includes(messageId)) {
-    botMessagesHistory[userId].ids.push(messageId);
-  }
-}
-
-async function clearTrackedBotMessages(ctx, userId, keepMessageIds = []) {
-  const history = botMessagesHistory[userId];
-  const keepSet = new Set(Array.isArray(keepMessageIds) ? keepMessageIds : [keepMessageIds].filter(Boolean));
-  const chatId = ctx?.chat?.id || history?.chatId;
-
-  if (!history || !chatId) return;
-
-  const remaining = [];
-  for (const msgId of history.ids) {
-    if (keepSet.has(msgId)) {
-      remaining.push(msgId);
-      continue;
+  function trackBotMessage(userId, chatId, messageId) {
+    if (!userId || !chatId || !messageId) return;
+    if (!botMessagesHistory[userId]) {
+      botMessagesHistory[userId] = { chatId, ids: [] };
     }
+    botMessagesHistory[userId].chatId = chatId;
+    if (!botMessagesHistory[userId].ids.includes(messageId)) {
+      botMessagesHistory[userId].ids.push(messageId);
+    }
+  }
+
+  async function clearTrackedBotMessages(ctx, userId, keepMessageIds = []) {
+    const history = botMessagesHistory[userId];
+    const keepSet = new Set(Array.isArray(keepMessageIds) ? keepMessageIds : [keepMessageIds].filter(Boolean));
+    const chatId = ctx?.chat?.id || history?.chatId;
+
+    if (!history || !chatId) return;
+
+    const remaining = [];
+    for (const msgId of history.ids) {
+      if (keepSet.has(msgId)) {
+        remaining.push(msgId);
+        continue;
+      }
+      try {
+        await ctx.telegram.deleteMessage(chatId, msgId);
+      } catch (e) {}
+    }
+    botMessagesHistory[userId].ids = remaining;
+  }
+
+  async function replyTracked(ctx, userId, text, extra = {}, cleanPrevious = false, keepIds = []) {
+    if (cleanPrevious) {
+      await clearTrackedBotMessages(ctx, userId, keepIds);
+    }
+    const sent = await ctx.reply(text, extra);
+    if (sent && sent.message_id) {
+      trackBotMessage(userId, ctx.chat.id, sent.message_id);
+    }
+    return sent;
+  }
+
+  async function getSetting(key, defaultValue = '') {
     try {
-      await ctx.telegram.deleteMessage(chatId, msgId);
+      const { data } = await supabase.from('app_settings').select('value').eq('key', key).single();
+      return data ? data.value : defaultValue;
+    } catch (e) {
+      return defaultValue;
+    }
+  }
+
+  async function getAdminIds() {
+    try {
+      const { data } = await supabase.from('app_settings').select('value').eq('key', 'admin_id').single();
+      if (!data || !data.value) return [5883330772];
+      return data.value.split(/[,،\s]+/).map(id => Number(id.trim())).filter(Boolean);
+    } catch (e) {
+      return [5883330772];
+    }
+  }
+
+  async function getDynamicWilayas() {
+    try {
+      const { data } = await supabase.from('wilayas').select('name').eq('is_active', true);
+      if (data && data.length > 0) return data.map(item => item.name);
     } catch (e) {}
-  }
-  botMessagesHistory[userId].ids = remaining;
-}
-
-async function replyTracked(ctx, userId, text, extra = {}, cleanPrevious = false, keepIds = []) {
-  if (cleanPrevious) {
-    await clearTrackedBotMessages(ctx, userId, keepIds);
-  }
-  const sent = await ctx.reply(text, extra);
-  if (sent && sent.message_id) {
-    trackBotMessage(userId, ctx.chat.id, sent.message_id);
-  }
-  return sent;
-}
-
-async function getSetting(key, defaultValue = '') {
-  try {
-    const { data } = await usersSupabase.from('app_settings').select('value').eq('key', key).single();
-    return data ? data.value : defaultValue;
-  } catch (e) {
-    return defaultValue;
-  }
-}
-
-async function getAdminIds() {
-  try {
-    const { data } = await usersSupabase.from('app_settings').select('value').eq('key', 'admin_id').single();
-    if (!data || !data.value) return [5883330772];
-    return data.value.split(/[,،\s]+/).map(id => Number(id.trim())).filter(Boolean);
-  } catch (e) {
-    return [5883330772];
-  }
-}
-
-async function getDynamicWilayas() {
-  try {
-    const { data } = await usersSupabase.from('wilayas').select('name').eq('is_active', true);
-    if (data && data.length > 0) return data.map(item => item.name);
-  } catch (e) {}
-  return ['الجزائر العاصمة', 'وهران', 'مستغانم', 'قسنطينة', 'عنابة', 'البليدة', 'تلمسان', 'سطيف', 'بجاية'];
-}
-
-async function getDynamicPropertyTypes() {
-  try {
-    const { data } = await usersSupabase
-      .from('property_types')
-      .select('title, row_num, col_num')
-      .eq('is_active', true)
-      .order('row_num', { ascending: true })
-      .order('col_num', { ascending: true });
-    return data || [];
-  } catch (e) {
-    return [];
-  }
-}
-
-async function getDynamicPropertyTypesKeyboard() {
-  const data = await getDynamicPropertyTypes();
-  if (!data || data.length === 0) {
-    return Markup.keyboard([
-      ['شقة', 'فيلا', 'منزل'],
-      ['قطعة أرض', 'محل تجاري'],
-      ['🏠 القائمة الرئيسية']
-    ]).resize();
+    return ['الجزائر العاصمة', 'وهران', 'مستغانم', 'قسنطينة', 'عنابة', 'البليدة', 'تلمسان', 'سطيف', 'بجاية'];
   }
 
-  const rows = {};
-  for (const item of data) {
-    if (!rows[item.row_num]) rows[item.row_num] = [];
-    rows[item.row_num].push(item.title);
-  }
-
-  const keyboard = Object.keys(rows)
-    .sort((a, b) => Number(a) - Number(b))
-    .map(r => rows[r]);
-
-  keyboard.push(['🏠 القائمة الرئيسية']);
-  return Markup.keyboard(keyboard).resize();
-}
-
-async function getDynamicFeatures() {
-  try {
-    const { data, error } = await usersSupabase
-      .from('property_features')
-      .select('title, category, row_num, col_num')
-      .eq('is_active', true)
-      .order('row_num', { ascending: true })
-      .order('col_num', { ascending: true });
-
-    if (error) return [];
-    return data || [];
-  } catch (e) {
-    return [];
-  }
-}
-
-async function getDynamicDescriptionKeyboard() {
-  const data = await getDynamicFeatures();
-
-  if (!data || data.length === 0) {
-    return Markup.keyboard([
-      ['✅ تأكيد الوصف والانتقال'],
-      ['↩️ تراجع عن الأخيرة', '🗑️ مسح الكل'],
-      ['⬅️ رجوع', '🏠 القائمة الرئيسية']
-    ]).resize();
-  }
-
-  const rows = {};
-  for (const item of data) {
-    const rNum = item.row_num || 1;
-    if (!rows[rNum]) rows[rNum] = [];
-    rows[rNum].push(item);
-  }
-
-  const keyboard = [];
-  const sortedRowKeys = Object.keys(rows).sort((a, b) => Number(a) - Number(b));
-
-  for (const rKey of sortedRowKeys) {
-    const sortedRowItems = rows[rKey].sort((a, b) => (a.col_num || 1) - (b.col_num || 1));
-    keyboard.push(sortedRowItems.map(i => i.title));
-  }
-
-  keyboard.push(['✅ تأكيد الوصف والانتقال']);
-  keyboard.push(['↩️ تراجع عن الأخيرة', '🗑️ مسح الكل']);
-  keyboard.push(['⬅️ رجوع', '🏠 القائمة الرئيسية']);
-
-  return Markup.keyboard(keyboard).resize();
-}
-
-function chunkButtons(buttonsArray, chunkSize = 4) {
-  const chunked = [];
-  for (let i = 0; i < buttonsArray.length; i += chunkSize) {
-    chunked.push(buttonsArray.slice(i, i + chunkSize));
-  }
-  return chunked;
-}
-
-function getMainMenuKeyboard() {
-  return Markup.keyboard([
-    ['🔍 تصفح العقارات المتاحة', '➕ إضافة عقار جديد'],
-    ['🎁 رصيدي وجمع النقاط', '📞 الدعم والإدارة'],
-    ['🌐 تغيير اللغة / Langue', 'ℹ️ عن المنصة'],
-    ['🌐 تصفح الموقع الرسمي (البروزر)']
-  ]).resize();
-}
-
-function getBrowsingKeyboard(currentIndex, totalCount, mediaIdx = 0, totalMedia = 0) {
-  const rows = [];
-
-  if (totalMedia > 1) {
-    const mediaRow = [];
-    if (mediaIdx > 0) mediaRow.push('🖼 الصورة السابقة');
-    mediaRow.push(`📸 عنصر ${mediaIdx + 1} / ${totalMedia}`);
-    if (mediaIdx < totalMedia - 1) mediaRow.push('الصورة التالية 🖼');
-    rows.push(mediaRow);
-  }
-
-  const navRow = [];
-  if (currentIndex > 0) navRow.push('⬅️ السابق');
-  navRow.push(`📄 ${currentIndex + 1} / ${totalCount}`);
-  if (currentIndex < totalCount - 1) navRow.push('التالي ➡️');
-
-  rows.push(navRow);
-  rows.push(['📍 تغيير الولاية', '🏠 القائمة الرئيسية']);
-
-  return Markup.keyboard(rows).resize();
-}
-
-function getAuthKeyboard() {
-  return Markup.keyboard([
-    [Markup.button.contactRequest('📱 اضغط هنا لمشاركة رقم هاتفك والبدء')]
-  ]).resize().oneTime();
-}
-
-function getBottomNumpadKeyboard(displayValue, isPrice = true) {
-  const displayText = displayValue ? (isPrice ? formatMoney(displayValue) : displayValue) : '0';
-
-  return Markup.keyboard([
-    [`📥 القيمة الحالية: [ ${displayText} ]`],
-    ['1', '2', '3'],
-    ['4', '5', '6'],
-    ['7', '8', '9'],
-    ['0', isPrice ? '+مليون' : '⌫', '🗑️ مسح'],
-    ['✅ [ OK ] تأكيد'],
-    ['⬅️ رجوع', '🏠 القائمة الرئيسية'],
-    ['❌ إلغاء العملية والعودة']
-  ]).resize();
-}
-
-async function getUserRecord(telegramId) {
-  try {
-    const { data } = await usersSupabase.from('users').select('*').eq('id', telegramId).limit(1);
-    return data && data.length > 0 ? data[0] : null;
-  } catch (err) {
-    return null;
-  }
-}
-
-async function isUserVerified(telegramId) {
-  const user = await getUserRecord(telegramId);
-  return !!user;
-}
-
-async function safeDeleteUserMessage(ctx) {
-  try {
-    if (ctx.message && ctx.message.message_id) {
-      await ctx.telegram.deleteMessage(ctx.chat.id, ctx.message.message_id).catch(() => {});
-    }
-  } catch (e) {}
-}
-
-async function getUniqueStatesList() {
-  try {
-    const { data } = await usersSupabase.from('test_messages').select('state_name');
-    if (!data) return [];
-    return [...new Set(data.map(item => item.state_name).filter(Boolean))];
-  } catch (e) {
-    return [];
-  }
-}
-
-function sanitizeNumericPrice(val) {
-  if (val === null || val === undefined) return 0;
-  const digitsOnly = String(val).replace(/\D/g, '');
-  if (!digitsOnly) return 0;
-  const num = Number(digitsOnly);
-  return Number.isFinite(num) ? num : 0;
-}
-
-function formatMoney(val) {
-  if (!val) return '0 دج';
-  const str = String(val).trim();
-  if (/[ا-يa-zA-Z]/.test(str)) return str;
-  const clean = str.replace(/\D/g, '');
-  if (!clean) return '0 دج';
-  return Number(clean).toLocaleString('en-US') + ' دج';
-}
-
-function formatDateTime(dateInput) {
-  const target = dateInput ? new Date(dateInput) : new Date();
-  if (isNaN(target.getTime())) return String(dateInput || 'غير محدد');
-  try {
-    return target.toLocaleString('fr-DZ', {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false
-    });
-  } catch (e) {
-    return target.toISOString().replace('T', ' ').slice(0, 16);
-  }
-}
-
-function escapeHtml(str) {
-  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-function normalizeMediaRef(v) {
-  if (typeof v !== 'string') return null;
-  const clean = v.trim();
-  if (!clean || clean === 'EMPTY' || clean === 'FREE_NO_RECEIPT') return null;
-  return clean.startsWith('tg:') ? clean.slice(3) : clean;
-}
-
-function parseMediaListFromField(fieldVal) {
-  if (!fieldVal || typeof fieldVal !== 'string') return [];
-  const trimmed = fieldVal.trim();
-  if (!trimmed || trimmed === 'EMPTY') return [];
-
-  if (trimmed.startsWith('[')) {
+  async function getDynamicPropertyTypes() {
     try {
-      const arr = JSON.parse(trimmed);
-      if (Array.isArray(arr)) {
-        return [...new Set(arr.map(normalizeMediaRef).filter(Boolean))];
+      const { data } = await supabase
+        .from('property_types')
+        .select('title, row_num, col_num')
+        .eq('is_active', true)
+        .order('row_num', { ascending: true })
+        .order('col_num', { ascending: true });
+      return data || [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  async function getDynamicPropertyTypesKeyboard() {
+    const data = await getDynamicPropertyTypes();
+    if (!data || data.length === 0) {
+      return Markup.keyboard([
+        ['شقة', 'فيلا', 'منزل'],
+        ['قطعة أرض', 'محل تجاري'],
+        ['🏠 القائمة الرئيسية']
+      ]).resize();
+    }
+
+    const rows = {};
+    for (const item of data) {
+      if (!rows[item.row_num]) rows[item.row_num] = [];
+      rows[item.row_num].push(item.title);
+    }
+
+    const keyboard = Object.keys(rows)
+      .sort((a, b) => Number(a) - Number(b))
+      .map(r => rows[r]);
+
+    keyboard.push(['🏠 القائمة الرئيسية']);
+    return Markup.keyboard(keyboard).resize();
+  }
+
+  async function getDynamicFeatures() {
+    try {
+      const { data, error } = await supabase
+        .from('property_features')
+        .select('title, category, row_num, col_num')
+        .eq('is_active', true)
+        .order('row_num', { ascending: true })
+        .order('col_num', { ascending: true });
+
+      if (error) return [];
+      return data || [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  async function getDynamicDescriptionKeyboard() {
+    const data = await getDynamicFeatures();
+
+    if (!data || data.length === 0) {
+      return Markup.keyboard([
+        ['✅ تأكيد الوصف والانتقال'],
+        ['↩️ تراجع عن الأخيرة', '🗑️ مسح الكل'],
+        ['⬅️ رجوع', '🏠 القائمة الرئيسية']
+      ]).resize();
+    }
+
+    const rows = {};
+    for (const item of data) {
+      const rNum = item.row_num || 1;
+      if (!rows[rNum]) rows[rNum] = [];
+      rows[rNum].push(item);
+    }
+
+    const keyboard = [];
+    const sortedRowKeys = Object.keys(rows).sort((a, b) => Number(a) - Number(b));
+
+    for (const rKey of sortedRowKeys) {
+      const sortedRowItems = rows[rKey].sort((a, b) => (a.col_num || 1) - (b.col_num || 1));
+      keyboard.push(sortedRowItems.map(i => i.title));
+    }
+
+    keyboard.push(['✅ تأكيد الوصف والانتقال']);
+    keyboard.push(['↩️ تراجع عن الأخيرة', '🗑️ مسح الكل']);
+    keyboard.push(['⬅️ رجوع', '🏠 القائمة الرئيسية']);
+
+    return Markup.keyboard(keyboard).resize();
+  }
+
+  function chunkButtons(buttonsArray, chunkSize = 4) {
+    const chunked = [];
+    for (let i = 0; i < buttonsArray.length; i += chunkSize) {
+      chunked.push(buttonsArray.slice(i, i + chunkSize));
+    }
+    return chunked;
+  }
+
+  function getMainMenuKeyboard() {
+    return Markup.keyboard([
+      ['🔍 تصفح العقارات المتاحة', '➕ إضافة عقار جديد'],
+      ['🎁 رصيدي وجمع النقاط', '📞 الدعم والإدارة'],
+      ['🌐 تغيير اللغة / Langue', 'ℹ️ عن المنصة'],
+      ['🌐 تصفح الموقع الرسمي (البروزر)']
+    ]).resize();
+  }
+
+  function getBrowsingKeyboard(currentIndex, totalCount, mediaIdx = 0, totalMedia = 0) {
+    const rows = [];
+
+    if (totalMedia > 1) {
+      const mediaRow = [];
+      if (mediaIdx > 0) mediaRow.push('🖼 الصورة السابقة');
+      mediaRow.push(`📸 عنصر ${mediaIdx + 1} / ${totalMedia}`);
+      if (mediaIdx < totalMedia - 1) mediaRow.push('الصورة التالية 🖼');
+      rows.push(mediaRow);
+    }
+
+    const navRow = [];
+    if (currentIndex > 0) navRow.push('⬅️ السابق');
+    navRow.push(`📄 ${currentIndex + 1} / ${totalCount}`);
+    if (currentIndex < totalCount - 1) navRow.push('التالي ➡️');
+
+    rows.push(navRow);
+    rows.push(['📍 تغيير الولاية', '🏠 القائمة الرئيسية']);
+
+    return Markup.keyboard(rows).resize();
+  }
+
+  function getAuthKeyboard() {
+    return Markup.keyboard([
+      [Markup.button.contactRequest('📱 اضغط هنا لمشاركة رقم هاتفك والبدء')]
+    ]).resize().oneTime();
+  }
+
+  function getBottomNumpadKeyboard(displayValue, isPrice = true) {
+    const displayText = displayValue ? (isPrice ? formatMoney(displayValue) : displayValue) : '0';
+
+    return Markup.keyboard([
+      [`📥 القيمة الحالية: [ ${displayText} ]`],
+      ['1', '2', '3'],
+      ['4', '5', '6'],
+      ['7', '8', '9'],
+      ['0', isPrice ? '+مليون' : '⌫', '🗑️ مسح'],
+      ['✅ [ OK ] تأكيد'],
+      ['⬅️ رجوع', '🏠 القائمة الرئيسية'],
+      ['❌ إلغاء العملية والعودة']
+    ]).resize();
+  }
+
+  async function getUserRecord(telegramId) {
+    try {
+      const { data } = await supabase.from('users').select('*').eq('id', telegramId).limit(1);
+      return data && data.length > 0 ? data[0] : null;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  async function isUserVerified(telegramId) {
+    const user = await getUserRecord(telegramId);
+    return !!user;
+  }
+
+  async function safeDeleteUserMessage(ctx) {
+    try {
+      if (ctx.message && ctx.message.message_id) {
+        await ctx.telegram.deleteMessage(ctx.chat.id, ctx.message.message_id).catch(() => {});
       }
     } catch (e) {}
   }
 
-  return [...new Set(trimmed.split('|').map(normalizeMediaRef).filter(Boolean))];
-}
-
-function parseImagesFromImageUrl(imageUrlField) {
-  return parseMediaListFromField(imageUrlField);
-}
-
-function buildOrderedBrowsingMedia(item) {
-  const videos = parseMediaListFromField(item.video_url)
-    .slice(0, MAX_PROPERTY_IMAGES)
-    .map(ref => ({ type: 'video', ref }));
-
-  const photos = parseImagesFromImageUrl(item.image_url)
-    .slice(0, MAX_PROPERTY_IMAGES)
-    .map(ref => ({ type: 'photo', ref }));
-
-  return [...videos, ...photos];
-}
-
-async function uploadMediaListByType(ctx, mediaItems = [], targetType) {
-  const filtered = mediaItems.filter(item => item.type === targetType);
-  const urls = [];
-  for (let i = 0; i < filtered.length; i++) {
-    const item = filtered[i];
-    let url = `tg:${item.file_id}`;
+  async function getUniqueStatesList() {
     try {
-      const fileLink = await ctx.telegram.getFileLink(item.file_id);
-      const res = await fetch(fileLink.href);
-      const buf = Buffer.from(await res.arrayBuffer());
-      const ext = targetType === 'video' ? 'mp4' : 'jpg';
-      const mime = targetType === 'video' ? 'video/mp4' : 'image/jpeg';
-      const fileName = `${Date.now()}_${i}_${targetType}_aqar.${ext}`;
-      await usersSupabase.storage.from('test_media').upload(fileName, buf, { contentType: mime, upsert: true });
-      const { data: pubUrl } = usersSupabase.storage.from('test_media').getPublicUrl(fileName);
-      if (pubUrl && pubUrl.publicUrl) url = pubUrl.publicUrl;
-    } catch (e) {}
-    urls.push(url);
-  }
-  return urls.length > 0 ? urls.join('|') : 'EMPTY';
-}
-
-function formatMediaSummaryLabel(mediaItems = []) {
-  const photosCount = mediaItems.filter(i => i.type === 'photo').length;
-  const videosCount = mediaItems.filter(i => i.type === 'video').length;
-  const parts = [];
-  if (photosCount > 0) parts.push(`${photosCount} صورة`);
-  if (videosCount > 0) parts.push(`${videosCount} فيديو`);
-  if (parts.length === 0) return null;
-  return `📎 تم إرفاق ${parts.join(' و ')} (يمكنك إضافة المزيد)`;
-}
-
-async function getWizardPrompt(stepIndex) {
-  const prompts = [
-    'اختر <b>نوع العقار</b> من القائمة في الأسفل:',
-    'اختر <b>الولاية</b> من القائمة في الأسفل:',
-    'استخدم لوحة الأرقام في الأسفل لتشكيل السعر، ثم اضغط <b>✅ [ OK ] تأكيد</b>:',
-    'استخدم لوحة الأرقام في الأسفل لإدخال رقم الهاتف، ثم اضغط <b>✅ [ OK ] تأكيد</b>:',
-    'اختر <b>مزايا ومواصفات العقار</b> من القائمة في الأسفل (يمكنك اختيار أكثر من ميزة)، ثم اضغط <b>✅ تأكيد الوصف والانتقال</b>:',
-    `أرسل الآن <b>عدة صور أو فيديوهات للعقار</b> (حتى ${MAX_PROPERTY_IMAGES} ملفات معاً)، ثم اضغط <b>✅ إنهاء إرفاق الوسائط والانتقال</b>:`,
-    'اختر طريقة الدفع أو النشر من القائمة في الأسفل:',
-    'أرسل الآن <b>صورة وصل الدفع (BaridiMob / CCP)</b>:'
-  ];
-  return prompts[stepIndex] || '';
-}
-
-async function buildWizardText(state, opts = {}) {
-  const totalSteps = 7;
-  let active = WIZ_STEPS.indexOf(state.step);
-  if (active >= 6 || state.step === 'publishing') active = 6;
-  if (active < 0) active = 0;
-
-  const d = state.data;
-  const titleText = await getSetting('wizard_title', '🏢 <b>نشر عقار جديد</b>');
-  const head = opts.header || `${titleText}  •  الخطوة ${active + 1} من ${totalSteps}`;
-  if (opts.onlyHeader) return head;
-
-  const filled = opts.complete ? totalSteps : active + 1;
-  const bar = '▰'.repeat(filled) + '▱'.repeat(totalSteps - filled);
-
-  let descPreview = null;
-  if (d.description) {
-    descPreview = d.description.length > 200 ? d.description.slice(0, 200) + '…' : d.description;
-  } else if (state.step === 'waiting_for_description' && d.features_list && d.features_list.length > 0) {
-    descPreview = d.features_list.join(' | ') + ' (قيد التعديل...)';
+      const { data } = await supabase.from('test_messages').select('state_name');
+      if (!data) return [];
+      return [...new Set(data.map(item => item.state_name).filter(Boolean))];
+    } catch (e) {
+      return [];
+    }
   }
 
-  const currentPriceDisplay = d.price
-    ? formatMoney(d.price)
-    : (state.step === 'waiting_for_price' ? `${formatMoney(state.tempInput || '0')} (قيد الإدخال...)` : null);
+  function sanitizeNumericPrice(val) {
+    if (val === null || val === undefined) return 0;
+    const digitsOnly = String(val).replace(/\D/g, '');
+    if (!digitsOnly) return 0;
+    const num = Number(digitsOnly);
+    return Number.isFinite(num) ? num : 0;
+  }
 
-  const currentPhoneDisplay = d.phone
-    ? d.phone
-    : (state.step === 'waiting_for_phone' ? `${state.tempInput || '0'} (قيد الإدخال...)` : null);
+  function formatMoney(val) {
+    if (!val) return '0 دج';
+    const str = String(val).trim();
+    if (/[ا-يa-zA-Z]/.test(str)) return str;
+    const clean = str.replace(/\D/g, '');
+    if (!clean) return '0 دج';
+    return Number(clean).toLocaleString('en-US') + ' دج';
+  }
 
-  const values = [
-    d.property_type,
-    d.state_name,
-    currentPriceDisplay,
-    currentPhoneDisplay,
-    descPreview,
-    d.media_label || null,
-    d.payment_label || null
-  ];
+  function formatDateTime(dateInput) {
+    const target = dateInput ? new Date(dateInput) : new Date();
+    if (isNaN(target.getTime())) return String(dateInput || 'غير محدد');
+    try {
+      return target.toLocaleString('fr-DZ', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false
+      });
+    } catch (e) {
+      return target.toISOString().replace('T', ' ').slice(0, 16);
+    }
+  }
 
-  const lines = values.map((val, i) => {
-    const mark = val ? '✅' : (i === active ? '👉' : '▫️');
-    return `${mark} ${WIZ_LABELS[i]}: ${val ? '<b>' + escapeHtml(val) + '</b>' : '…'}`;
+  function escapeHtml(str) {
+    return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function normalizeMediaRef(v) {
+    if (typeof v !== 'string') return null;
+    const clean = v.trim();
+    if (!clean || clean === 'EMPTY' || clean === 'FREE_NO_RECEIPT') return null;
+    return clean.startsWith('tg:') ? clean.slice(3) : clean;
+  }
+
+  function parseMediaListFromField(fieldVal) {
+    if (!fieldVal || typeof fieldVal !== 'string') return [];
+    const trimmed = fieldVal.trim();
+    if (!trimmed || trimmed === 'EMPTY') return [];
+
+    if (trimmed.startsWith('[')) {
+      try {
+        const arr = JSON.parse(trimmed);
+        if (Array.isArray(arr)) {
+          return [...new Set(arr.map(normalizeMediaRef).filter(Boolean))];
+        }
+      } catch (e) {}
+    }
+
+    return [...new Set(trimmed.split('|').map(normalizeMediaRef).filter(Boolean))];
+  }
+
+  function parseImagesFromImageUrl(imageUrlField) {
+    return parseMediaListFromField(imageUrlField);
+  }
+
+  function buildOrderedBrowsingMedia(item) {
+    const videos = parseMediaListFromField(item.video_url)
+      .slice(0, MAX_PROPERTY_IMAGES)
+      .map(ref => ({ type: 'video', ref }));
+
+    const photos = parseImagesFromImageUrl(item.image_url)
+      .slice(0, MAX_PROPERTY_IMAGES)
+      .map(ref => ({ type: 'photo', ref }));
+
+    return [...videos, ...photos];
+  }
+
+  async function uploadMediaListByType(ctx, mediaItems = [], targetType) {
+    const filtered = mediaItems.filter(item => item.type === targetType);
+    const urls = [];
+    for (let i = 0; i < filtered.length; i++) {
+      const item = filtered[i];
+      let url = `tg:${item.file_id}`;
+      try {
+        const fileLink = await ctx.telegram.getFileLink(item.file_id);
+        const res = await fetch(fileLink.href);
+        const buf = Buffer.from(await res.arrayBuffer());
+        const ext = targetType === 'video' ? 'mp4' : 'jpg';
+        const mime = targetType === 'video' ? 'video/mp4' : 'image/jpeg';
+        const fileName = `${Date.now()}_${i}_${targetType}_aqar.${ext}`;
+        await supabase.storage.from('test_media').upload(fileName, buf, { contentType: mime, upsert: true });
+        const { data: pubUrl } = supabase.storage.from('test_media').getPublicUrl(fileName);
+        if (pubUrl && pubUrl.publicUrl) url = pubUrl.publicUrl;
+      } catch (e) {}
+      urls.push(url);
+    }
+    return urls.length > 0 ? urls.join('|') : 'EMPTY';
+  }
+
+  function formatMediaSummaryLabel(mediaItems = []) {
+    const photosCount = mediaItems.filter(i => i.type === 'photo').length;
+    const videosCount = mediaItems.filter(i => i.type === 'video').length;
+    const parts = [];
+    if (photosCount > 0) parts.push(`${photosCount} صورة`);
+    if (videosCount > 0) parts.push(`${videosCount} فيديو`);
+    if (parts.length === 0) return null;
+    return `📎 تم إرفاق ${parts.join(' و ')} (يمكنك إضافة المزيد)`;
+  }
+
+  // صفحة الويب المصغرة لربح النقاط
+  app.get('/watch-ad', async (req, res) => {
+    const userId = req.query.uid || '';
+    const rewardPoints = await getSetting('ad_reward_points', '25');
+
+    res.send(`<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>مشاهدة إعلان وربح نقاط</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script src='//libtl.com/sdk.js' data-zone='12268522' data-sdk='show_12268522'></script>
+  <style>
+    body {
+      background: #0F172A; color: #F8FAFC; font-family: system-ui, -apple-system, sans-serif;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      min-height: 100vh; margin: 0; padding: 20px; text-align: center; box-sizing: border-box;
+    }
+    .card {
+      background: #1E293B; border: 1px solid #334155; border-radius: 16px;
+      padding: 24px; max-width: 400px; width: 100%; box-shadow: 0 10px 25px rgba(0,0,0,0.4);
+    }
+    .alert-box {
+      background: #7F1D1D; color: #FCA5A5; border: 1px solid #991B1B;
+      padding: 12px; border-radius: 8px; font-size: 13px; font-weight: bold;
+      margin-bottom: 15px; display: none; line-height: 1.5;
+    }
+    button {
+      background: #D4AF37; color: #0F172A; border: none; padding: 14px 24px;
+      border-radius: 10px; font-size: 16px; font-weight: bold; width: 100%;
+      cursor: pointer; margin-top: 15px;
+    }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>🎁 ربح نقاط عقار الجزائر</h2>
+    <p style="color:#94A3B8; font-size:14px;">اضغط على الزر أدناه لبدء مشاهدة الإعلان وربح +${rewardPoints} نقطة.</p>
+    <div id="alertBox" class="alert-box">
+      ⚠️ <b>تنبيه هام جداً:</b><br>يرجى الانتظار وعدم إغلاق الصفحة حتى ينتهي الإعلان بالكامل لكي يتم احتساب نقاطك تلقائياً!
+    </div>
+    <button id="adBtn" onclick="triggerAd()">▶️ عرض الإعلان الآن</button>
+  </div>
+  <script>
+    const tg = window.Telegram.WebApp;
+    tg.expand();
+    const btnEl = document.getElementById('adBtn');
+    const alertBox = document.getElementById('alertBox');
+
+    function triggerAd() {
+      btnEl.disabled = true;
+      btnEl.textContent = '⏳ جاري عرض الإعلان... يرجى الانتظار';
+      alertBox.style.display = 'block';
+
+      if (typeof show_12268522 === 'function') {
+        show_12268522().then(() => {
+          claimReward();
+        }).catch((e) => {
+          alert('تعذر عرض الإعلان حالياً، حاول مجدداً.');
+          btnEl.disabled = false;
+          btnEl.textContent = '▶️ عرض الإعلان الآن';
+          alertBox.style.display = 'none';
+        });
+      } else {
+        setTimeout(() => { claimReward(); }, 4000);
+      }
+    }
+
+    async function claimReward() {
+      try {
+        const res = await fetch('/api/claim-ad-reward', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId: '${userId}' })
+        });
+        const data = await res.json();
+        if (data.ok) {
+          alert('🎉 مبروك! تمت إضافة النقاط بنجاح.');
+          tg.close();
+        } else {
+          alert('حدث خطأ، حاول مجدداً');
+          btnEl.disabled = false;
+          btnEl.textContent = '▶️ عرض الإعلان الآن';
+          alertBox.style.display = 'none';
+        }
+      } catch (e) {
+        alert('خطأ في الاتصال بالسيرفر');
+        btnEl.disabled = false;
+        btnEl.textContent = '▶️ عرض الإعلان الآن';
+        alertBox.style.display = 'none';
+      }
+    }
+  </script>
+</body>
+</html>`);
   });
 
-  const stepPromptIdx = Math.max(WIZ_STEPS.indexOf(state.step), 0);
-  const defaultPrompt = await getWizardPrompt(stepPromptIdx);
-  const footer = opts.footer !== undefined ? opts.footer : defaultPrompt;
-  return `${head}\n${bar}\n\n${lines.join('\n')}` + (footer ? `\n\n${footer}` : '');
-}
+  app.post('/api/claim-ad-reward', async (req, res) => {
+    const userId = Number(req.body.userId);
+    if (!userId) return res.status(400).json({ ok: false });
 
-async function getStandardReplyKeyboard(state) {
-  const stateStep = state.step;
-  const backText = '⬅️ رجوع';
-  const homeText = '🏠 القائمة الرئيسية';
-  const cancelText = '❌ إلغاء العملية والعودة';
-
-  if (stateStep === 'waiting_for_type') {
-    return await getDynamicPropertyTypesKeyboard();
-  } else if (stateStep === 'waiting_for_state') {
-    const dynamicWilayas = await getDynamicWilayas();
-    return Markup.keyboard([
-      ...chunkButtons(dynamicWilayas.map(w => `📍 ${w}`), 4),
-      [backText, homeText]
-    ]).resize();
-  } else if (stateStep === 'waiting_for_price') {
-    return getBottomNumpadKeyboard(state.tempInput || '', true);
-  } else if (stateStep === 'waiting_for_phone') {
-    return getBottomNumpadKeyboard(state.tempInput || '', false);
-  } else if (stateStep === 'waiting_for_description') {
-    return await getDynamicDescriptionKeyboard();
-  } else if (stateStep === 'waiting_for_media') {
-    const count = (state.data.media_items || []).length;
-    const rows = [];
-    if (count > 0) {
-      rows.push([`✅ إنهاء إرفاق الوسائط (${count}) والانتقال`]);
-      rows.push(['🗑️ مسح الوسائط المرفقة']);
-    }
-    rows.push([backText, homeText]);
-    rows.push([cancelText]);
-    return Markup.keyboard(rows).resize();
-  } else if (stateStep === 'waiting_for_payment_choice') {
-    const publishCost = await getSetting('publish_cost_points', '100');
-    return Markup.keyboard([
-      ['💳 الدفع عبر BaridiMob / CCP'],
-      [`🪙 النشر مجاناً (${publishCost} نقطة)`],
-      ['🆓 نشر مجاني'],
-      [backText, homeText]
-    ]).resize();
-  } else {
-    return Markup.keyboard([
-      [backText, homeText],
-      [cancelText]
-    ]).resize();
-  }
-}
-
-async function renderWizard(ctx, userId, opts = {}) {
-  const state = userState[userId];
-  if (!state) return;
-
-  const user = await getUserRecord(userId);
-  const currentPoints = user ? (user.points || 0) : 0;
-  const publishCost = await getSetting('publish_cost_points', '100');
-
-  if (state.step === 'waiting_for_payment_choice' && !opts.footer) {
-    opts.footer =
-      `💰 <b>اختر طريقة إتمام ونشر الإعلان:</b>\n\n` +
-      `1️⃣ <b>الدفع السريع (BaridiMob / CCP):</b> 500 دج (أولوية ومراجعة فورية).\n` +
-      `2️⃣ <b>النشر المجاني بالنقاط:</b> يتطلب <b>${publishCost} نقطة</b>\n` +
-      `3️⃣ <b>نشر مجاني:</b> يُرسل إلى قائمة الانتظار والمراجعة الإدارية كإعلان مجاني.\n` +
-      `🪙 <b>رصيدك الحالي:</b> <b>${currentPoints} نقطة</b>`;
-  }
-
-  const text = await buildWizardText(state, opts);
-
-  if (state.step === 'publishing' && !opts.noKeyboard && state.wizardMsgId) {
     try {
-      await ctx.telegram.editMessageText(state.chatId, state.wizardMsgId, undefined, text, { parse_mode: 'HTML' });
-    } catch (e) {}
-    return;
-  }
+      const user = await getUserRecord(userId);
+      if (!user) return res.status(404).json({ ok: false });
 
-  const replyKeyboard = opts.noKeyboard ? getMainMenuKeyboard() : await getStandardReplyKeyboard(state);
+      const rewardPoints = Number(await getSetting('ad_reward_points', '25'));
+      const newPoints = (user.points || 0) + rewardPoints;
+      await supabase.from('users').update({ points: newPoints }).eq('id', userId);
 
-  const sent = await ctx.reply(text, { parse_mode: 'HTML', ...replyKeyboard });
-  const oldId = state.wizardMsgId;
-  state.wizardMsgId = sent.message_id;
-  state.chatId = ctx.chat.id;
-  if (sent.message_id) {
-    trackBotMessage(userId, ctx.chat.id, sent.message_id);
-  }
+      await bot.telegram.sendMessage(
+        userId,
+        `🎉 <b>مبروك! تمت إضافة +${rewardPoints} نقطة إلى رصيدك بعد مشاهدة الإعلان.</b>\n🪙 <b>رصيدك الحالي:</b> ${newPoints} نقطة.`,
+        { parse_mode: 'HTML' }
+      ).catch(() => {});
 
-  if (oldId && oldId !== sent.message_id) {
-    await ctx.telegram.deleteMessage(state.chatId, oldId).catch(() => {});
-  }
-}
-
-async function fetchUserOwnedAds(userId) {
-  const ads = [];
-
-  try {
-    const { data: pendingRows } = await usersSupabase
-      .from('pending_properties')
-      .select('*')
-      .eq('user_id', userId)
-      .order('id', { ascending: false });
-
-    if (Array.isArray(pendingRows)) {
-      for (const row of pendingRows) {
-        const st = row.status || 'pending';
-        ads.push({
-          ...row,
-          source: 'pending_properties',
-          ad_status: st,
-          status_label:
-            st === 'approved' ? '✅ مقبول' :
-            st === 'rejected' ? '❌ مرفوض' : '⏳ معلق'
-        });
-      }
-    }
-  } catch (e) {}
-
-  try {
-    const { data: publishedRows } = await usersSupabase
-      .from('test_messages')
-      .select('*')
-      .eq('user_id', userId)
-      .order('id', { ascending: false });
-
-    if (Array.isArray(publishedRows)) {
-      const existingApprovedKeys = new Set(
-        ads
-          .filter(a => a.ad_status === 'approved')
-          .map(a => `${a.property_type}|${a.state_name}|${a.price}|${a.phone}`)
-      );
-
-      for (const row of publishedRows) {
-        const key = `${row.property_type}|${row.state_name}|${row.price}|${row.phone}`;
-        if (!existingApprovedKeys.has(key)) {
-          ads.push({
-            ...row,
-            source: 'test_messages',
-            ad_status: 'approved',
-            status_label: '✅ مقبول'
-          });
-        }
-      }
-    }
-  } catch (e) {}
-
-  return ads;
-}
-
-function getSupportHubKeyboard() {
-  return Markup.keyboard([
-    ['👤 ملفي الشخصي ورصيدي', '📋 إعلاناتي وحالتها'],
-    ['🗂 تصفح إعلاناتي الخاصة', '💬 دعم واقتراحات وشكر'],
-    ['🏠 القائمة الرئيسية']
-  ]).resize();
-}
-
-function getSupportCategoriesKeyboard() {
-  return Markup.keyboard([
-    ['💳 مشكلة في الدفع', '🏠 إعلان أو تصفح عقاري'],
-    ['🪙 النقاط والمكافآت', '💡 اقتراح أو تحسين'],
-    ['👏 شكر أو ملاحظة إيجابية', '💬 استفسار عام / أخرى'],
-    ['⬅️ لوحة العميل', '🏠 القائمة الرئيسية']
-  ]).resize();
-}
-
-function getInteractiveAdInlineKeyboard(ad) {
-  const id = encodeURIComponent(String(ad.id || '0'));
-  if (ad.ad_status === 'pending') {
-    return Markup.inlineKeyboard([
-      [Markup.button.callback('❓ لماذا إعلاني معلق؟', `adinq:why_pending:${id}`)],
-      [Markup.button.callback('⏱️ تذكير الإدارة بمراجعة الطلب', `adinq:remind_admin:${id}`)],
-      [Markup.button.callback('📞 لماذا لم يتم التواصل معي؟', `adinq:no_contact:${id}`)]
-    ]);
-  }
-  if (ad.ad_status === 'rejected') {
-    return Markup.inlineKeyboard([
-      [Markup.button.callback('❌ لماذا تم رفض إعلاني؟', `adinq:why_rejected:${id}`)],
-      [Markup.button.callback('🔄 طلب إعادة مراجعة الإعلان', `adinq:re_review:${id}`)]
-    ]);
-  }
-  return Markup.inlineKeyboard([
-    [Markup.button.callback('⚠️ ملاحظة أو استفسار حول الإعلان', `adinq:ad_note:${id}`)]
-  ]);
-}
-
-function getAdActionButtonsForStatus(ad) {
-  const id = ad.id || 'غير_محدد';
-  if (ad.ad_status === 'pending') {
-    return Markup.keyboard([
-      [`❓ لماذا إعلاني معلق؟ (#${id})`],
-      [`⏱️ تذكير الإدارة بمراجعة الطلب (#${id})`],
-      [`📞 لماذا لم يتم التواصل معي؟ (#${id})`],
-      ['⬅️ قائمة الإعلانات', '🏠 القائمة الرئيسية']
-    ]).resize();
-  }
-  if (ad.ad_status === 'rejected') {
-    return Markup.keyboard([
-      [`❌ لماذا تم رفض إعلاني؟ (#${id})`],
-      [`🔄 طلب إعادة مراجعة الإعلان (#${id})`],
-      ['⬅️ قائمة الإعلانات', '🏠 القائمة الرئيسية']
-    ]).resize();
-  }
-  return Markup.keyboard([
-    [`⚠️ ملاحظة أو استفسار حول الإعلان (#${id})`],
-    ['⬅️ قائمة الإعلانات', '🏠 القائمة الرئيسية']
-  ]).resize();
-}
-
-function getUserOwnBrowsingKeyboard(index, total, mediaIdx = 0, totalMedia = 0) {
-  const rows = [];
-  if (totalMedia > 1) {
-    const mRow = [];
-    if (mediaIdx > 0) mRow.push('🖼 الصورة السابقة');
-    mRow.push(`📸 عنصر ${mediaIdx + 1} / ${totalMedia}`);
-    if (mediaIdx < totalMedia - 1) mRow.push('الصورة التالية 🖼');
-    rows.push(mRow);
-  }
-
-  const navRow = [];
-  if (index > 0) navRow.push('⬅️ إعلاني السابق');
-  navRow.push(`🗂 ${index + 1} / ${total}`);
-  if (index < total - 1) navRow.push('إعلاني التالي ➡️');
-  rows.push(navRow);
-  rows.push(['⬅️ لوحة العميل', '🏠 القائمة الرئيسية']);
-  return Markup.keyboard(rows).resize();
-}
-
-async function openSupportDashboard(ctx, userId) {
-  const dbUser = await getUserRecord(userId);
-  const allAds = await fetchUserOwnedAds(userId);
-  const pendingCount = allAds.filter(a => a.ad_status === 'pending').length;
-  const approvedCount = allAds.filter(a => a.ad_status === 'approved').length;
-  const rejectedCount = allAds.filter(a => a.ad_status === 'rejected').length;
-
-  const points = dbUser?.points ?? 0;
-  const name = escapeHtml(dbUser?.first_name || ctx.from.first_name || 'عميلنا الكريم');
-  const supportIntro = await getSetting('support_text', '');
-
-  supportUserSession[userId] = { mode: 'dashboard', ads: allAds };
-  userState[userId] = {
-    step: 'support_dashboard',
-    data: {},
-    chatId: ctx.chat.id,
-    wizardMsgId: null
-  };
-
-  const text =
-    `🎛 <b>لوحة العميل ومركز الدعم</b>\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n` +
-    `👋 أهلاً بك يا <b>${name}</b>\n` +
-    `🪙 <b>رصيد النقاط:</b> <b>${points} نقطة</b>\n` +
-    `📊 <b>إعلاناتك:</b> إجمالي <b>${allAds.length}</b> | ⏳ معلق: <b>${pendingCount}</b> | ✅ مقبول: <b>${approvedCount}</b> | ❌ مرفوض: <b>${rejectedCount}</b>` +
-    (supportIntro ? `\n\n${supportIntro}` : '') +
-    `\n\n👇 <b>اختر ما تريد من الأزرار أدناه:</b>`;
-
-  await replyTracked(ctx, userId, text, {
-    parse_mode: 'HTML',
-    ...getSupportHubKeyboard()
-  }, true);
-}
-
-async function renderUserOwnAdBrowser(ctx, userId, adIndex = 0, mediaIndex = 0) {
-  const allAds = await fetchUserOwnedAds(userId);
-  if (!allAds.length) {
-    return replyTracked(
-      ctx,
-      userId,
-      '📭 <b>لا توجد إعلانات مسجلة باسمك حتى الآن.</b>',
-      { parse_mode: 'HTML', ...getSupportHubKeyboard() },
-      true
-    );
-  }
-
-  let safeIdx = Number(adIndex) || 0;
-  if (safeIdx < 0) safeIdx = 0;
-  if (safeIdx >= allAds.length) safeIdx = allAds.length - 1;
-
-  const ad = allAds[safeIdx];
-  const orderedMedia = buildOrderedBrowsingMedia(ad);
-  const totalMedia = orderedMedia.length;
-
-  let safeMediaIdx = Number(mediaIndex) || 0;
-  if (safeMediaIdx < 0) safeMediaIdx = 0;
-  if (totalMedia > 0 && safeMediaIdx >= totalMedia) safeMediaIdx = totalMedia - 1;
-
-  supportUserSession[userId] = {
-    mode: 'browsing_own_ads',
-    ads: allAds,
-    page: safeIdx,
-    mediaIndex: safeMediaIdx,
-    selectingPage: false
-  };
-
-  const currentMedia = totalMedia > 0 ? orderedMedia[safeMediaIdx] : null;
-  const mediaLine = totalMedia > 0
-    ? `\n${currentMedia.type === 'video' ? '🎥 فيديو' : '🖼 صورة'}: <b>${safeMediaIdx + 1} / ${totalMedia}</b>`
-    : '';
-
-  const adDateLine = ad.created_at
-    ? `\n🕒 <b>التاريخ والوقت:</b> <code>${escapeHtml(formatDateTime(ad.created_at))}</code>`
-    : '';
-
-  const caption =
-    `🗂 <b>إعلاناتك الخاصة (${safeIdx + 1}/${allAds.length})</b> — الحالة: <b>${ad.status_label}</b>\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n` +
-    `🏠 <b>العقار:</b> ${escapeHtml(ad.property_type || '')}\n` +
-    `📍 <b>الولاية:</b> ${escapeHtml(ad.state_name || '')}\n` +
-    `💰 <b>السعر:</b> ${formatMoney(ad.price)}\n` +
-    `📞 <b>الهاتف:</b> <code>${escapeHtml(ad.phone || '')}</code>${adDateLine}${mediaLine}\n` +
-    `📝 <b>الوصف:</b> ${escapeHtml(ad.description || ad.message || '')}`;
-
-  const kb = getUserOwnBrowsingKeyboard(safeIdx, allAds.length, safeMediaIdx, totalMedia);
-
-  let sentMsg = null;
-  if (currentMedia) {
-    try {
-      sentMsg = currentMedia.type === 'video'
-        ? await ctx.replyWithVideo(currentMedia.ref, { caption, parse_mode: 'HTML', ...kb })
-        : await ctx.replyWithPhoto(currentMedia.ref, { caption, parse_mode: 'HTML', ...kb });
-    } catch (e) {}
-  }
-
-  if (!sentMsg) {
-    sentMsg = await ctx.reply(caption, { parse_mode: 'HTML', ...kb });
-  }
-
-  const keepIds = sentMsg?.message_id ? [sentMsg.message_id] : [];
-  if (sentMsg?.message_id) trackBotMessage(userId, ctx.chat.id, sentMsg.message_id);
-  await clearTrackedBotMessages(ctx, userId, keepIds);
-}
-
-async function resolvePendingRecordForReview(relatedAd, senderUserId, fallbackAdId = null) {
-  let candidate = relatedAd ? { ...relatedAd } : null;
-
-  try {
-    const lookupId = candidate?.id || fallbackAdId;
-    if (lookupId && String(lookupId) !== '0' && String(lookupId) !== 'غير_محدد') {
-      const { data } = await usersSupabase
-        .from('pending_properties')
-        .select('*')
-        .eq('id', lookupId)
-        .single();
-      if (data) {
-        const st = data.status || 'pending';
-        return {
-          ...data,
-          source: 'pending_properties',
-          ad_status: st,
-          status_label:
-            st === 'approved' ? '✅ مقبول' :
-            st === 'rejected' ? '❌ مرفوض' : '⏳ معلق'
-        };
-      }
-    }
-
-    if (candidate && senderUserId) {
-      const { data: matchedRows } = await usersSupabase
-        .from('pending_properties')
-        .select('*')
-        .eq('user_id', senderUserId)
-        .eq('property_type', candidate.property_type || '')
-        .eq('state_name', candidate.state_name || '')
-        .order('id', { ascending: false })
-        .limit(1);
-
-      if (matchedRows && matchedRows.length > 0) {
-        const row = matchedRows[0];
-        const st = row.status || 'pending';
-        return {
-          ...row,
-          source: 'pending_properties',
-          ad_status: st,
-          status_label:
-            st === 'approved' ? '✅ مقبول' :
-            st === 'rejected' ? '❌ مرفوض' : '⏳ معلق'
-        };
-      }
-    }
-  } catch (e) {}
-
-  return candidate;
-}
-
-async function sendStructuredTicketToAdmins(ctx, senderUserId, ticketTitle, detailText, relatedAd = null, payloadType = 'text', mediaContent = {}, fallbackAdId = null) {
-  const adminIds = await getAdminIds();
-  const dbUser = await getUserRecord(senderUserId);
-  const fullName = escapeHtml(
-    [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' ') ||
-    dbUser?.first_name ||
-    'مستخدم'
-  );
-  const phoneLine = dbUser?.phone_number ? `\n📞 <b>هاتف العميل:</b> <code>${escapeHtml(dbUser.phone_number)}</code>` : '';
-
-  const resolvedAd = await resolvePendingRecordForReview(relatedAd, senderUserId, fallbackAdId);
-  const receiptRef = normalizeMediaRef(resolvedAd?.receipt_url);
-  const isFreeAd = resolvedAd?.receipt_url === 'FREE_NO_RECEIPT';
-
-  const adIdNum = Number(resolvedAd?.id || fallbackAdId);
-  const hasNumericAdId = Number.isFinite(adIdNum) && adIdNum > 0;
-  const adIdLabel = resolvedAd?.id || fallbackAdId || null;
-
-  const isReminderOrReview =
-    /تذكير|معلق|إعادة مراجعة|remind|pending|re_review/i.test(ticketTitle) ||
-    /تذكير|معلق|إعادة مراجعة/i.test(detailText || '');
-
-  const photosCount = parseImagesFromImageUrl(resolvedAd?.image_url).length;
-  const videosCount = parseMediaListFromField(resolvedAd?.video_url).length;
-  const adTypeBadge = isFreeAd ? `\n🏷 <b>نوع الإعلان:</b> <b>إعلان مجاني</b>` : '';
-  const adTimeBadge = resolvedAd?.created_at
-    ? `\n🕒 <b>تاريخ الإرسال:</b> <code>${escapeHtml(formatDateTime(resolvedAd.created_at))}</code>`
-    : `\n🕒 <b>وقت الطلب:</b> <code>${escapeHtml(formatDateTime(new Date()))}</code>`;
-
-  const adBlock = adIdLabel
-    ? `\n📌 <b>الإعلان:</b> <code>#${escapeHtml(String(adIdLabel))}</code>` +
-      (resolvedAd?.property_type ? ` (${escapeHtml(resolvedAd.property_type)}${resolvedAd?.state_name ? ` - ${escapeHtml(resolvedAd.state_name)}` : ''}${resolvedAd?.price ? ` - ${formatMoney(resolvedAd.price)}` : ''})` : '') +
-      (resolvedAd?.status_label || relatedAd?.status_label ? ` — الحالة: <b>${resolvedAd?.status_label || relatedAd?.status_label}</b>` : '') +
-      adTypeBadge +
-      adTimeBadge +
-      (isReminderOrReview && (photosCount > 0 || videosCount > 0)
-        ? `\n🖼 <b>الصور:</b> ${photosCount} | 🎥 <b>الفيديو:</b> ${videosCount}`
-        : '') +
-      (resolvedAd?.description ? `\n📝 <b>الوصف:</b> ${escapeHtml(resolvedAd.description)}` : '')
-    : adTimeBadge;
-
-  const header = isReminderOrReview
-    ? `🔔 <b>معاينة تذكير إعلان — ${escapeHtml(ticketTitle)}</b>\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n` +
-      `👤 <b>الاسم:</b> ${fullName}\n` +
-      `🆔 <b>الآيدي (ID):</b> <code>${senderUserId}</code>${phoneLine}${adBlock}\n`
-    : `📩 <b>طلب من العميل — ${escapeHtml(ticketTitle)}</b>\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n` +
-      `👤 <b>الاسم:</b> ${fullName}\n` +
-      `🆔 <b>الآيدي (ID):</b> <code>${senderUserId}</code>${phoneLine}${adBlock}\n`;
-
-  const inlineRows = [];
-  if (hasNumericAdId) {
-    inlineRows.push([
-      Markup.button.callback(`❌ رفض (#${adIdNum})`, `reject_${adIdNum}`),
-      Markup.button.callback(`✅ قبول ونشر (#${adIdNum})`, `approve_${adIdNum}`)
-    ]);
-  }
-  inlineRows.push([
-    Markup.button.callback(`✉️ رد على العميل (${senderUserId})`, `support_reply_${senderUserId}`)
-  ]);
-
-  const replyMarkup = Markup.inlineKeyboard(inlineRows);
-  const bodyText = detailText ? `\n💬 <b>الطلب:</b>\n${escapeHtml(detailText)}` : '';
-
-  for (const adminId of adminIds) {
-    try {
-      if (payloadType === 'photo') {
-        const cap = header + (mediaContent.caption ? `\n💬 <b>الطلب:</b> ${escapeHtml(mediaContent.caption)}` : '\n🖼 <b>مرفق صورة من العميل</b>');
-        await ctx.telegram.sendPhoto(adminId, mediaContent.fileId, { caption: cap, parse_mode: 'HTML', ...replyMarkup });
-      } else if (payloadType === 'video') {
-        const cap = header + (mediaContent.caption ? `\n💬 <b>الطلب:</b> ${escapeHtml(mediaContent.caption)}` : '\n🎥 <b>مرفق فيديو من العميل</b>');
-        await ctx.telegram.sendVideo(adminId, mediaContent.fileId, { caption: cap, parse_mode: 'HTML', ...replyMarkup });
-      } else if (receiptRef) {
-        const receiptCaption =
-          header +
-          bodyText +
-          `\n\n🧾 <b>وصل الدفع (الفيرسمون) المرفق للمراجعة أعلاه 👆</b>`;
-        try {
-          await ctx.telegram.sendPhoto(adminId, receiptRef, {
-            caption: receiptCaption,
-            parse_mode: 'HTML',
-            ...replyMarkup
-          });
-        } catch (receiptSendErr) {
-          await ctx.telegram.sendMessage(adminId, header + bodyText + `\n🧾 <b>رابط الوصل:</b> ${escapeHtml(receiptRef)}`, {
-            parse_mode: 'HTML',
-            ...replyMarkup
-          });
-        }
-      } else {
-        await ctx.telegram.sendMessage(adminId, header + bodyText, { parse_mode: 'HTML', ...replyMarkup });
-      }
+      res.json({ ok: true, points: newPoints });
     } catch (err) {
-      console.error(`Support ticket forward error to ${adminId}:`, err.message);
+      res.status(500).json({ ok: false });
     }
-  }
-}
+  });
 
-async function processAdInquiryAction(ctx, userId, actionLabel, reqId) {
-  const s = supportUserSession[userId];
-  const adsList = s?.ads || await fetchUserOwnedAds(userId);
-  const relatedAd = adsList.find(a => String(a.id) === String(reqId)) || s?.selectedAd || null;
+  const WIZ_STEPS = [
+    'waiting_for_type',
+    'waiting_for_state',
+    'waiting_for_price',
+    'waiting_for_phone',
+    'waiting_for_description',
+    'waiting_for_media',
+    'waiting_for_payment_choice',
+    'waiting_for_payment_receipt'
+  ];
+  const WIZ_KEYS = ['property_type', 'state_name', 'price', 'phone', 'description', 'media_label', null, null];
+  const WIZ_LABELS = ['🏠 النوع', '📍 الولاية', '💰 السعر', '📞 الهاتف', '📝 الوصف', '📸 الصور والفيديو', '💳 الدفع'];
 
-  await sendStructuredTicketToAdmins(
-    ctx,
-    userId,
-    `${actionLabel} (#${reqId})`,
-    `${actionLabel} — بخصوص الإعلان رقم #${reqId}.`,
-    relatedAd,
-    'text',
-    {},
-    reqId
-  );
-
-  await replyTracked(
-    ctx,
-    userId,
-    `✅ <b>تم إرسال استفسارك (${escapeHtml(actionLabel)}) بخصوص الإعلان <code>#${escapeHtml(String(reqId))}</code> إلى الإدارة.</b>`,
-    {
-      parse_mode: 'HTML',
-      ...Markup.keyboard([
-        ['📋 إعلاناتي وحالتها'],
-        ['⬅️ لوحة العميل', '🏠 القائمة الرئيسية']
-      ]).resize()
-    },
-    true
-  );
-}
-
-async function showStatesMenu(ctx) {
-  const userId = ctx.from.id;
-  try {
-    const { data, error } = await usersSupabase.from('test_messages').select('state_name');
-    if (error) throw error;
-    if (!data || data.length === 0) {
-      return replyTracked(ctx, userId, '📭 عذراً، لا توجد أي عقارات مسجلة في المنصة حالياً.', getMainMenuKeyboard(), true);
-    }
-
-    const uniqueStates = [...new Set(data.map(item => item.state_name).filter(Boolean))];
-    const stateButtons = uniqueStates.map(state => `📍 ${state}`);
-    const chunkedStates = chunkButtons(stateButtons, 4);
-    chunkedStates.push(['🌐 الكل'], ['🏠 القائمة الرئيسية']);
-
-    const browseTitle = await getSetting('browse_title', '🔍 <b>اختر الولاية المطلوبة لعرض العقارات من الأزرار أسفل الشاشة:</b>');
-    await replyTracked(ctx, userId, browseTitle, { parse_mode: 'HTML', ...Markup.keyboard(chunkedStates).resize() }, true);
-  } catch (err) {
-    console.error('showStatesMenu error:', err);
-    await replyTracked(ctx, userId, '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getMainMenuKeyboard(), true);
-  }
-}
-
-async function renderPropertyPage(ctx, userId, pageIndex, mediaIndex = 0) {
-  const session = browsingSession[userId];
-  if (!session) return;
-
-  session.selectingPage = false;
-
-  try {
-    let query = usersSupabase.from('test_messages').select('*').order('id', { ascending: false });
-    if (session.state !== 'ALL') query = query.eq('state_name', session.state);
-
-    const { data, error } = await query;
-    if (error) throw error;
-    if (!data || data.length === 0) {
-      return replyTracked(ctx, userId, '📭 عذراً، لا توجد عقارات مسجلة.', getMainMenuKeyboard(), true);
-    }
-
-    if (pageIndex < 0) pageIndex = 0;
-    if (pageIndex >= data.length) pageIndex = data.length - 1;
-    session.page = pageIndex;
-
-    const item = data[pageIndex];
-    const orderedMedia = buildOrderedBrowsingMedia(item);
-    const totalMedia = orderedMedia.length;
-
-    let safeMediaIndex = Number(mediaIndex) || 0;
-    if (safeMediaIndex < 0) safeMediaIndex = 0;
-    if (totalMedia > 0 && safeMediaIndex >= totalMedia) safeMediaIndex = totalMedia - 1;
-    session.photoIndex = safeMediaIndex;
-
-    const currentMedia = totalMedia > 0 ? orderedMedia[safeMediaIndex] : null;
-    const mediaTypeLabel = currentMedia
-      ? (currentMedia.type === 'video' ? '🎥 فيديو' : '🖼 صورة')
-      : '';
-
-    const mediaLine = totalMedia > 0
-      ? `\n${mediaTypeLabel}: <b>${safeMediaIndex + 1} / ${totalMedia}</b>`
-      : '';
-
-    const publishedAtText = item.created_at ? formatDateTime(item.created_at) : 'غير مسجل';
-
-    const caption =
-      `🏛 <b>الولاية:</b> ${escapeHtml(item.state_name || '')} (${pageIndex + 1}/${data.length})\n\n` +
-      `🏠 <b>العقار:</b> ${escapeHtml(item.property_type || '')}\n` +
-      `💰 <b>السعر:</b> ${formatMoney(item.price)}\n` +
-      `📞 <b>هاتف المالك:</b> <code>${escapeHtml(item.phone || '')}</code>\n` +
-      `🕒 <b>تاريخ ووقت النشر:</b> <code>${escapeHtml(publishedAtText)}</code>${mediaLine}\n` +
-      `📝 <b>الوصف:</b> ${escapeHtml(item.description || item.message || '')}`;
-
-    const replyKb = getBrowsingKeyboard(pageIndex, data.length, safeMediaIndex, totalMedia);
-
-    let sentMsg = null;
-    if (currentMedia) {
-      try {
-        sentMsg = currentMedia.type === 'video'
-          ? await ctx.replyWithVideo(currentMedia.ref, { caption, parse_mode: 'HTML', ...replyKb })
-          : await ctx.replyWithPhoto(currentMedia.ref, { caption, parse_mode: 'HTML', ...replyKb });
-      } catch (mediaErr) {}
-    }
-
-    if (!sentMsg) {
-      sentMsg = await ctx.reply(caption, { parse_mode: 'HTML', ...replyKb });
-    }
-
-    const keepId = sentMsg?.message_id ? [sentMsg.message_id] : [];
-    if (sentMsg?.message_id) {
-      trackBotMessage(userId, ctx.chat.id, sentMsg.message_id);
-    }
-    session.lastMessageIds = keepId;
-    await clearTrackedBotMessages(ctx, userId, keepId);
-  } catch (err) {
-    console.error('renderPropertyPage error:', err);
-    await replyTracked(ctx, userId, '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getMainMenuKeyboard(), true);
-  }
-}
-
-async function handleUserStart(ctx, webhookDomain = '') {
-  await safeDeleteUserMessage(ctx);
-  await ctx.sendChatAction('typing');
-  const userName = ctx.from.first_name || 'مستخدمنا الكريم';
-  const userId = ctx.from.id;
-
-  const startPayload = ctx.startPayload || '';
-  if (startPayload.startsWith('ref_')) {
-    const referrerId = Number(startPayload.replace('ref_', ''));
-    if (referrerId && referrerId !== userId) {
-      userState[userId] = { pendingReferrer: referrerId };
-    }
-  } else {
-    delete userState[userId];
+  async function getWizardPrompt(stepIndex) {
+    const prompts = [
+      'اختر <b>نوع العقار</b> من القائمة في الأسفل:',
+      'اختر <b>الولاية</b> من القائمة في الأسفل:',
+      'استخدم لوحة الأرقام في الأسفل لتشكيل السعر، ثم اضغط <b>✅ [ OK ] تأكيد</b>:',
+      'استخدم لوحة الأرقام في الأسفل لإدخال رقم الهاتف، ثم اضغط <b>✅ [ OK ] تأكيد</b>:',
+      'اختر <b>مزايا ومواصفات العقار</b> من القائمة في الأسفل (يمكنك اختيار أكثر من ميزة)، ثم اضغط <b>✅ تأكيد الوصف والانتقال</b>:',
+      `أرسل الآن <b>عدة صور أو فيديوهات للعقار</b> (حتى ${MAX_PROPERTY_IMAGES} ملفات معاً)، ثم اضغط <b>✅ إنهاء إرفاق الوسائط والانتقال</b>:`,
+      'اختر طريقة الدفع أو النشر من القائمة في الأسفل:',
+      'أرسل الآن <b>صورة وصل الدفع (BaridiMob / CCP)</b>:'
+    ];
+    return prompts[stepIndex] || '';
   }
 
-  delete browsingSession[userId];
-  userLang[userId] = 'ar';
+  async function buildWizardText(state, opts = {}) {
+    const totalSteps = 7;
+    let active = WIZ_STEPS.indexOf(state.step);
+    if (active >= 6 || state.step === 'publishing') active = 6;
+    if (active < 0) active = 0;
 
-  const verified = await isUserVerified(userId);
-  const rawWelcomeTpl = await getSetting('welcome_msg_template', 'أهلاً بك يا <b>{name}</b> في <b>منصة عقار الجزائر (Aqar)</b> 🏠\n\nنظام رقمي احترافي لإدارة وعروض العقارات. اختر من القائمة أدناه:');
-  const welcomeText = rawWelcomeTpl.replace('{name}', userName).replace(/\\n/g, '\n');
+    const d = state.data;
+    const titleText = await getSetting('wizard_title', '🏢 <b>نشر عقار جديد</b>');
+    const head = opts.header || `${titleText}  •  الخطوة ${active + 1} من ${totalSteps}`;
+    if (opts.onlyHeader) return head;
 
-  if (verified) {
-    delete userState[userId];
-    await replyTracked(ctx, userId, welcomeText, { parse_mode: 'HTML', ...getMainMenuKeyboard() }, true);
-  } else {
-    const authText = await getSetting('auth_prompt_template', `أهلاً بك يا <b>${userName}</b> في <b>منصة عقار الجزائر (Aqar)</b> 🏠\n\n⚠️ <b>تنبيه أمني:</b>\nللاستفادة من خدمات المنصة وتصفح العقارات، يرجى <b>تأكيد رقم هاتفك</b> أولاً بضغطة زر واحدة:`);
-    await replyTracked(ctx, userId, authText.replace(/\\n/g, '\n'), { parse_mode: 'HTML', ...getAuthKeyboard() }, true);
+    const filled = opts.complete ? totalSteps : active + 1;
+    const bar = '▰'.repeat(filled) + '▱'.repeat(totalSteps - filled);
+
+    let descPreview = null;
+    if (d.description) {
+      descPreview = d.description.length > 200 ? d.description.slice(0, 200) + '…' : d.description;
+    } else if (state.step === 'waiting_for_description' && d.features_list && d.features_list.length > 0) {
+      descPreview = d.features_list.join(' | ') + ' (قيد التعديل...)';
+    }
+
+    const currentPriceDisplay = d.price
+      ? formatMoney(d.price)
+      : (state.step === 'waiting_for_price' ? `${formatMoney(state.tempInput || '0')} (قيد الإدخال...)` : null);
+
+    const currentPhoneDisplay = d.phone
+      ? d.phone
+      : (state.step === 'waiting_for_phone' ? `${state.tempInput || '0'} (قيد الإدخال...)` : null);
+
+    const values = [
+      d.property_type,
+      d.state_name,
+      currentPriceDisplay,
+      currentPhoneDisplay,
+      descPreview,
+      d.media_label || null,
+      d.payment_label || null
+    ];
+
+    const lines = values.map((val, i) => {
+      const mark = val ? '✅' : (i === active ? '👉' : '▫️');
+      return `${mark} ${WIZ_LABELS[i]}: ${val ? '<b>' + escapeHtml(val) + '</b>' : '…'}`;
+    });
+
+    const stepPromptIdx = Math.max(WIZ_STEPS.indexOf(state.step), 0);
+    const defaultPrompt = await getWizardPrompt(stepPromptIdx);
+    const footer = opts.footer !== undefined ? opts.footer : defaultPrompt;
+    return `${head}\n${bar}\n\n${lines.join('\n')}` + (footer ? `\n\n${footer}` : '');
   }
-}
 
-async function handleUserContact(ctx) {
-  await safeDeleteUserMessage(ctx);
-  await ctx.sendChatAction('typing');
-  const contact = ctx.message.contact;
-  const phoneNumber = contact.phone_number;
-  const firstName = ctx.from.first_name || '';
-  const userId = ctx.from.id;
-  const referrerId = userState[userId]?.pendingReferrer || null;
+  async function getStandardReplyKeyboard(state) {
+    const stateStep = state.step;
+    const backText = '⬅️ رجوع';
+    const homeText = '🏠 القائمة الرئيسية';
+    const cancelText = '❌ إلغاء العملية والعودة';
 
-  try {
-    const { error: insertError } = await usersSupabase.from('users').insert([
-      { id: userId, first_name: firstName, phone_number: phoneNumber, points: 0, referred_by: referrerId }
-    ]);
-    if (insertError) throw insertError;
-
-    if (referrerId) {
-      const refUser = await getUserRecord(referrerId);
-      if (refUser) {
-        const updatedPts = (refUser.points || 0) + 50;
-        await usersSupabase.from('users').update({ points: updatedPts }).eq('id', referrerId);
-        await ctx.telegram.sendMessage(
-          referrerId,
-          `🎉 <b>مبروك! انضم صديق جديد عبر رابطك وحصلت على +50 نقطة!</b>\n🪙 رصيدك الحالي: ${updatedPts} نقطة.`,
-          { parse_mode: 'HTML' }
-        ).catch(() => {});
+    if (stateStep === 'waiting_for_type') {
+      return await getDynamicPropertyTypesKeyboard();
+    } else if (stateStep === 'waiting_for_state') {
+      const dynamicWilayas = await getDynamicWilayas();
+      return Markup.keyboard([
+        ...chunkButtons(dynamicWilayas.map(w => `📍 ${w}`), 4),
+        [backText, homeText]
+      ]).resize();
+    } else if (stateStep === 'waiting_for_price') {
+      return getBottomNumpadKeyboard(state.tempInput || '', true);
+    } else if (stateStep === 'waiting_for_phone') {
+      return getBottomNumpadKeyboard(state.tempInput || '', false);
+    } else if (stateStep === 'waiting_for_description') {
+      return await getDynamicDescriptionKeyboard();
+    } else if (stateStep === 'waiting_for_media') {
+      const count = (state.data.media_items || []).length;
+      const rows = [];
+      if (count > 0) {
+        rows.push([`✅ إنهاء إرفاق الوسائط (${count}) والانتقال`]);
+        rows.push(['🗑️ مسح الوسائط المرفقة']);
       }
-    }
-
-    delete userState[userId];
-    await replyTracked(ctx, userId, '🎉 <b>تم توثيق حسابك بنجاح!</b>', {
-      parse_mode: 'HTML',
-      ...getMainMenuKeyboard()
-    }, true);
-  } catch (err) {
-    await replyTracked(ctx, userId, '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.');
-  }
-}
-
-async function handleUserCallbackQuery(ctx) {
-  const data = ctx.callbackQuery?.data || '';
-  const match = data.match(/^adinq:([a-z_]+):(.+)$/);
-  if (!match) return false;
-
-  const userId = ctx.from.id;
-  const inquiryKey = match[1];
-  const reqId = decodeURIComponent(match[2]);
-  const actionLabel = AD_INQUIRY_TYPES[inquiryKey] || 'استفسار حول الإعلان';
-
-  await ctx.answerCbQuery('✅ تم إرسال استفسارك للإدارة');
-  await processAdInquiryAction(ctx, userId, actionLabel, reqId);
-  return true;
-}
-
-async function handleUserText(ctx, webhookDomain = '') {
-  const userId = ctx.from.id;
-  const userText = ctx.message.text ? ctx.message.text.trim() : '';
-  if (!userText) return;
-
-  if (userText === '/start') {
-    return handleUserStart(ctx, webhookDomain);
-  }
-
-  if (userText.startsWith('/')) return;
-
-  if (userText.includes('تصفح') || userText.includes('إضافة') || userText.includes('رصيدي')) {
-    const verified = await isUserVerified(userId);
-    if (!verified) {
-      return replyTracked(ctx, userId, '⚠️ عذراً، يجب عليك تأكيد رقم هاتفك أولاً عبر الزر أدناه:', getAuthKeyboard());
+      rows.push([backText, homeText]);
+      rows.push([cancelText]);
+      return Markup.keyboard(rows).resize();
+    } else if (stateStep === 'waiting_for_payment_choice') {
+      const publishCost = await getSetting('publish_cost_points', '100');
+      return Markup.keyboard([
+        ['💳 الدفع عبر BaridiMob / CCP'],
+        [`🪙 النشر مجاناً (${publishCost} نقطة)`],
+        ['🆓 نشر مجاني'],
+        [backText, homeText]
+      ]).resize();
+    } else {
+      return Markup.keyboard([
+        [backText, homeText],
+        [cancelText]
+      ]).resize();
     }
   }
 
-  if (userText === '❌ إلغاء العملية والعودة' || userText === '🏠 القائمة الرئيسية') {
+  async function renderWizard(ctx, userId, opts = {}) {
+    const state = userState[userId];
+    if (!state) return;
+
+    const user = await getUserRecord(userId);
+    const currentPoints = user ? (user.points || 0) : 0;
+    const publishCost = await getSetting('publish_cost_points', '100');
+
+    if (state.step === 'waiting_for_payment_choice' && !opts.footer) {
+      opts.footer =
+        `💰 <b>اختر طريقة إتمام ونشر الإعلان:</b>\n\n` +
+        `1️⃣ <b>الدفع السريع (BaridiMob / CCP):</b> 500 دج (أولوية ومراجعة فورية).\n` +
+        `2️⃣ <b>النشر المجاني بالنقاط:</b> يتطلب <b>${publishCost} نقطة</b>\n` +
+        `3️⃣ <b>نشر مجاني:</b> يُرسل إلى قائمة الانتظار والمراجعة الإدارية كإعلان مجاني.\n` +
+        `🪙 <b>رصيدك الحالي:</b> <b>${currentPoints} نقطة</b>`;
+    }
+
+    const text = await buildWizardText(state, opts);
+
+    if (state.step === 'publishing' && !opts.noKeyboard && state.wizardMsgId) {
+      try {
+        await ctx.telegram.editMessageText(state.chatId, state.wizardMsgId, undefined, text, { parse_mode: 'HTML' });
+      } catch (e) {}
+      return;
+    }
+
+    const replyKeyboard = opts.noKeyboard ? getMainMenuKeyboard() : await getStandardReplyKeyboard(state);
+
+    const sent = await ctx.reply(text, { parse_mode: 'HTML', ...replyKeyboard });
+    const oldId = state.wizardMsgId;
+    state.wizardMsgId = sent.message_id;
+    state.chatId = ctx.chat.id;
+    if (sent.message_id) {
+      trackBotMessage(userId, ctx.chat.id, sent.message_id);
+    }
+
+    if (oldId && oldId !== sent.message_id) {
+      await ctx.telegram.deleteMessage(state.chatId, oldId).catch(() => {});
+    }
+  }
+
+  async function onStart(ctx) {
     await safeDeleteUserMessage(ctx);
+    await ctx.sendChatAction('typing');
+    const userName = ctx.from.first_name || 'مستخدمنا الكريم';
+    const userId = ctx.from.id;
+
+    const startPayload = ctx.startPayload || '';
+    if (startPayload.startsWith('ref_')) {
+      const referrerId = Number(startPayload.replace('ref_', ''));
+      if (referrerId && referrerId !== userId) {
+        userState[userId] = { pendingReferrer: referrerId };
+      }
+    } else {
+      delete userState[userId];
+    }
+
+    delete browsingSession[userId];
+    userLang[userId] = 'ar';
+
+    const verified = await isUserVerified(userId);
+    const rawWelcomeTpl = await getSetting('welcome_msg_template', 'أهلاً بك يا <b>{name}</b> في <b>منصة عقار الجزائر (Aqar)</b> 🏠\n\nنظام رقمي احترافي لإدارة وعروض العقارات. اختر من القائمة أدناه:');
+    const welcomeText = rawWelcomeTpl.replace('{name}', userName).replace(/\\n/g, '\n');
+
+    if (verified) {
+      delete userState[userId];
+      await replyTracked(ctx, userId, welcomeText, { parse_mode: 'HTML', ...getMainMenuKeyboard() }, true);
+    } else {
+      const authText = await getSetting('auth_prompt_template', `أهلاً بك يا <b>${userName}</b> في <b>منصة عقار الجزائر (Aqar)</b> 🏠\n\n⚠️ <b>تنبيه أمني:</b>\nللاستفادة من خدمات المنصة وتصفح العقارات، يرجى <b>تأكيد رقم هاتفك</b> أولاً بضغطة زر واحدة:`);
+      await replyTracked(ctx, userId, authText.replace(/\\n/g, '\n'), { parse_mode: 'HTML', ...getAuthKeyboard() }, true);
+    }
+  }
+
+  bot.on('contact', async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    await ctx.sendChatAction('typing');
+    const contact = ctx.message.contact;
+    const phoneNumber = contact.phone_number;
+    const firstName = ctx.from.first_name || '';
+    const userId = ctx.from.id;
+    const referrerId = userState[userId]?.pendingReferrer || null;
+
+    try {
+      const { error: insertError } = await supabase.from('users').insert([
+        { id: userId, first_name: firstName, phone_number: phoneNumber, points: 0, referred_by: referrerId }
+      ]);
+      if (insertError) throw insertError;
+
+      if (referrerId) {
+        const refUser = await getUserRecord(referrerId);
+        if (refUser) {
+          const updatedPts = (refUser.points || 0) + 50;
+          await supabase.from('users').update({ points: updatedPts }).eq('id', referrerId);
+          await ctx.telegram.sendMessage(
+            referrerId,
+            `🎉 <b>مبروك! انضم صديق جديد عبر رابطك وحصلت على +50 نقطة!</b>\n🪙 رصيدك الحالي: ${updatedPts} نقطة.`,
+            { parse_mode: 'HTML' }
+          ).catch(() => {});
+        }
+      }
+
+      delete userState[userId];
+      await replyTracked(ctx, userId, '🎉 <b>تم توثيق حسابك بنجاح!</b>', {
+        parse_mode: 'HTML',
+        ...getMainMenuKeyboard()
+      }, true);
+    } catch (err) {
+      await replyTracked(ctx, userId, '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.');
+    }
+  });
+
+  bot.hears(['❌ إلغاء العملية والعودة', '🏠 القائمة الرئيسية'], async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    const userId = ctx.from.id;
     delete userState[userId];
     delete browsingSession[userId];
-    return replyTracked(ctx, userId, '✅ العودة إلى القائمة الرئيسية:', {
+
+    await replyTracked(ctx, userId, '✅ العودة إلى القائمة الرئيسية:', {
       parse_mode: 'HTML',
       ...getMainMenuKeyboard()
     }, true);
-  }
+  });
 
-  const adInquiryMatch = userText.match(/^(❓ لماذا إعلاني معلق\؟|⏱️ تذكير الإدارة بمراجعة الطلب|📞 لماذا لم يتم التواصل معي\؟|❌ لماذا تم رفض إعلاني\؟|🔄 طلب إعادة مراجعة الإعلان|⚠️ ملاحظة أو استفسار حول الإعلان) \(#([^)]+)\)$/);
-  if (adInquiryMatch) {
+  bot.hears('⬅️ رجوع', async (ctx) => {
     await safeDeleteUserMessage(ctx);
-    return processAdInquiryAction(ctx, userId, adInquiryMatch[1], adInquiryMatch[2]);
-  }
-
-  if (userText === '⬅️ رجوع') {
-    await safeDeleteUserMessage(ctx);
+    const userId = ctx.from.id;
     const state = userState[userId];
     if (!state || state.step === 'publishing') return;
 
@@ -1214,15 +761,18 @@ async function handleUserText(ctx, webhookDomain = '') {
 
     state.step = WIZ_STEPS[idx - 1];
     state.tempInput = '';
-    return renderWizard(ctx, userId);
-  }
 
-  if (userText === '🎁 رصيدي وجمع النقاط') {
+    await renderWizard(ctx, userId);
+  });
+
+  bot.hears('🎁 رصيدي وجمع النقاط', async (ctx) => {
     await safeDeleteUserMessage(ctx);
+    const userId = ctx.from.id;
     const user = await getUserRecord(userId);
     const points = user ? (user.points || 0) : 0;
     const rewardPoints = await getSetting('ad_reward_points', '25');
     const publishCost = await getSetting('publish_cost_points', '100');
+
     const botUsername = ctx.botInfo?.username || 'AqarDZ_bot';
     const refLink = `https://t.me/${botUsername}?start=ref_${userId}`;
 
@@ -1236,44 +786,75 @@ async function handleUserText(ctx, webhookDomain = '') {
       `شارك رابطك الخاص:\n<code>${refLink}</code>`;
 
     const keyboardRows = [];
-    if (webhookDomain) {
+    if (WEBHOOK_DOMAIN) {
       keyboardRows.push([
-        Markup.button.webApp(`🎬 مشاهدة إعلان الفيديو (+${rewardPoints} نقطة)`, `${webhookDomain}/watch-ad?uid=${userId}`)
+        Markup.button.webApp(`🎬 مشاهدة إعلان الفيديو (+${rewardPoints} نقطة)`, `${WEBHOOK_DOMAIN}/watch-ad?uid=${userId}`)
       ]);
     }
     keyboardRows.push(['🏠 القائمة الرئيسية']);
 
-    return replyTracked(ctx, userId, msg, {
+    await replyTracked(ctx, userId, msg, {
       parse_mode: 'HTML',
       ...Markup.keyboard(keyboardRows).resize()
     }, true);
-  }
+  });
 
-  if (userText === '🌐 تصفح الموقع الرسمي (البروزر)') {
+  bot.hears('🌐 تصفح الموقع الرسمي (البروزر)', async (ctx) => {
     await safeDeleteUserMessage(ctx);
-    return replyTracked(ctx, userId,
+    await replyTracked(ctx, ctx.from.id,
       '🌐 <b>رابط منصة عقار الجزائر (ويب):</b>\n\nانقر على الرابط التالي لفتحه في المتصفح:\nhttps://hosnihicham.github.io/testHTML',
-      { parse_mode: 'HTML', ...getMainMenuKeyboard() },
+      {
+        parse_mode: 'HTML',
+        ...getMainMenuKeyboard()
+      },
       true
     );
-  }
+  });
 
-  if (userText === 'ℹ️ عن المنصة') {
+  bot.hears('ℹ️ عن المنصة', async (ctx) => {
     await safeDeleteUserMessage(ctx);
     const aboutMsg = await getSetting('about_text', '🏛 <b>عن منصة عقار الجزائر (Aqar System):</b>\n\nنظام رقمي ذكي ومتطور لإدارة المعاملات العقارية.');
-    return replyTracked(ctx, userId, aboutMsg, { parse_mode: 'HTML', ...getMainMenuKeyboard() }, true);
+    await replyTracked(ctx, ctx.from.id, aboutMsg, { parse_mode: 'HTML', ...getMainMenuKeyboard() }, true);
+  });
+
+  async function showStatesMenu(ctx) {
+    const userId = ctx.from.id;
+    try {
+      const { data, error } = await supabase.from('test_messages').select('state_name');
+      if (error) throw error;
+      if (!data || data.length === 0) {
+        return replyTracked(ctx, userId, '📭 عذراً، لا توجد أي عقارات مسجلة في المنصة حالياً.', getMainMenuKeyboard(), true);
+      }
+
+      const uniqueStates = [...new Set(data.map(item => item.state_name).filter(Boolean))];
+      const stateButtons = uniqueStates.map(state => `📍 ${state}`);
+      const chunkedStates = chunkButtons(stateButtons, 4);
+      chunkedStates.push(['🌐 الكل'], ['🏠 القائمة الرئيسية']);
+
+      const browseTitle = await getSetting('browse_title', '🔍 <b>اختر الولاية المطلوبة لعرض العقارات من الأزرار أسفل الشاشة:</b>');
+      await replyTracked(ctx, userId, browseTitle, { parse_mode: 'HTML', ...Markup.keyboard(chunkedStates).resize() }, true);
+    } catch (err) {
+      console.error('showStatesMenu error:', err);
+      await replyTracked(ctx, userId, '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getMainMenuKeyboard(), true);
+    }
   }
 
-  if (userText === '🔍 تصفح العقارات المتاحة' || userText === '📍 تغيير الولاية' || userText === 'تغيير الولاية') {
+  bot.hears('🔍 تصفح العقارات المتاحة', async (ctx) => {
     await safeDeleteUserMessage(ctx);
-    delete browsingSession[userId];
-    return showStatesMenu(ctx);
-  }
+    delete browsingSession[ctx.from.id];
+    showStatesMenu(ctx);
+  });
 
-  const stateMatch = userText.match(/^📍 (.+)/);
-  if (stateMatch) {
+  bot.hears(['📍 تغيير الولاية', 'تغيير الولاية'], async (ctx) => {
     await safeDeleteUserMessage(ctx);
-    const selectedState = stateMatch[1].trim();
+    delete browsingSession[ctx.from.id];
+    showStatesMenu(ctx);
+  });
+
+  bot.hears(/^📍 (.+)/, async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    const userId = ctx.from.id;
+    const selectedState = ctx.match[1].trim();
     const state = userState[userId];
 
     if (state && state.step === 'waiting_for_state') {
@@ -1286,50 +867,132 @@ async function handleUserText(ctx, webhookDomain = '') {
     const stateList = await getUniqueStatesList();
     if (stateList.includes(selectedState)) {
       browsingSession[userId] = { state: selectedState, page: 0, photoIndex: 0 };
-      return renderPropertyPage(ctx, userId, 0, 0);
+      renderPropertyPage(ctx, userId, 0, 0);
     }
-    return;
-  }
+  });
 
-  if (userText === '🌐 الكل') {
+  bot.hears('🌐 الكل', async (ctx) => {
     await safeDeleteUserMessage(ctx);
+    const userId = ctx.from.id;
     browsingSession[userId] = { state: 'ALL', page: 0, photoIndex: 0 };
-    return renderPropertyPage(ctx, userId, 0, 0);
-  }
+    renderPropertyPage(ctx, userId, 0, 0);
+  });
 
-  if (userText === 'الصورة التالية 🖼') {
-    await safeDeleteUserMessage(ctx);
+  async function renderPropertyPage(ctx, userId, pageIndex, mediaIndex = 0) {
     const session = browsingSession[userId];
     if (!session) return;
-    return renderPropertyPage(ctx, userId, session.page, (session.photoIndex || 0) + 1);
+
+    session.selectingPage = false;
+
+    try {
+      let query = supabase.from('test_messages').select('*').order('id', { ascending: false });
+      if (session.state !== 'ALL') query = query.eq('state_name', session.state);
+
+      const { data, error } = await query;
+      if (error) throw error;
+      if (!data || data.length === 0) {
+        return replyTracked(ctx, userId, '📭 عذراً، لا توجد عقارات مسجلة.', getMainMenuKeyboard(), true);
+      }
+
+      if (pageIndex < 0) pageIndex = 0;
+      if (pageIndex >= data.length) pageIndex = data.length - 1;
+      session.page = pageIndex;
+
+      const item = data[pageIndex];
+      const orderedMedia = buildOrderedBrowsingMedia(item);
+      const totalMedia = orderedMedia.length;
+
+      let safeMediaIndex = Number(mediaIndex) || 0;
+      if (safeMediaIndex < 0) safeMediaIndex = 0;
+      if (totalMedia > 0 && safeMediaIndex >= totalMedia) safeMediaIndex = totalMedia - 1;
+      session.photoIndex = safeMediaIndex;
+
+      const currentMedia = totalMedia > 0 ? orderedMedia[safeMediaIndex] : null;
+      const mediaTypeLabel = currentMedia
+        ? (currentMedia.type === 'video' ? '🎥 فيديو' : '🖼 صورة')
+        : '';
+
+      const mediaLine = totalMedia > 0
+        ? `\n${mediaTypeLabel}: <b>${safeMediaIndex + 1} / ${totalMedia}</b>`
+        : '';
+
+      const publishedAtText = item.created_at ? formatDateTime(item.created_at) : 'غير مسجل';
+
+      const caption =
+        `🏛 <b>الولاية:</b> ${escapeHtml(item.state_name || '')} (${pageIndex + 1}/${data.length})\n\n` +
+        `🏠 <b>العقار:</b> ${escapeHtml(item.property_type || '')}\n` +
+        `💰 <b>السعر:</b> ${formatMoney(item.price)}\n` +
+        `📞 <b>هاتف المالك:</b> <code>${escapeHtml(item.phone || '')}</code>\n` +
+        `🕒 <b>تاريخ ووقت النشر:</b> <code>${escapeHtml(publishedAtText)}</code>${mediaLine}\n` +
+        `📝 <b>الوصف:</b> ${escapeHtml(item.description || item.message || '')}`;
+
+      const replyKb = getBrowsingKeyboard(pageIndex, data.length, safeMediaIndex, totalMedia);
+
+      let sentMsg = null;
+      if (currentMedia) {
+        try {
+          sentMsg = currentMedia.type === 'video'
+            ? await ctx.replyWithVideo(currentMedia.ref, { caption, parse_mode: 'HTML', ...replyKb })
+            : await ctx.replyWithPhoto(currentMedia.ref, { caption, parse_mode: 'HTML', ...replyKb });
+        } catch (mediaErr) {}
+      }
+
+      if (!sentMsg) {
+        sentMsg = await ctx.reply(caption, { parse_mode: 'HTML', ...replyKb });
+      }
+
+      const keepId = sentMsg?.message_id ? [sentMsg.message_id] : [];
+      if (sentMsg?.message_id) {
+        trackBotMessage(userId, ctx.chat.id, sentMsg.message_id);
+      }
+      session.lastMessageIds = keepId;
+      await clearTrackedBotMessages(ctx, userId, keepId);
+    } catch (err) {
+      console.error('renderPropertyPage error:', err);
+      await replyTracked(ctx, userId, '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getMainMenuKeyboard(), true);
+    }
   }
 
-  if (userText === '🖼 الصورة السابقة') {
+  bot.hears('الصورة التالية 🖼', async (ctx) => {
     await safeDeleteUserMessage(ctx);
+    const userId = ctx.from.id;
     const session = browsingSession[userId];
     if (!session) return;
-    return renderPropertyPage(ctx, userId, session.page, Math.max((session.photoIndex || 0) - 1, 0));
-  }
+    const nextMediaIdx = (session.photoIndex || 0) + 1;
+    return renderPropertyPage(ctx, userId, session.page, nextMediaIdx);
+  });
 
-  if (/^📸 (صورة|عنصر) \d+ \/ \d+$/.test(userText)) {
+  bot.hears('🖼 الصورة السابقة', async (ctx) => {
     await safeDeleteUserMessage(ctx);
+    const userId = ctx.from.id;
+    const session = browsingSession[userId];
+    if (!session) return;
+    const prevMediaIdx = Math.max((session.photoIndex || 0) - 1, 0);
+    return renderPropertyPage(ctx, userId, session.page, prevMediaIdx);
+  });
+
+  bot.hears(/^📸 (صورة|عنصر) \d+ \/ \d+$/, async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    const userId = ctx.from.id;
     const session = browsingSession[userId];
     if (!session) return;
     return renderPropertyPage(ctx, userId, session.page, session.photoIndex || 0);
-  }
+  });
 
-  if (/^📄 \d+ \/ \d+$/.test(userText)) {
+  bot.hears(/^📄 \d+ \/ \d+$/, async (ctx) => {
     await safeDeleteUserMessage(ctx);
+    const userId = ctx.from.id;
     const session = browsingSession[userId];
     if (!session) return;
 
-    let query = usersSupabase.from('test_messages').select('*').order('id', { ascending: false });
+    let query = supabase.from('test_messages').select('*').order('id', { ascending: false });
     if (session.state !== 'ALL') query = query.eq('state_name', session.state);
     const { data } = await query;
     const totalCount = data ? data.length : 0;
     if (totalCount === 0) return;
 
     session.selectingPage = true;
+
     const numberButtons = [];
     let row = [];
     for (let i = 1; i <= totalCount; i++) {
@@ -1342,43 +1005,59 @@ async function handleUserText(ctx, webhookDomain = '') {
     if (row.length > 0) numberButtons.push(row);
     numberButtons.push(['🔙 رجوع للعقار']);
 
-    return replyTracked(ctx, userId, `🔢 <b>اختر رقم العقار للانتقال إليه مباشرة (من 1 إلى ${totalCount}):</b>`, {
+    await replyTracked(ctx, userId, `🔢 <b>اختر رقم العقار للانتقال إليه مباشرة (من 1 إلى ${totalCount}):</b>`, {
       parse_mode: 'HTML',
       ...Markup.keyboard(numberButtons).resize()
     }, true);
-  }
+  });
 
-  if (userText === '🔙 رجوع للعقار') {
+  bot.hears(/^\d+$/, async (ctx, next) => {
+    const userId = ctx.from.id;
+    const session = browsingSession[userId];
+
+    if (session && session.selectingPage) {
+      await safeDeleteUserMessage(ctx);
+      const selectedNumber = parseInt(ctx.message.text.trim(), 10);
+      session.selectingPage = false;
+      return renderPropertyPage(ctx, userId, selectedNumber - 1, 0);
+    }
+
+    return next();
+  });
+
+  bot.hears('🔙 رجوع للعقار', async (ctx) => {
     await safeDeleteUserMessage(ctx);
+    const userId = ctx.from.id;
     const session = browsingSession[userId];
     if (session) {
       session.selectingPage = false;
-      return renderPropertyPage(ctx, userId, session.page, session.photoIndex || 0);
+      renderPropertyPage(ctx, userId, session.page, session.photoIndex || 0);
     }
-    return;
-  }
+  });
 
-  if (userText === '⬅️ السابق') {
+  bot.hears('⬅️ السابق', async (ctx) => {
     await safeDeleteUserMessage(ctx);
+    const userId = ctx.from.id;
     const session = browsingSession[userId];
     if (session && session.page > 0) {
-      return renderPropertyPage(ctx, userId, session.page - 1, 0);
+      renderPropertyPage(ctx, userId, session.page - 1, 0);
     }
-    return;
-  }
+  });
 
-  if (userText === 'التالي ➡️') {
+  bot.hears('التالي ➡️', async (ctx) => {
     await safeDeleteUserMessage(ctx);
+    const userId = ctx.from.id;
     const session = browsingSession[userId];
     if (session) {
-      return renderPropertyPage(ctx, userId, session.page + 1, 0);
+      renderPropertyPage(ctx, userId, session.page + 1, 0);
     }
-    return;
-  }
+  });
 
-  if (userText === '➕ إضافة عقار جديد') {
+  bot.hears('➕ إضافة عقار جديد', async (ctx) => {
     await safeDeleteUserMessage(ctx);
+    const userId = ctx.from.id;
     await clearTrackedBotMessages(ctx, userId);
+
     userState[userId] = {
       step: 'waiting_for_type',
       data: { features_list: [], media_items: [] },
@@ -1386,11 +1065,12 @@ async function handleUserText(ctx, webhookDomain = '') {
       wizardMsgId: null,
       tempInput: ''
     };
-    return renderWizard(ctx, userId);
-  }
+    renderWizard(ctx, userId);
+  });
 
-  if (userText === '💳 الدفع عبر BaridiMob / CCP') {
+  bot.hears('💳 الدفع عبر BaridiMob / CCP', async (ctx) => {
     await safeDeleteUserMessage(ctx);
+    const userId = ctx.from.id;
     const state = userState[userId];
     if (!state || state.step !== 'waiting_for_payment_choice') return;
 
@@ -1407,11 +1087,12 @@ async function handleUserText(ctx, webhookDomain = '') {
 
     state.data.payment_label = '💳 تحويل بريدي موب / CCP';
     state.step = 'waiting_for_payment_receipt';
-    return renderWizard(ctx, userId, { footer: ccpInstructions });
-  }
+    await renderWizard(ctx, userId, { footer: ccpInstructions });
+  });
 
-  if (userText === '🆓 نشر مجاني') {
+  bot.hears('🆓 نشر مجاني', async (ctx) => {
     await safeDeleteUserMessage(ctx);
+    const userId = ctx.from.id;
     const state = userState[userId];
     if (!state || state.step !== 'waiting_for_payment_choice') return;
 
@@ -1430,7 +1111,7 @@ async function handleUserText(ctx, webhookDomain = '') {
       const cleanPhone = String(state.data.phone || '').replace(/\D/g, '').trim();
       const submittedAt = formatDateTime(new Date());
 
-      const { data: insertedRow, error: insertError } = await usersSupabase
+      const { data: insertedRow, error: insertError } = await supabase
         .from('pending_properties')
         .insert([{
           user_id: userId,
@@ -1509,7 +1190,7 @@ async function handleUserText(ctx, webhookDomain = '') {
       }
 
       delete userState[userId];
-      return replyTracked(ctx, userId,
+      await replyTracked(ctx, userId,
         `⏳ <b>تم تسجيل إعلانك المجاني في قائمة الانتظار برقم (#${requestId}) وإرساله إلى الإدارة!</b>\n\n` +
         `🆓 <b>نوع الطلب:</b> إعلان مجاني\n` +
         `🕒 <b>تاريخ ووقت الإرسال:</b> <code>${escapeHtml(submittedAt)}</code>\n\n` +
@@ -1520,7 +1201,7 @@ async function handleUserText(ctx, webhookDomain = '') {
     } catch (err) {
       console.error('Free ad pending publish error:', err);
       delete userState[userId];
-      return replyTracked(
+      await replyTracked(
         ctx,
         userId,
         `⚠️ <b>تعذر إرسال الإعلان المجاني إلى قائمة الانتظار:</b>\n<code>${escapeHtml(err.message || 'خطأ غير معروف')}</code>`,
@@ -1528,10 +1209,11 @@ async function handleUserText(ctx, webhookDomain = '') {
         true
       );
     }
-  }
+  });
 
-  if (/^🪙 النشر مجاناً/.test(userText)) {
+  bot.hears(/^🪙 النشر مجاناً/, async (ctx) => {
     await safeDeleteUserMessage(ctx);
+    const userId = ctx.from.id;
     const state = userState[userId];
     if (!state || state.step !== 'waiting_for_payment_choice') return;
 
@@ -1557,13 +1239,13 @@ async function handleUserText(ctx, webhookDomain = '') {
       const combinedImagesUrl = await uploadMediaListByType(ctx, mediaItems, 'photo');
       const videoUrl = await uploadMediaListByType(ctx, mediaItems, 'video');
 
-      await usersSupabase.from('users').update({ points: currentPoints - publishCost }).eq('id', userId);
+      await supabase.from('users').update({ points: currentPoints - publishCost }).eq('id', userId);
 
       const numericPrice = sanitizeNumericPrice(state.data.price);
       const cleanPhone = String(state.data.phone || '').replace(/\D/g, '').trim();
       const nowIso = new Date().toISOString();
 
-      await usersSupabase.from('test_messages').insert([{
+      await supabase.from('test_messages').insert([{
         property_type: state.data.property_type,
         state_name: state.data.state_name,
         price: numericPrice,
@@ -1576,7 +1258,7 @@ async function handleUserText(ctx, webhookDomain = '') {
       }]);
 
       delete userState[userId];
-      return replyTracked(ctx, userId,
+      await replyTracked(ctx, userId,
         `🎉 <b>تم خصم ${publishCost} نقطة ونشر إعلانك بنجاح في المنصة مجاناً!</b>\n🕒 <b>تاريخ ووقت النشر:</b> <code>${escapeHtml(formatDateTime(nowIso))}</code>`,
         { parse_mode: 'HTML', ...getMainMenuKeyboard() },
         true
@@ -1584,17 +1266,480 @@ async function handleUserText(ctx, webhookDomain = '') {
     } catch (err) {
       console.error('Free publish error:', err);
       delete userState[userId];
-      return replyTracked(ctx, userId, '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getMainMenuKeyboard(), true);
+      await replyTracked(ctx, userId, '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getMainMenuKeyboard(), true);
+    }
+  });
+
+  const AD_INQUIRY_TYPES = {
+    why_rejected: '❌ لماذا تم رفض إعلاني؟',
+    re_review: '🔄 طلب إعادة مراجعة الإعلان',
+    why_pending: '❓ لماذا إعلاني معلق؟',
+    remind_admin: '⏱️ تذكير الإدارة بمراجعة الطلب',
+    no_contact: '📞 لماذا لم يتم التواصل معي؟',
+    ad_note: '⚠️ ملاحظة أو استفسار حول الإعلان'
+  };
+
+  const QUICK_SUPPORT_PRESETS = {
+    '💳 مشكلة في الدفع': 'العميل يبلغ عن مشكلة أو استفسار بخصوص الدفع.',
+    '🏠 إعلان أو تصفح عقاري': 'العميل لديه استفسار بخصوص الإعلانات أو التصفح العقاري.',
+    '🪙 النقاط والمكافآت': 'العميل يستفسر عن النقاط والمكافآت.',
+    '💡 اقتراح أو تحسين': 'العميل يشارك اقتراحاً أو فكرة لتحسين المنصة.',
+    '👏 شكر أو ملاحظة إيجابية': 'العميل يرسل رسالة شكر وتقدير للمنصة.',
+    '💬 استفسار عام / أخرى': 'العميل يطلب تواصلاً أو استفساراً عاماً مع الإدارة.'
+  };
+
+  async function fetchUserOwnedAds(userId) {
+    const ads = [];
+
+    try {
+      const { data: pendingRows } = await supabase
+        .from('pending_properties')
+        .select('*')
+        .eq('user_id', userId)
+        .order('id', { ascending: false });
+
+      if (Array.isArray(pendingRows)) {
+        for (const row of pendingRows) {
+          const st = row.status || 'pending';
+          ads.push({
+            ...row,
+            source: 'pending_properties',
+            ad_status: st,
+            status_label:
+              st === 'approved' ? '✅ مقبول' :
+              st === 'rejected' ? '❌ مرفوض' : '⏳ معلق'
+          });
+        }
+      }
+    } catch (e) {}
+
+    try {
+      const { data: publishedRows } = await supabase
+        .from('test_messages')
+        .select('*')
+        .eq('user_id', userId)
+        .order('id', { ascending: false });
+
+      if (Array.isArray(publishedRows)) {
+        const existingApprovedKeys = new Set(
+          ads
+            .filter(a => a.ad_status === 'approved')
+            .map(a => `${a.property_type}|${a.state_name}|${a.price}|${a.phone}`)
+        );
+
+        for (const row of publishedRows) {
+          const key = `${row.property_type}|${row.state_name}|${row.price}|${row.phone}`;
+          if (!existingApprovedKeys.has(key)) {
+            ads.push({
+              ...row,
+              source: 'test_messages',
+              ad_status: 'approved',
+              status_label: '✅ مقبول'
+            });
+          }
+        }
+      }
+    } catch (e) {}
+
+    return ads;
+  }
+
+  function getSupportHubKeyboard() {
+    return Markup.keyboard([
+      ['👤 ملفي الشخصي ورصيدي', '📋 إعلاناتي وحالتها'],
+      ['🗂 تصفح إعلاناتي الخاصة', '💬 دعم واقتراحات وشكر'],
+      ['🏠 القائمة الرئيسية']
+    ]).resize();
+  }
+
+  function getSupportCategoriesKeyboard() {
+    return Markup.keyboard([
+      ['💳 مشكلة في الدفع', '🏠 إعلان أو تصفح عقاري'],
+      ['🪙 النقاط والمكافآت', '💡 اقتراح أو تحسين'],
+      ['👏 شكر أو ملاحظة إيجابية', '💬 استفسار عام / أخرى'],
+      ['⬅️ لوحة العميل', '🏠 القائمة الرئيسية']
+    ]).resize();
+  }
+
+  function getInteractiveAdInlineKeyboard(ad) {
+    const id = encodeURIComponent(String(ad.id || '0'));
+    if (ad.ad_status === 'pending') {
+      return Markup.inlineKeyboard([
+        [Markup.button.callback('❓ لماذا إعلاني معلق؟', `adinq:why_pending:${id}`)],
+        [Markup.button.callback('⏱️ تذكير الإدارة بمراجعة الطلب', `adinq:remind_admin:${id}`)],
+        [Markup.button.callback('📞 لماذا لم يتم التواصل معي؟', `adinq:no_contact:${id}`)]
+      ]);
+    }
+    if (ad.ad_status === 'rejected') {
+      return Markup.inlineKeyboard([
+        [Markup.button.callback('❌ لماذا تم رفض إعلاني؟', `adinq:why_rejected:${id}`)],
+        [Markup.button.callback('🔄 طلب إعادة مراجعة الإعلان', `adinq:re_review:${id}`)]
+      ]);
+    }
+    return Markup.inlineKeyboard([
+      [Markup.button.callback('⚠️ ملاحظة أو استفسار حول الإعلان', `adinq:ad_note:${id}`)]
+    ]);
+  }
+
+  function getAdActionButtonsForStatus(ad) {
+    const id = ad.id || 'غير_محدد';
+    if (ad.ad_status === 'pending') {
+      return Markup.keyboard([
+        [`❓ لماذا إعلاني معلق؟ (#${id})`],
+        [`⏱️ تذكير الإدارة بمراجعة الطلب (#${id})`],
+        [`📞 لماذا لم يتم التواصل معي؟ (#${id})`],
+        ['⬅️ قائمة الإعلانات', '🏠 القائمة الرئيسية']
+      ]).resize();
+    }
+    if (ad.ad_status === 'rejected') {
+      return Markup.keyboard([
+        [`❌ لماذا تم رفض إعلاني؟ (#${id})`],
+        [`🔄 طلب إعادة مراجعة الإعلان (#${id})`],
+        ['⬅️ قائمة الإعلانات', '🏠 القائمة الرئيسية']
+      ]).resize();
+    }
+    return Markup.keyboard([
+      [`⚠️ ملاحظة أو استفسار حول الإعلان (#${id})`],
+      ['⬅️ قائمة الإعلانات', '🏠 القائمة الرئيسية']
+    ]).resize();
+  }
+
+  function getUserOwnBrowsingKeyboard(index, total, mediaIdx = 0, totalMedia = 0) {
+    const rows = [];
+    if (totalMedia > 1) {
+      const mRow = [];
+      if (mediaIdx > 0) mRow.push('🖼 الصورة السابقة');
+      mRow.push(`📸 عنصر ${mediaIdx + 1} / ${totalMedia}`);
+      if (mediaIdx < totalMedia - 1) mRow.push('الصورة التالية 🖼');
+      rows.push(mRow);
+    }
+
+    const navRow = [];
+    if (index > 0) navRow.push('⬅️ إعلاني السابق');
+    navRow.push(`🗂 ${index + 1} / ${total}`);
+    if (index < total - 1) navRow.push('إعلاني التالي ➡️');
+    rows.push(navRow);
+    rows.push(['⬅️ لوحة العميل', '🏠 القائمة الرئيسية']);
+    return Markup.keyboard(rows).resize();
+  }
+
+  async function openSupportDashboard(ctx, userId) {
+    const dbUser = await getUserRecord(userId);
+    const allAds = await fetchUserOwnedAds(userId);
+    const pendingCount = allAds.filter(a => a.ad_status === 'pending').length;
+    const approvedCount = allAds.filter(a => a.ad_status === 'approved').length;
+    const rejectedCount = allAds.filter(a => a.ad_status === 'rejected').length;
+
+    const points = dbUser?.points ?? 0;
+    const name = escapeHtml(dbUser?.first_name || ctx.from.first_name || 'عميلنا الكريم');
+    const supportIntro = await getSetting('support_text', '');
+
+    supportUserSession[userId] = { mode: 'dashboard', ads: allAds };
+    userState[userId] = {
+      step: 'support_dashboard',
+      data: {},
+      chatId: ctx.chat.id,
+      wizardMsgId: null
+    };
+
+    const text =
+      `🎛 <b>لوحة العميل ومركز الدعم</b>\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `👋 أهلاً بك يا <b>${name}</b>\n` +
+      `🪙 <b>رصيد النقاط:</b> <b>${points} نقطة</b>\n` +
+      `📊 <b>إعلاناتك:</b> إجمالي <b>${allAds.length}</b> | ⏳ معلق: <b>${pendingCount}</b> | ✅ مقبول: <b>${approvedCount}</b> | ❌ مرفوض: <b>${rejectedCount}</b>` +
+      (supportIntro ? `\n\n${supportIntro}` : '') +
+      `\n\n👇 <b>اختر ما تريد من الأزرار أدناه:</b>`;
+
+    await replyTracked(ctx, userId, text, {
+      parse_mode: 'HTML',
+      ...getSupportHubKeyboard()
+    }, true);
+  }
+
+  async function renderUserOwnAdBrowser(ctx, userId, adIndex = 0, mediaIndex = 0) {
+    const allAds = await fetchUserOwnedAds(userId);
+    if (!allAds.length) {
+      return replyTracked(
+        ctx,
+        userId,
+        '📭 <b>لا توجد إعلانات مسجلة باسمك حتى الآن.</b>',
+        { parse_mode: 'HTML', ...getSupportHubKeyboard() },
+        true
+      );
+    }
+
+    let safeIdx = Number(adIndex) || 0;
+    if (safeIdx < 0) safeIdx = 0;
+    if (safeIdx >= allAds.length) safeIdx = allAds.length - 1;
+
+    const ad = allAds[safeIdx];
+    const orderedMedia = buildOrderedBrowsingMedia(ad);
+    const totalMedia = orderedMedia.length;
+
+    let safeMediaIdx = Number(mediaIndex) || 0;
+    if (safeMediaIdx < 0) safeMediaIdx = 0;
+    if (totalMedia > 0 && safeMediaIdx >= totalMedia) safeMediaIdx = totalMedia - 1;
+
+    supportUserSession[userId] = {
+      mode: 'browsing_own_ads',
+      ads: allAds,
+      page: safeIdx,
+      mediaIndex: safeMediaIdx,
+      selectingPage: false
+    };
+
+    const currentMedia = totalMedia > 0 ? orderedMedia[safeMediaIdx] : null;
+    const mediaLine = totalMedia > 0
+      ? `\n${currentMedia.type === 'video' ? '🎥 فيديو' : '🖼 صورة'}: <b>${safeMediaIdx + 1} / ${totalMedia}</b>`
+      : '';
+
+    const adDateLine = ad.created_at
+      ? `\n🕒 <b>التاريخ والوقت:</b> <code>${escapeHtml(formatDateTime(ad.created_at))}</code>`
+      : '';
+
+    const caption =
+      `🗂 <b>إعلاناتك الخاصة (${safeIdx + 1}/${allAds.length})</b> — الحالة: <b>${ad.status_label}</b>\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `🏠 <b>العقار:</b> ${escapeHtml(ad.property_type || '')}\n` +
+      `📍 <b>الولاية:</b> ${escapeHtml(ad.state_name || '')}\n` +
+      `💰 <b>السعر:</b> ${formatMoney(ad.price)}\n` +
+      `📞 <b>الهاتف:</b> <code>${escapeHtml(ad.phone || '')}</code>${adDateLine}${mediaLine}\n` +
+      `📝 <b>الوصف:</b> ${escapeHtml(ad.description || ad.message || '')}`;
+
+    const kb = getUserOwnBrowsingKeyboard(safeIdx, allAds.length, safeMediaIdx, totalMedia);
+
+    let sentMsg = null;
+    if (currentMedia) {
+      try {
+        sentMsg = currentMedia.type === 'video'
+          ? await ctx.replyWithVideo(currentMedia.ref, { caption, parse_mode: 'HTML', ...kb })
+          : await ctx.replyWithPhoto(currentMedia.ref, { caption, parse_mode: 'HTML', ...kb });
+      } catch (e) {}
+    }
+
+    if (!sentMsg) {
+      sentMsg = await ctx.reply(caption, { parse_mode: 'HTML', ...kb });
+    }
+
+    const keepIds = sentMsg?.message_id ? [sentMsg.message_id] : [];
+    if (sentMsg?.message_id) trackBotMessage(userId, ctx.chat.id, sentMsg.message_id);
+    await clearTrackedBotMessages(ctx, userId, keepIds);
+  }
+
+  async function resolvePendingRecordForReview(relatedAd, senderUserId, fallbackAdId = null) {
+    let candidate = relatedAd ? { ...relatedAd } : null;
+
+    try {
+      const lookupId = candidate?.id || fallbackAdId;
+      if (lookupId && String(lookupId) !== '0' && String(lookupId) !== 'غير_محدد') {
+        const { data } = await supabase
+          .from('pending_properties')
+          .select('*')
+          .eq('id', lookupId)
+          .single();
+        if (data) {
+          const st = data.status || 'pending';
+          return {
+            ...data,
+            source: 'pending_properties',
+            ad_status: st,
+            status_label:
+              st === 'approved' ? '✅ مقبول' :
+              st === 'rejected' ? '❌ مرفوض' : '⏳ معلق'
+          };
+        }
+      }
+
+      if (candidate && senderUserId) {
+        const { data: matchedRows } = await supabase
+          .from('pending_properties')
+          .select('*')
+          .eq('user_id', senderUserId)
+          .eq('property_type', candidate.property_type || '')
+          .eq('state_name', candidate.state_name || '')
+          .order('id', { ascending: false })
+          .limit(1);
+
+        if (matchedRows && matchedRows.length > 0) {
+          const row = matchedRows[0];
+          const st = row.status || 'pending';
+          return {
+            ...row,
+            source: 'pending_properties',
+            ad_status: st,
+            status_label:
+              st === 'approved' ? '✅ مقبول' :
+              st === 'rejected' ? '❌ مرفوض' : '⏳ معلق'
+          };
+        }
+      }
+    } catch (e) {}
+
+    return candidate;
+  }
+
+  async function sendStructuredTicketToAdmins(ctx, senderUserId, ticketTitle, detailText, relatedAd = null, payloadType = 'text', mediaContent = {}, fallbackAdId = null) {
+    const adminIds = await getAdminIds();
+    const dbUser = await getUserRecord(senderUserId);
+    const fullName = escapeHtml(
+      [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' ') ||
+      dbUser?.first_name ||
+      'مستخدم'
+    );
+    const phoneLine = dbUser?.phone_number ? `\n📞 <b>هاتف العميل:</b> <code>${escapeHtml(dbUser.phone_number)}</code>` : '';
+
+    const resolvedAd = await resolvePendingRecordForReview(relatedAd, senderUserId, fallbackAdId);
+    const receiptRef = normalizeMediaRef(resolvedAd?.receipt_url);
+    const isFreeAd = resolvedAd?.receipt_url === 'FREE_NO_RECEIPT';
+
+    const adIdNum = Number(resolvedAd?.id || fallbackAdId);
+    const hasNumericAdId = Number.isFinite(adIdNum) && adIdNum > 0;
+    const adIdLabel = resolvedAd?.id || fallbackAdId || null;
+
+    const isReminderOrReview =
+      /تذكير|معلق|إعادة مراجعة|remind|pending|re_review/i.test(ticketTitle) ||
+      /تذكير|معلق|إعادة مراجعة/i.test(detailText || '');
+
+    const photosCount = parseImagesFromImageUrl(resolvedAd?.image_url).length;
+    const videosCount = parseMediaListFromField(resolvedAd?.video_url).length;
+    const adTypeBadge = isFreeAd ? `\n🏷 <b>نوع الإعلان:</b> <b>إعلان مجاني</b>` : '';
+    const adTimeBadge = resolvedAd?.created_at
+      ? `\n🕒 <b>تاريخ الإرسال:</b> <code>${escapeHtml(formatDateTime(resolvedAd.created_at))}</code>`
+      : `\n🕒 <b>وقت الطلب:</b> <code>${escapeHtml(formatDateTime(new Date()))}</code>`;
+
+    const adBlock = adIdLabel
+      ? `\n📌 <b>الإعلان:</b> <code>#${escapeHtml(String(adIdLabel))}</code>` +
+        (resolvedAd?.property_type ? ` (${escapeHtml(resolvedAd.property_type)}${resolvedAd?.state_name ? ` - ${escapeHtml(resolvedAd.state_name)}` : ''}${resolvedAd?.price ? ` - ${formatMoney(resolvedAd.price)}` : ''})` : '') +
+        (resolvedAd?.status_label || relatedAd?.status_label ? ` — الحالة: <b>${resolvedAd?.status_label || relatedAd?.status_label}</b>` : '') +
+        adTypeBadge +
+        adTimeBadge +
+        (isReminderOrReview && (photosCount > 0 || videosCount > 0)
+          ? `\n🖼 <b>الصور:</b> ${photosCount} | 🎥 <b>الفيديو:</b> ${videosCount}`
+          : '') +
+        (resolvedAd?.description ? `\n📝 <b>الوصف:</b> ${escapeHtml(resolvedAd.description)}` : '')
+      : adTimeBadge;
+
+    const header = isReminderOrReview
+      ? `🔔 <b>معاينة تذكير إعلان — ${escapeHtml(ticketTitle)}</b>\n` +
+        `━━━━━━━━━━━━━━━━━━━━\n` +
+        `👤 <b>الاسم:</b> ${fullName}\n` +
+        `🆔 <b>الآيدي (ID):</b> <code>${senderUserId}</code>${phoneLine}${adBlock}\n`
+      : `📩 <b>طلب من العميل — ${escapeHtml(ticketTitle)}</b>\n` +
+        `━━━━━━━━━━━━━━━━━━━━\n` +
+        `👤 <b>الاسم:</b> ${fullName}\n` +
+        `🆔 <b>الآيدي (ID):</b> <code>${senderUserId}</code>${phoneLine}${adBlock}\n`;
+
+    const inlineRows = [];
+    if (hasNumericAdId) {
+      inlineRows.push([
+        Markup.button.callback(`❌ رفض (#${adIdNum})`, `reject_${adIdNum}`),
+        Markup.button.callback(`✅ قبول ونشر (#${adIdNum})`, `approve_${adIdNum}`)
+      ]);
+    }
+    inlineRows.push([
+      Markup.button.callback(`✉️ رد على العميل (${senderUserId})`, `support_reply_${senderUserId}`)
+    ]);
+
+    const replyMarkup = Markup.inlineKeyboard(inlineRows);
+    const bodyText = detailText ? `\n💬 <b>الطلب:</b>\n${escapeHtml(detailText)}` : '';
+
+    for (const adminId of adminIds) {
+      try {
+        if (payloadType === 'photo') {
+          const cap = header + (mediaContent.caption ? `\n💬 <b>الطلب:</b> ${escapeHtml(mediaContent.caption)}` : '\n🖼 <b>مرفق صورة من العميل</b>');
+          await ctx.telegram.sendPhoto(adminId, mediaContent.fileId, { caption: cap, parse_mode: 'HTML', ...replyMarkup });
+        } else if (payloadType === 'video') {
+          const cap = header + (mediaContent.caption ? `\n💬 <b>الطلب:</b> ${escapeHtml(mediaContent.caption)}` : '\n🎥 <b>مرفق فيديو من العميل</b>');
+          await ctx.telegram.sendVideo(adminId, mediaContent.fileId, { caption: cap, parse_mode: 'HTML', ...replyMarkup });
+        } else if (receiptRef) {
+          const receiptCaption =
+            header +
+            bodyText +
+            `\n\n🧾 <b>وصل الدفع (الفيرسمون) المرفق للمراجعة أعلاه 👆</b>`;
+          try {
+            await ctx.telegram.sendPhoto(adminId, receiptRef, {
+              caption: receiptCaption,
+              parse_mode: 'HTML',
+              ...replyMarkup
+            });
+          } catch (receiptSendErr) {
+            await ctx.telegram.sendMessage(adminId, header + bodyText + `\n🧾 <b>رابط الوصل:</b> ${escapeHtml(receiptRef)}`, {
+              parse_mode: 'HTML',
+              ...replyMarkup
+            });
+          }
+        } else {
+          await ctx.telegram.sendMessage(adminId, header + bodyText, { parse_mode: 'HTML', ...replyMarkup });
+        }
+      } catch (err) {
+        console.error(`Support ticket forward error to ${adminId}:`, err.message);
+      }
     }
   }
 
-  if (userText === '📞 الدعم والإدارة' || userText === '⬅️ لوحة العميل') {
-    await safeDeleteUserMessage(ctx);
-    return openSupportDashboard(ctx, userId);
+  async function processAdInquiryAction(ctx, userId, actionLabel, reqId) {
+    const s = supportUserSession[userId];
+    const adsList = s?.ads || await fetchUserOwnedAds(userId);
+    const relatedAd = adsList.find(a => String(a.id) === String(reqId)) || s?.selectedAd || null;
+
+    await sendStructuredTicketToAdmins(
+      ctx,
+      userId,
+      `${actionLabel} (#${reqId})`,
+      `${actionLabel} — بخصوص الإعلان رقم #${reqId}.`,
+      relatedAd,
+      'text',
+      {},
+      reqId
+    );
+
+    await replyTracked(
+      ctx,
+      userId,
+      `✅ <b>تم إرسال استفسارك (${escapeHtml(actionLabel)}) بخصوص الإعلان <code>#${escapeHtml(String(reqId))}</code> إلى الإدارة.</b>`,
+      {
+        parse_mode: 'HTML',
+        ...Markup.keyboard([
+          ['📋 إعلاناتي وحالتها'],
+          ['⬅️ لوحة العميل', '🏠 القائمة الرئيسية']
+        ]).resize()
+      },
+      true
+    );
   }
 
-  if (userText === '👤 ملفي الشخصي ورصيدي') {
+  bot.action(/^adinq:([a-z_]+):(.+)$/, async (ctx) => {
+    const userId = ctx.from.id;
+    const inquiryKey = ctx.match[1];
+    const reqId = decodeURIComponent(ctx.match[2]);
+    const actionLabel = AD_INQUIRY_TYPES[inquiryKey] || 'استفسار حول الإعلان';
+
+    await ctx.answerCbQuery('✅ تم إرسال استفسارك للإدارة');
+    await processAdInquiryAction(ctx, userId, actionLabel, reqId);
+  });
+
+  bot.hears(/^(❓ لماذا إعلاني معلق\؟|⏱️ تذكير الإدارة بمراجعة الطلب|📞 لماذا لم يتم التواصل معي\؟|❌ لماذا تم رفض إعلاني\؟|🔄 طلب إعادة مراجعة الإعلان|⚠️ ملاحظة أو استفسار حول الإعلان) \(#([^)]+)\)$/, async (ctx) => {
     await safeDeleteUserMessage(ctx);
+    const userId = ctx.from.id;
+    const actionLabel = ctx.match[1];
+    const reqId = ctx.match[2];
+    await processAdInquiryAction(ctx, userId, actionLabel, reqId);
+  });
+
+  bot.hears('📞 الدعم والإدارة', async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    await openSupportDashboard(ctx, ctx.from.id);
+  });
+
+  bot.hears('⬅️ لوحة العميل', async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    await openSupportDashboard(ctx, ctx.from.id);
+  });
+
+  bot.hears('👤 ملفي الشخصي ورصيدي', async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    const userId = ctx.from.id;
     const dbUser = await getUserRecord(userId);
     const allAds = await fetchUserOwnedAds(userId);
 
@@ -1605,11 +1750,15 @@ async function handleUserText(ctx, webhookDomain = '') {
       `• <b>رصيد النقاط:</b> <b>${dbUser?.points ?? 0} نقطة</b>\n` +
       `• <b>عدد إعلاناتك المسجلة:</b> <b>${allAds.length}</b>`;
 
-    return replyTracked(ctx, userId, text, { parse_mode: 'HTML', ...getSupportHubKeyboard() }, true);
-  }
+    await replyTracked(ctx, userId, text, {
+      parse_mode: 'HTML',
+      ...getSupportHubKeyboard()
+    }, true);
+  });
 
-  if (userText === '📋 إعلاناتي وحالتها' || userText === '⬅️ قائمة الإعلانات') {
+  bot.hears('📋 إعلاناتي وحالتها', async (ctx) => {
     await safeDeleteUserMessage(ctx);
+    const userId = ctx.from.id;
     const allAds = await fetchUserOwnedAds(userId);
     supportUserSession[userId] = { mode: 'ads_filter', ads: allAds };
 
@@ -1617,7 +1766,7 @@ async function handleUserText(ctx, webhookDomain = '') {
     const approved = allAds.filter(a => a.ad_status === 'approved').length;
     const rejected = allAds.filter(a => a.ad_status === 'rejected').length;
 
-    return replyTracked(
+    await replyTracked(
       ctx,
       userId,
       `📋 <b>إعلاناتي وحالتها</b>\n\nاختر الفئة لعرض إعلاناتك والتساؤل حول أي إعلان بضغطة زر:`,
@@ -1631,12 +1780,12 @@ async function handleUserText(ctx, webhookDomain = '') {
       },
       true
     );
-  }
+  });
 
-  const filterMatch = userText.match(/^(⏳ معلقة|✅ مقبولة|❌ مرفوضة|📌 الكل) \(\d+\)$/);
-  if (filterMatch) {
+  bot.hears(/^(⏳ معلقة|✅ مقبولة|❌ مرفوضة|📌 الكل) \(\d+\)$/, async (ctx) => {
     await safeDeleteUserMessage(ctx);
-    const prefix = filterMatch[1];
+    const userId = ctx.from.id;
+    const prefix = ctx.match[1];
     const allAds = await fetchUserOwnedAds(userId);
 
     let filtered = allAds;
@@ -1680,7 +1829,7 @@ async function handleUserText(ctx, webhookDomain = '') {
       `📄 إعلان #${ad.id || '—'} (${escapeHtml(ad.property_type || '')})`
     );
 
-    return replyTracked(
+    await replyTracked(
       ctx,
       userId,
       `📋 <b>${escapeHtml(label)} (${filtered.length}):</b>\n\n${listLines.join('\n')}\n\n👇 <b>اختر إعلاناً من الأزرار لإرسال استفسار أو تذكير حوله:</b>`,
@@ -1693,14 +1842,41 @@ async function handleUserText(ctx, webhookDomain = '') {
       },
       true
     );
-  }
+  });
 
-  const singleAdMatch = userText.match(/^📄 إعلان #(\S+) \((.+)\)$/);
-  if (singleAdMatch) {
+  bot.hears('⬅️ قائمة الإعلانات', async (ctx) => {
     await safeDeleteUserMessage(ctx);
-    const reqIdStr = singleAdMatch[1];
+    const userId = ctx.from.id;
+    const allAds = await fetchUserOwnedAds(userId);
+    supportUserSession[userId] = { mode: 'ads_filter', ads: allAds };
+
+    const pending = allAds.filter(a => a.ad_status === 'pending').length;
+    const approved = allAds.filter(a => a.ad_status === 'approved').length;
+    const rejected = allAds.filter(a => a.ad_status === 'rejected').length;
+
+    await replyTracked(
+      ctx,
+      userId,
+      `📋 <b>إعلاناتي وحالتها</b>\nاختر الفئة:`,
+      {
+        parse_mode: 'HTML',
+        ...Markup.keyboard([
+          [`⏳ معلقة (${pending})`, `✅ مقبولة (${approved})`],
+          [`❌ مرفوضة (${rejected})`, `📌 الكل (${allAds.length})`],
+          ['⬅️ لوحة العميل', '🏠 القائمة الرئيسية']
+        ]).resize()
+      },
+      true
+    );
+  });
+
+  bot.hears(/^📄 إعلان #(\S+) \((.+)\)$/, async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    const userId = ctx.from.id;
+    const reqIdStr = ctx.match[1];
     const allAds = supportUserSession[userId]?.ads || await fetchUserOwnedAds(userId);
     const targetAd = allAds.find(a => String(a.id) === String(reqIdStr)) || allAds[0];
+
     if (!targetAd) return;
 
     supportUserSession[userId] = {
@@ -1722,38 +1898,39 @@ async function handleUserText(ctx, webhookDomain = '') {
       `• <b>الوصف:</b> ${escapeHtml(targetAd.description || targetAd.message || '')}\n\n` +
       `👇 <b>اختر التساؤل أو الإجراء من الأزرار أدناه:</b>`;
 
-    return replyTracked(ctx, userId, cardText, {
+    await replyTracked(ctx, userId, cardText, {
       parse_mode: 'HTML',
       ...getInteractiveAdInlineKeyboard(targetAd),
       ...getAdActionButtonsForStatus(targetAd)
     }, true);
-  }
+  });
 
-  if (userText === '🗂 تصفح إعلاناتي الخاصة') {
+  bot.hears('🗂 تصفح إعلاناتي الخاصة', async (ctx) => {
     await safeDeleteUserMessage(ctx);
-    return renderUserOwnAdBrowser(ctx, userId, 0, 0);
-  }
+    await renderUserOwnAdBrowser(ctx, ctx.from.id, 0, 0);
+  });
 
-  if (userText === 'إعلاني التالي ➡️') {
+  bot.hears('إعلاني التالي ➡️', async (ctx) => {
     await safeDeleteUserMessage(ctx);
+    const userId = ctx.from.id;
     const s = supportUserSession[userId];
     if (s && s.mode === 'browsing_own_ads') {
-      return renderUserOwnAdBrowser(ctx, userId, (s.page || 0) + 1, 0);
+      await renderUserOwnAdBrowser(ctx, userId, (s.page || 0) + 1, 0);
     }
-    return;
-  }
+  });
 
-  if (userText === '⬅️ إعلاني السابق') {
+  bot.hears('⬅️ إعلاني السابق', async (ctx) => {
     await safeDeleteUserMessage(ctx);
+    const userId = ctx.from.id;
     const s = supportUserSession[userId];
     if (s && s.mode === 'browsing_own_ads') {
-      return renderUserOwnAdBrowser(ctx, userId, Math.max((s.page || 0) - 1, 0), 0);
+      await renderUserOwnAdBrowser(ctx, userId, Math.max((s.page || 0) - 1, 0), 0);
     }
-    return;
-  }
+  });
 
-  if (/^🗂 \d+ \/ \d+$/.test(userText)) {
+  bot.hears(/^🗂 \d+ \/ \d+$/, async (ctx) => {
     await safeDeleteUserMessage(ctx);
+    const userId = ctx.from.id;
     const s = supportUserSession[userId];
     if (!s || s.mode !== 'browsing_own_ads' || !s.ads?.length) return;
 
@@ -1771,17 +1948,18 @@ async function handleUserText(ctx, webhookDomain = '') {
     if (row.length) rows.push(row);
     rows.push(['🗂 تصفح إعلاناتي الخاصة']);
 
-    return replyTracked(
+    await replyTracked(
       ctx,
       userId,
       `🔢 <b>اختر رقم إعلانك للانتقال إليه مباشرة (1 إلى ${total}):</b>`,
       { parse_mode: 'HTML', ...Markup.keyboard(rows).resize() },
       true
     );
-  }
+  });
 
-  if (userText === '💬 دعم واقتراحات وشكر') {
+  bot.hears('💬 دعم واقتراحات وشكر', async (ctx) => {
     await safeDeleteUserMessage(ctx);
+    const userId = ctx.from.id;
     userState[userId] = {
       step: 'support_selecting_category',
       data: {},
@@ -1789,332 +1967,341 @@ async function handleUserText(ctx, webhookDomain = '') {
       wizardMsgId: null
     };
 
-    return replyTracked(
+    await replyTracked(
       ctx,
       userId,
       `💬 <b>اختر نوع الرسالة أو الملاحظة:</b>`,
       { parse_mode: 'HTML', ...getSupportCategoriesKeyboard() },
       true
     );
-  }
+  });
 
-  if (Object.prototype.hasOwnProperty.call(QUICK_SUPPORT_PRESETS, userText)) {
+  bot.hears(['💳 مشكلة في الدفع', '🏠 إعلان أو تصفح عقاري', '🪙 النقاط والمكافآت', '💡 اقتراح أو تحسين', '👏 شكر أو ملاحظة إيجابية', '💬 استفسار عام / أخرى'], async (ctx) => {
     await safeDeleteUserMessage(ctx);
-    const presetDetail = QUICK_SUPPORT_PRESETS[userText] || userText;
-    await sendStructuredTicketToAdmins(ctx, userId, userText, presetDetail, null, 'text');
+    const userId = ctx.from.id;
+    const chosenCat = ctx.message.text.trim();
+    const presetDetail = QUICK_SUPPORT_PRESETS[chosenCat] || chosenCat;
+
+    await sendStructuredTicketToAdmins(ctx, userId, chosenCat, presetDetail, null, 'text');
     delete userState[userId];
 
-    const confirmMsg = userText === '👏 شكر أو ملاحظة إيجابية'
+    const confirmMsg = chosenCat === '👏 شكر أو ملاحظة إيجابية'
       ? '👏 <b>شكراً جزيلاً لك على كلماتك الطيبة وثقتك بمنصة عقار الجزائر.</b>'
-      : `✅ <b>تم إرسال طلبك (${escapeHtml(userText)}) إلى الإدارة.</b>`;
+      : `✅ <b>تم إرسال طلبك (${escapeHtml(chosenCat)}) إلى الإدارة.</b>`;
 
-    return replyTracked(
+    await replyTracked(
       ctx,
       userId,
       confirmMsg,
       { parse_mode: 'HTML', ...getSupportHubKeyboard() },
       true
     );
-  }
+  });
 
-  const s = supportUserSession[userId];
-  if (s && s.mode === 'browsing_own_ads' && s.selectingPage && /^\d+$/.test(userText)) {
-    await safeDeleteUserMessage(ctx);
-    const num = parseInt(userText, 10) - 1;
-    s.selectingPage = false;
-    return renderUserOwnAdBrowser(ctx, userId, num, 0);
-  }
+  bot.on('text', async (ctx) => {
+    const userId = ctx.from.id;
+    const userText = ctx.message.text ? ctx.message.text.trim() : '';
+    if (userText.startsWith('/')) return;
 
-  const session = browsingSession[userId];
-  if (session && session.selectingPage && /^\d+$/.test(userText)) {
-    await safeDeleteUserMessage(ctx);
-    const selectedNumber = parseInt(userText, 10);
-    session.selectingPage = false;
-    return renderPropertyPage(ctx, userId, selectedNumber - 1, 0);
-  }
-
-  const state = userState[userId];
-  if (!state) return;
-
-  if (state.step === 'waiting_for_type') {
-    const validTypes = await getDynamicPropertyTypes();
-    const allowedTitles = validTypes.map(item => item.title);
-
-    if (allowedTitles.includes(userText)) {
+    const s = supportUserSession[userId];
+    if (s && s.mode === 'browsing_own_ads' && s.selectingPage && /^\d+$/.test(userText)) {
       await safeDeleteUserMessage(ctx);
-      state.data.property_type = userText;
-      state.step = 'waiting_for_state';
-      state.tempInput = '';
-      return renderWizard(ctx, userId);
-    }
-    return;
-  }
-
-  if (state.step === 'waiting_for_price' || state.step === 'waiting_for_phone') {
-    await safeDeleteUserMessage(ctx);
-    state.tempInput = state.tempInput || '';
-
-    if (userText.startsWith('📥 القيمة الحالية:')) {
+      const num = parseInt(userText, 10) - 1;
+      s.selectingPage = false;
+      await renderUserOwnAdBrowser(ctx, userId, num, 0);
       return;
-    } else if (userText >= '0' && userText <= '9') {
-      state.tempInput += userText;
-      return renderWizard(ctx, userId);
-    } else if (userText === '+مليون') {
-      state.tempInput += '000000';
-      return renderWizard(ctx, userId);
-    } else if (userText === '⌫') {
-      state.tempInput = state.tempInput.slice(0, -1);
-      return renderWizard(ctx, userId);
-    } else if (userText === '🗑️ مسح') {
-      state.tempInput = '';
-      return renderWizard(ctx, userId);
-    } else if (userText === '✅ [ OK ] تأكيد') {
-      if (!state.tempInput || state.tempInput.length === 0) {
-        const warnMsg = await ctx.reply('⚠️ <b>يرجى إدخال الرقم في الحقل أولاً!</b>', { parse_mode: 'HTML' });
-        setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warnMsg.message_id).catch(() => {}), 2500);
-        return;
-      }
+    }
 
-      if (state.step === 'waiting_for_price') {
-        state.data.price = state.tempInput;
-        state.step = 'waiting_for_phone';
+    const state = userState[userId];
+    if (!state) return;
+
+    if (state.step === 'waiting_for_type') {
+      const validTypes = await getDynamicPropertyTypes();
+      const allowedTitles = validTypes.map(item => item.title);
+
+      if (allowedTitles.includes(userText)) {
+        await safeDeleteUserMessage(ctx);
+        state.data.property_type = userText;
+        state.step = 'waiting_for_state';
         state.tempInput = '';
         return renderWizard(ctx, userId);
-      } else if (state.step === 'waiting_for_phone') {
-        if (state.tempInput.length < 9) {
-          const warnMsg = await ctx.reply('⚠️ <b>رقم الهاتف قصير جداً!</b>', { parse_mode: 'HTML' });
+      }
+      return;
+    }
+
+    if (state.step === 'waiting_for_price' || state.step === 'waiting_for_phone') {
+      await safeDeleteUserMessage(ctx);
+      state.tempInput = state.tempInput || '';
+
+      if (userText.startsWith('📥 القيمة الحالية:')) {
+        return;
+      } else if (userText >= '0' && userText <= '9') {
+        state.tempInput += userText;
+        return renderWizard(ctx, userId);
+      } else if (userText === '+مليون') {
+        state.tempInput += '000000';
+        return renderWizard(ctx, userId);
+      } else if (userText === '⌫') {
+        state.tempInput = state.tempInput.slice(0, -1);
+        return renderWizard(ctx, userId);
+      } else if (userText === '🗑️ مسح') {
+        state.tempInput = '';
+        return renderWizard(ctx, userId);
+      } else if (userText === '✅ [ OK ] تأكيد') {
+        if (!state.tempInput || state.tempInput.length === 0) {
+          const warnMsg = await ctx.reply('⚠️ <b>يرجى إدخال الرقم في الحقل أولاً!</b>', { parse_mode: 'HTML' });
           setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warnMsg.message_id).catch(() => {}), 2500);
           return;
         }
-        state.data.phone = state.tempInput;
-        state.step = 'waiting_for_description';
-        state.data.features_list = state.data.features_list || [];
-        state.tempInput = '';
-        return renderWizard(ctx, userId);
-      }
-    }
-    return;
-  }
 
-  if (state.step === 'waiting_for_description') {
-    await safeDeleteUserMessage(ctx);
-    state.data.features_list = state.data.features_list || [];
-
-    if (userText === '↩️ تراجع عن الأخيرة') {
-      if (state.data.features_list.length > 0) {
-        state.data.features_list.pop();
-        return renderWizard(ctx, userId);
-      }
-      return;
-    }
-
-    if (userText === '🗑️ مسح الكل') {
-      state.data.features_list = [];
-      return renderWizard(ctx, userId);
-    }
-
-    if (userText === '✅ تأكيد الوصف والانتقال') {
-      if (state.data.features_list.length === 0) {
-        const warnMsg = await ctx.reply('⚠️ <b>يرجى اختيار ميزة واحدة على الأقل قبل التأكيد!</b>', { parse_mode: 'HTML' });
-        setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warnMsg.message_id).catch(() => {}), 2500);
-        return;
-      }
-      state.data.description = state.data.features_list.join(' | ');
-      state.step = 'waiting_for_media';
-      state.data.media_items = [];
-      return renderWizard(ctx, userId);
-    }
-
-    const validFeatures = await getDynamicFeatures();
-    const allowedFeatures = validFeatures.map(f => f.title);
-
-    if (allowedFeatures.includes(userText)) {
-      if (!state.data.features_list.includes(userText)) {
-        state.data.features_list.push(userText);
-      }
-      return renderWizard(ctx, userId);
-    }
-  }
-
-  if (state.step === 'waiting_for_media') {
-    await safeDeleteUserMessage(ctx);
-
-    if (userText === '🗑️ مسح الوسائط المرفقة' || userText === '🗑️ مسح الصور المرفقة') {
-      state.data.media_items = [];
-      state.data.media_label = null;
-      return renderWizard(ctx, userId);
-    }
-
-    if (userText.startsWith('✅ إنهاء إرفاق')) {
-      if (!state.data.media_items || state.data.media_items.length === 0) {
-        const warnMsg = await ctx.reply('⚠️ <b>يرجى إرسال صورة أو فيديو واحد على الأقل أولاً!</b>', { parse_mode: 'HTML' });
-        setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warnMsg.message_id).catch(() => {}), 2500);
-        return;
-      }
-      state.step = 'waiting_for_payment_choice';
-      return renderWizard(ctx, userId);
-    }
-  }
-}
-
-async function handleUserPhoto(ctx) {
-  const userId = ctx.from.id;
-  const state = userState[userId];
-
-  await safeDeleteUserMessage(ctx);
-
-  if (state && state.step === 'waiting_for_media') {
-    const photo = ctx.message.photo[ctx.message.photo.length - 1];
-    state.data.media_items = state.data.media_items || [];
-
-    if (state.data.media_items.length >= MAX_PROPERTY_IMAGES) {
-      const warnMsg = await ctx.reply(`⚠️ <b>وصلت للحد الأقصى (${MAX_PROPERTY_IMAGES} ملفات).</b> اضغط زر الإنهاء في الأسفل.`, { parse_mode: 'HTML' });
-      setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warnMsg.message_id).catch(() => {}), 2500);
-      return;
-    }
-
-    state.data.media_items.push({ type: 'photo', file_id: photo.file_id });
-    state.data.media_label = formatMediaSummaryLabel(state.data.media_items);
-
-    return renderWizard(ctx, userId);
-  }
-
-  if (state && state.step === 'waiting_for_payment_receipt') {
-    const receiptPhoto = ctx.message.photo[ctx.message.photo.length - 1];
-    state.step = 'publishing';
-
-    try {
-      const publishingText = await getSetting('publishing_text', '⏳ جاري المعالجة والحفظ...');
-      await renderWizard(ctx, userId, { footer: publishingText });
-
-      const mediaItems = state.data.media_items || [];
-      const combinedImagesUrl = await uploadMediaListByType(ctx, mediaItems, 'photo');
-      const videoUrl = await uploadMediaListByType(ctx, mediaItems, 'video');
-
-      let receiptUrl = '';
-      try {
-        const receiptFileLink = await ctx.telegram.getFileLink(receiptPhoto.file_id);
-        const resReceipt = await fetch(receiptFileLink.href);
-        const bufReceipt = Buffer.from(await resReceipt.arrayBuffer());
-        const receiptFileName = `${Date.now()}_receipt_${userId}.jpg`;
-        await usersSupabase.storage.from('test_media').upload(receiptFileName, bufReceipt, { contentType: 'image/jpeg', upsert: true });
-        const { data: pubReceiptUrl } = usersSupabase.storage.from('test_media').getPublicUrl(receiptFileName);
-        receiptUrl = pubReceiptUrl.publicUrl;
-      } catch (e) {
-        receiptUrl = receiptPhoto.file_id;
-      }
-
-      const numericPrice = sanitizeNumericPrice(state.data.price);
-      const cleanPhone = String(state.data.phone || '').replace(/\D/g, '').trim();
-
-      const { data: insertedRow, error: insertError } = await usersSupabase
-        .from('pending_properties')
-        .insert([{
-          user_id: userId,
-          property_type: state.data.property_type,
-          state_name: state.data.state_name,
-          price: numericPrice,
-          phone: cleanPhone,
-          description: state.data.description,
-          image_url: combinedImagesUrl,
-          video_url: videoUrl,
-          receipt_url: receiptUrl,
-          status: 'pending'
-        }])
-        .select()
-        .single();
-
-      if (insertError) throw insertError;
-
-      const requestId = insertedRow.id;
-      const photosCount = parseImagesFromImageUrl(combinedImagesUrl).length;
-      const videosCount = parseMediaListFromField(videoUrl).length;
-      const submittedAt = formatDateTime(insertedRow.created_at || new Date());
-
-      const adminCaption =
-        `🚨 <b>طلب إعلان عقاري جديد (#${requestId})</b>\n` +
-        `🕒 <b>التاريخ والوقت:</b> <code>${escapeHtml(submittedAt)}</code>\n\n` +
-        `👤 <b>معرف المستخدم:</b> <code>${userId}</code>\n` +
-        `🏠 <b>النوع:</b> ${escapeHtml(state.data.property_type || '')}\n` +
-        `📍 <b>الولاية:</b> ${escapeHtml(state.data.state_name || '')}\n` +
-        `💰 <b>السعر:</b> ${formatMoney(numericPrice)}\n` +
-        `📞 <b>الهاتف:</b> ${escapeHtml(cleanPhone)}\n` +
-        `🖼 <b>عدد الصور:</b> ${photosCount}\n` +
-        `🎥 <b>عدد الفيديوهات:</b> ${videosCount}\n` +
-        `📝 <b>الوصف:</b> ${escapeHtml(state.data.description || '')}`;
-
-      const adminButtons = Markup.inlineKeyboard([
-        [
-          Markup.button.callback(`❌ رفض (#${requestId})`, `reject_${requestId}`),
-          Markup.button.callback(`✅ قبول ونشر (#${requestId})`, `approve_${requestId}`)
-        ]
-      ]);
-
-      const photoSource =
-        typeof receiptUrl === 'string' && receiptUrl.startsWith('http')
-          ? receiptUrl
-          : receiptPhoto.file_id;
-
-      const adminIds = await getAdminIds();
-
-      for (const currentAdminId of adminIds) {
-        try {
-          await ctx.telegram.sendPhoto(currentAdminId, photoSource, {
-            caption: adminCaption + `\n\n👇 <b>يرجى مراجعة وصل الدفع أعلاه واتخاذ قرار:</b>`,
-            parse_mode: 'HTML',
-            ...adminButtons
-          });
-        } catch (sendErr) {
-          console.error(`Failed to send admin notification to ${currentAdminId}:`, sendErr.message);
-          await ctx.telegram.sendMessage(currentAdminId, adminCaption, {
-            parse_mode: 'HTML',
-            ...adminButtons
-          }).catch(() => {});
+        if (state.step === 'waiting_for_price') {
+          state.data.price = state.tempInput;
+          state.step = 'waiting_for_phone';
+          state.tempInput = '';
+          return renderWizard(ctx, userId);
+        } else if (state.step === 'waiting_for_phone') {
+          if (state.tempInput.length < 9) {
+            const warnMsg = await ctx.reply('⚠️ <b>رقم الهاتف قصير جداً!</b>', { parse_mode: 'HTML' });
+            setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warnMsg.message_id).catch(() => {}), 2500);
+            return;
+          }
+          state.data.phone = state.tempInput;
+          state.step = 'waiting_for_description';
+          state.data.features_list = state.data.features_list || [];
+          state.tempInput = '';
+          return renderWizard(ctx, userId);
         }
       }
-
-      delete userState[userId];
-      return replyTracked(ctx, userId,
-        `⏳ <b>تم استلام وصل الدفع وحفظ طلبك برقم (#${requestId})!</b>\n🕒 <b>التاريخ والوقت:</b> <code>${escapeHtml(submittedAt)}</code>\n\nالإعلان قيد المراجعة من طرف الإدارة وسيتم نشره فور تأكيد التحويل.`,
-        { parse_mode: 'HTML', ...getMainMenuKeyboard() },
-        true
-      );
-    } catch (err) {
-      console.error('Receipt publish error:', err);
-      delete userState[userId];
-      return replyTracked(ctx, userId, '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getMainMenuKeyboard(), true);
-    }
-  }
-}
-
-async function handleUserVideo(ctx) {
-  const userId = ctx.from.id;
-  const state = userState[userId];
-
-  await safeDeleteUserMessage(ctx);
-
-  if (state && state.step === 'waiting_for_media') {
-    const video = ctx.message.video;
-    state.data.media_items = state.data.media_items || [];
-
-    if (state.data.media_items.length >= MAX_PROPERTY_IMAGES) {
-      const warnMsg = await ctx.reply(`⚠️ <b>وصلت للحد الأقصى (${MAX_PROPERTY_IMAGES} ملفات).</b> اضغط زر الإنهاء في الأسفل.`, { parse_mode: 'HTML' });
-      setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warnMsg.message_id).catch(() => {}), 2500);
       return;
     }
 
-    state.data.media_items.push({ type: 'video', file_id: video.file_id });
-    state.data.media_label = formatMediaSummaryLabel(state.data.media_items);
+    if (state.step === 'waiting_for_description') {
+      await safeDeleteUserMessage(ctx);
+      state.data.features_list = state.data.features_list || [];
 
-    return renderWizard(ctx, userId);
-  }
+      if (userText === '↩️ تراجع عن الأخيرة') {
+        if (state.data.features_list.length > 0) {
+          state.data.features_list.pop();
+          return renderWizard(ctx, userId);
+        }
+        return;
+      }
+
+      if (userText === '🗑️ مسح الكل') {
+        state.data.features_list = [];
+        return renderWizard(ctx, userId);
+      }
+
+      if (userText === '✅ تأكيد الوصف والانتقال') {
+        if (state.data.features_list.length === 0) {
+          const warnMsg = await ctx.reply('⚠️ <b>يرجى اختيار ميزة واحدة على الأقل قبل التأكيد!</b>', { parse_mode: 'HTML' });
+          setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warnMsg.message_id).catch(() => {}), 2500);
+          return;
+        }
+        state.data.description = state.data.features_list.join(' | ');
+        state.step = 'waiting_for_media';
+        state.data.media_items = [];
+        return renderWizard(ctx, userId);
+      }
+
+      const validFeatures = await getDynamicFeatures();
+      const allowedFeatures = validFeatures.map(f => f.title);
+
+      if (allowedFeatures.includes(userText)) {
+        if (!state.data.features_list.includes(userText)) {
+          state.data.features_list.push(userText);
+        }
+        return renderWizard(ctx, userId);
+      }
+    }
+
+    if (state.step === 'waiting_for_media') {
+      await safeDeleteUserMessage(ctx);
+
+      if (userText === '🗑️ مسح الوسائط المرفقة' || userText === '🗑️ مسح الصور المرفقة') {
+        state.data.media_items = [];
+        state.data.media_label = null;
+        return renderWizard(ctx, userId);
+      }
+
+      if (userText.startsWith('✅ إنهاء إرفاق')) {
+        if (!state.data.media_items || state.data.media_items.length === 0) {
+          const warnMsg = await ctx.reply('⚠️ <b>يرجى إرسال صورة أو فيديو واحد على الأقل أولاً!</b>', { parse_mode: 'HTML' });
+          setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warnMsg.message_id).catch(() => {}), 2500);
+          return;
+        }
+        state.step = 'waiting_for_payment_choice';
+        return renderWizard(ctx, userId);
+      }
+    }
+  });
+
+  bot.on('photo', async (ctx) => {
+    const userId = ctx.from.id;
+    const state = userState[userId];
+    await safeDeleteUserMessage(ctx);
+
+    if (state && state.step === 'waiting_for_media') {
+      const photo = ctx.message.photo[ctx.message.photo.length - 1];
+      state.data.media_items = state.data.media_items || [];
+
+      if (state.data.media_items.length >= MAX_PROPERTY_IMAGES) {
+        const warnMsg = await ctx.reply(`⚠️ <b>وصلت للحد الأقصى (${MAX_PROPERTY_IMAGES} ملفات).</b> اضغط زر الإنهاء في الأسفل.`, { parse_mode: 'HTML' });
+        setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warnMsg.message_id).catch(() => {}), 2500);
+        return;
+      }
+
+      state.data.media_items.push({ type: 'photo', file_id: photo.file_id });
+      state.data.media_label = formatMediaSummaryLabel(state.data.media_items);
+
+      return renderWizard(ctx, userId);
+    }
+
+    if (state && state.step === 'waiting_for_payment_receipt') {
+      const receiptPhoto = ctx.message.photo[ctx.message.photo.length - 1];
+      state.step = 'publishing';
+
+      try {
+        const publishingText = await getSetting('publishing_text', '⏳ جاري المعالجة والحفظ...');
+        await renderWizard(ctx, userId, { footer: publishingText });
+
+        const mediaItems = state.data.media_items || [];
+        const combinedImagesUrl = await uploadMediaListByType(ctx, mediaItems, 'photo');
+        const videoUrl = await uploadMediaListByType(ctx, mediaItems, 'video');
+
+        let receiptUrl = '';
+        try {
+          const receiptFileLink = await ctx.telegram.getFileLink(receiptPhoto.file_id);
+          const resReceipt = await fetch(receiptFileLink.href);
+          const bufReceipt = Buffer.from(await resReceipt.arrayBuffer());
+          const receiptFileName = `${Date.now()}_receipt_${userId}.jpg`;
+          await supabase.storage.from('test_media').upload(receiptFileName, bufReceipt, { contentType: 'image/jpeg', upsert: true });
+          const { data: pubReceiptUrl } = supabase.storage.from('test_media').getPublicUrl(receiptFileName);
+          receiptUrl = pubReceiptUrl.publicUrl;
+        } catch (e) {
+          receiptUrl = receiptPhoto.file_id;
+        }
+
+        const numericPrice = sanitizeNumericPrice(state.data.price);
+        const cleanPhone = String(state.data.phone || '').replace(/\D/g, '').trim();
+
+        const { data: insertedRow, error: insertError } = await supabase
+          .from('pending_properties')
+          .insert([{
+            user_id: userId,
+            property_type: state.data.property_type,
+            state_name: state.data.state_name,
+            price: numericPrice,
+            phone: cleanPhone,
+            description: state.data.description,
+            image_url: combinedImagesUrl,
+            video_url: videoUrl,
+            receipt_url: receiptUrl,
+            status: 'pending'
+          }])
+          .select()
+          .single();
+
+        if (insertError) throw insertError;
+
+        const requestId = insertedRow.id;
+        const photosCount = parseImagesFromImageUrl(combinedImagesUrl).length;
+        const videosCount = parseMediaListFromField(videoUrl).length;
+        const submittedAt = formatDateTime(insertedRow.created_at || new Date());
+
+        const adminCaption =
+          `🚨 <b>طلب إعلان عقاري جديد (#${requestId})</b>\n` +
+          `🕒 <b>التاريخ والوقت:</b> <code>${escapeHtml(submittedAt)}</code>\n\n` +
+          `👤 <b>معرف المستخدم:</b> <code>${userId}</code>\n` +
+          `🏠 <b>النوع:</b> ${escapeHtml(state.data.property_type || '')}\n` +
+          `📍 <b>الولاية:</b> ${escapeHtml(state.data.state_name || '')}\n` +
+          `💰 <b>السعر:</b> ${formatMoney(numericPrice)}\n` +
+          `📞 <b>الهاتف:</b> ${escapeHtml(cleanPhone)}\n` +
+          `🖼 <b>عدد الصور:</b> ${photosCount}\n` +
+          `🎥 <b>عدد الفيديوهات:</b> ${videosCount}\n` +
+          `📝 <b>الوصف:</b> ${escapeHtml(state.data.description || '')}`;
+
+        const adminButtons = Markup.inlineKeyboard([
+          [
+            Markup.button.callback(`❌ رفض (#${requestId})`, `reject_${requestId}`),
+            Markup.button.callback(`✅ قبول ونشر (#${requestId})`, `approve_${requestId}`)
+          ]
+        ]);
+
+        const photoSource =
+          typeof receiptUrl === 'string' && receiptUrl.startsWith('http')
+            ? receiptUrl
+            : receiptPhoto.file_id;
+
+        const adminIds = await getAdminIds();
+
+        for (const currentAdminId of adminIds) {
+          try {
+            await ctx.telegram.sendPhoto(currentAdminId, photoSource, {
+              caption: adminCaption + `\n\n👇 <b>يرجى مراجعة وصل الدفع أعلاه واتخاذ قرار:</b>`,
+              parse_mode: 'HTML',
+              ...adminButtons
+            });
+          } catch (sendErr) {
+            console.error(`Failed to send admin notification to ${currentAdminId}:`, sendErr.message);
+            await ctx.telegram.sendMessage(currentAdminId, adminCaption, {
+              parse_mode: 'HTML',
+              ...adminButtons
+            }).catch(() => {});
+          }
+        }
+
+        delete userState[userId];
+        await replyTracked(ctx, userId,
+          `⏳ <b>تم استلام وصل الدفع وحفظ طلبك برقم (#${requestId})!</b>\n🕒 <b>التاريخ والوقت:</b> <code>${escapeHtml(submittedAt)}</code>\n\nالإعلان قيد المراجعة من طرف الإدارة وسيتم نشره فور تأكيد التحويل.`,
+          { parse_mode: 'HTML', ...getMainMenuKeyboard() },
+          true
+        );
+      } catch (err) {
+        console.error('Receipt publish error:', err);
+        delete userState[userId];
+        await replyTracked(ctx, userId, '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getMainMenuKeyboard(), true);
+      }
+    }
+  });
+
+  bot.on('video', async (ctx) => {
+    const userId = ctx.from.id;
+    const state = userState[userId];
+    await safeDeleteUserMessage(ctx);
+
+    if (state && state.step === 'waiting_for_media') {
+      const video = ctx.message.video;
+      state.data.media_items = state.data.media_items || [];
+
+      if (state.data.media_items.length >= MAX_PROPERTY_IMAGES) {
+        const warnMsg = await ctx.reply(`⚠️ <b>وصلت للحد الأقصى (${MAX_PROPERTY_IMAGES} ملفات).</b> اضغط زر الإنهاء في الأسفل.`, { parse_mode: 'HTML' });
+        setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warnMsg.message_id).catch(() => {}), 2500);
+        return;
+      }
+
+      state.data.media_items.push({ type: 'video', file_id: video.file_id });
+      state.data.media_label = formatMediaSummaryLabel(state.data.media_items);
+
+      return renderWizard(ctx, userId);
+    }
+  });
+
+  return {
+    onStart,
+    route: async (ctx, next) => {
+      const userId = ctx.from?.id;
+      if (ctx.message && ctx.message.text && !ctx.message.text.startsWith('/')) {
+        if (ctx.message.text.includes('تصفح') || ctx.message.text.includes('إضافة') || ctx.message.text.includes('رصيدي')) {
+          const verified = await isUserVerified(userId);
+          if (!verified) {
+            return replyTracked(ctx, userId, '⚠️ عذراً، يجب عليك تأكيد رقم هاتفك أولاً عبر الزر أدناه:', getAuthKeyboard());
+          }
+        }
+      }
+      return next();
+    }
+  };
 }
 
-module.exports = {
-  handleUserStart,
-  handleUserContact,
-  handleUserCallbackQuery,
-  handleUserText,
-  handleUserPhoto,
-  handleUserVideo
-};
+module.exports = { initUsersServer };
