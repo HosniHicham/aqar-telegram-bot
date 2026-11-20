@@ -4,6 +4,7 @@
 // يستدعيه server.js (الأب).
 // - أزرار التنقل والتحكم في لوحة التحكم السفلية (أسفل خانة الإدخال)
 // - أزرار القبول / الرفض / الحذف / المراسلة أسفل بطاقة الإعلان نفسه مع رقم الإعلان
+// - بحث سريع للأدمن برقم الطلب أو رقم الهاتف أو آيدي العميل
 // - تنظيف الرسائل والأوامر غير المهمة
 // =========================================================================
 
@@ -23,7 +24,8 @@ module.exports = function registerAdmin(bot, core) {
   function getAdminMenuKeyboard() {
     const rows = [
       ['⏳ المعلقة', '✅ المنشورة', '❌ المرفوضة'],
-      ['📊 الإحصائيات', '👁 معاينة المنصة كمستخدم']
+      ['🔎 بحث سريع', '📊 الإحصائيات'],
+      ['👁 معاينة المنصة كمستخدم']
     ];
     const webBtn = getWebsiteButton();
     if (webBtn) rows.push([webBtn]);
@@ -38,12 +40,19 @@ module.exports = function registerAdmin(bot, core) {
 
     const rows = [];
     if (navRow.length > 0) rows.push(navRow);
-    rows.push(['🎛 لوحة الإدارة', '👁 معاينة المنصة كمستخدم']);
+    rows.push(['🔎 بحث سريع', '🎛 لوحة الإدارة']);
+    rows.push(['👁 معاينة المنصة كمستخدم']);
 
     const webBtn = getWebsiteButton();
     if (webBtn && filterType) rows.push([webBtn]);
 
     return Markup.keyboard(rows).resize();
+  }
+
+  function getAdminSearchKeyboard() {
+    return Markup.keyboard([
+      ['🎛 لوحة الإدارة', '👁 معاينة المنصة كمستخدم']
+    ]).resize();
   }
 
   async function countRows(table, filter) {
@@ -99,7 +108,7 @@ module.exports = function registerAdmin(bot, core) {
         .order('id', { ascending: false })
         .limit(100);
       if (error || !data) return [];
-      return data;
+      return data.map(row => ({ ...row, _filterType: 'published' }));
     }
 
     const statusVal = filterType === 'rejected' ? 'rejected' : 'pending';
@@ -111,7 +120,92 @@ module.exports = function registerAdmin(bot, core) {
       .limit(100);
 
     if (error || !data) return [];
-    return filterType === 'rejected' ? data.reverse() : data;
+    const list = filterType === 'rejected' ? data.reverse() : data;
+    return list.map(row => ({ ...row, _filterType: statusVal }));
+  }
+
+  // ------------------------- بحث سريع للأدمن -------------------------
+  async function searchAdminAds(rawQuery) {
+    const cleanQuery = String(rawQuery || '').replace(/^#/, '').trim();
+    if (!cleanQuery) return [];
+
+    const digitsOnly = cleanQuery.replace(/\D/g, '');
+    const results = [];
+    const seenKeys = new Set();
+
+    const addResults = (rows, filterType) => {
+      if (!Array.isArray(rows)) return;
+      for (const row of rows) {
+        const key = `${filterType}:${row.id}`;
+        if (seenKeys.has(key)) continue;
+        seenKeys.add(key);
+        results.push({ ...row, _filterType: filterType });
+      }
+    };
+
+    try {
+      // 1. بحث برقم الطلب (id) في pending_properties و test_messages
+      if (digitsOnly) {
+        const numId = Number(digitsOnly);
+        if (Number.isSafeInteger(numId) && numId > 0) {
+          const { data: pById } = await supabase
+            .from('pending_properties').select('*').eq('id', numId);
+          if (Array.isArray(pById)) {
+            for (const r of pById) addResults([r], r.status === 'rejected' ? 'rejected' : 'pending');
+          }
+
+          const { data: pubById } = await supabase
+            .from('test_messages').select('*').eq('id', numId);
+          addResults(pubById, 'published');
+        }
+      }
+
+      // 2. بحث برقم الهاتف أو آيدي العميل في pending_properties
+      const { data: pendingAll } = await supabase
+        .from('pending_properties')
+        .select('*')
+        .order('id', { ascending: false })
+        .limit(300);
+
+      if (Array.isArray(pendingAll)) {
+        const matchedPending = pendingAll.filter(r => {
+          const phoneStr = String(r.phone || '');
+          const userIdStr = String(r.user_id || '');
+          return (
+            (digitsOnly && (phoneStr.includes(digitsOnly) || userIdStr === digitsOnly)) ||
+            phoneStr.includes(cleanQuery) ||
+            userIdStr === cleanQuery
+          );
+        });
+        for (const r of matchedPending) {
+          addResults([r], r.status === 'rejected' ? 'rejected' : 'pending');
+        }
+      }
+
+      // 3. بحث برقم الهاتف أو آيدي العميل في test_messages
+      const { data: pubAll } = await supabase
+        .from('test_messages')
+        .select('*')
+        .order('id', { ascending: false })
+        .limit(300);
+
+      if (Array.isArray(pubAll)) {
+        const matchedPub = pubAll.filter(r => {
+          const phoneStr = String(r.phone || '');
+          const userIdStr = String(r.user_id || '');
+          return (
+            (digitsOnly && (phoneStr.includes(digitsOnly) || userIdStr === digitsOnly)) ||
+            phoneStr.includes(cleanQuery) ||
+            userIdStr === cleanQuery
+          );
+        });
+        addResults(matchedPub, 'published');
+      }
+    } catch (e) {
+      console.error('searchAdminAds error:', e);
+    }
+
+    return results;
   }
 
   // ------------------------- أزرار الإجراء أسفل بطاقة الإعلان نفسه -------------------------
@@ -127,7 +221,7 @@ module.exports = function registerAdmin(bot, core) {
         Markup.button.callback(`✅ قبول ونشر (#${adId})`, `approve_${adId}`)
       ]);
       if (targetUser) {
-        rows.push([Markup.button.callback(`✉️ مراسلة بخصوص إعلان (#${adId})`, replyCallbackData)]);
+        rows.push([Markup.button.callback(`✉️ مراسلة بخصوص #${adId}`, replyCallbackData)]);
       }
     } else if (filterType === 'rejected') {
       rows.push([
@@ -135,36 +229,37 @@ module.exports = function registerAdmin(bot, core) {
         Markup.button.callback(`✅ قبول ونشر (#${adId})`, `approve_${adId}`)
       ]);
       if (targetUser) {
-        rows.push([Markup.button.callback(`✉️ مراسلة بخصوص إعلان (#${adId})`, replyCallbackData)]);
+        rows.push([Markup.button.callback(`✉️ مراسلة بخصوص #${adId}`, replyCallbackData)]);
       }
     } else if (filterType === 'published') {
-      const row = [Markup.button.callback(`🗑 حذف (#${adId})`, `del_pub_${adId}`)];
+      rows.push([Markup.button.callback(`🗑 حذف (#${adId})`, `del_pub_${adId}`)]);
       if (targetUser) {
-        row.push(Markup.button.callback(`✉️ مراسلة (#${adId})`, replyCallbackData));
+        rows.push([Markup.button.callback(`✉️ مراسلة بخصوص #${adId}`, replyCallbackData)]);
       }
-      rows.push(row);
     }
 
     return Markup.inlineKeyboard(rows);
   }
 
-  function formatAdminAdCaption(item, idx, total, filterType, stats) {
+  function formatAdminAdCaption(item, idx, total, filterType, stats, searchQuery = '') {
+    const effectiveFilter = filterType || item._filterType || 'pending';
     const titleMap = {
       pending: '⏳ <b>إعلان معلق</b>',
       published: '✅ <b>إعلان منشور</b>',
       rejected: '❌ <b>إعلان مرفوض</b>'
     };
     const isFree = item.receipt_url === 'FREE_NO_RECEIPT';
-    const typeBadge = filterType === 'published'
+    const typeBadge = effectiveFilter === 'published'
       ? '🌐 منشور'
       : (isFree ? '🆓 مجاني' : '💳 مدفوع');
 
     const photosCount = parseImagesFromImageUrl(item.image_url).length;
     const videosCount = parseMediaListFromField(item.video_url).length;
     const desc = String(item.description || item.message || '');
+    const searchLine = searchQuery ? `🔎 <b>نتيجة بحث عن:</b> <code>${escapeHtml(searchQuery)}</code>\n` : '';
 
     return (
-      `${titleMap[filterType] || '📌 <b>إعلان</b>'} — <code>#${item.id}</code> (${idx + 1}/${total})\n` +
+      `${searchLine}${titleMap[effectiveFilter] || '📌 <b>إعلان</b>'} — <code>#${item.id}</code> (${idx + 1}/${total})\n` +
       `📊 <b>الإحصائيات:</b> معلق: <b>${stats.pending}</b> | منشور: <b>${stats.published}</b> | مرفوض: <b>${stats.rejected}</b>\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
       `🏷 <b>النوع:</b> <b>${typeBadge}</b>\n` +
@@ -182,17 +277,26 @@ module.exports = function registerAdmin(bot, core) {
     let st = adminBrowseState[adminId];
 
     if (!st || st.filter !== filterType || refreshList) {
-      const items = await fetchAdminAdsByFilter(filterType);
-      st = { filter: filterType, items, index: 0 };
+      const items = filterType === 'search' && Array.isArray(st?.items)
+        ? st.items
+        : await fetchAdminAdsByFilter(filterType);
+      st = {
+        filter: filterType,
+        items,
+        index: 0,
+        query: filterType === 'search' ? (st?.query || '') : ''
+      };
       adminBrowseState[adminId] = st;
     }
 
     if (!st.items || st.items.length === 0) {
+      const queryNote = st?.query ? ` للبحث: <code>${escapeHtml(st.query)}</code>` : '';
       delete adminBrowseState[adminId];
       const emptyLabels = {
         pending: 'لا توجد إعلانات معلقة حالياً',
         published: 'لا توجد إعلانات منشورة حالياً',
-        rejected: 'لا توجد إعلانات مرفوضة حالياً'
+        rejected: 'لا توجد إعلانات مرفوضة حالياً',
+        search: `لم يتم العثور على أي إعلان مطابق${queryNote}`
       };
       return replyTracked(
         ctx, adminId,
@@ -209,12 +313,13 @@ module.exports = function registerAdmin(bot, core) {
     st.index = safeIdx;
 
     const item = st.items[safeIdx];
+    const cardFilter = item._filterType || (filterType === 'search' ? 'pending' : filterType);
     const receiptRef = normalizeMediaRef(item.receipt_url);
     const firstPhoto = parseImagesFromImageUrl(item.image_url)[0];
     const firstVideo = parseMediaListFromField(item.video_url)[0];
 
-    const caption = formatAdminAdCaption(item, safeIdx, st.items.length, filterType, stats);
-    const inlineKb = buildAdInlineButtons(item, filterType);
+    const caption = formatAdminAdCaption(item, safeIdx, st.items.length, cardFilter, stats, st.query || '');
+    const inlineKb = buildAdInlineButtons(item, cardFilter);
     const controlKb = getAdminBrowsingKeyboard(safeIdx, st.items.length, filterType);
 
     let sentCard = null;
@@ -273,6 +378,28 @@ module.exports = function registerAdmin(bot, core) {
   bot.hears('📊 الإحصائيات', async (ctx) => {
     await safeDeleteUserMessage(ctx);
     await openAdminHome(ctx, true);
+  });
+
+  bot.hears('🔎 بحث سريع', async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    const adminId = ctx.from.id;
+    userState[adminId] = {
+      step: 'searching_admin_ads',
+      data: {},
+      chatId: ctx.chat.id,
+      wizardMsgId: null
+    };
+    await replyTracked(
+      ctx, adminId,
+      `🔎 <b>البحث السريع في الإعلانات</b>\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `أرسل الآن أحد المعطيات التالية:\n` +
+      `• <b>رقم الطلب / الإعلان</b> (مثال: <code>15</code> أو <code>#15</code>)\n` +
+      `• <b>رقم الهاتف</b> (مثال: <code>0550...</code>)\n` +
+      `• <b>آيدي العميل (ID)</b> (مثال: <code>5883330772</code>)`,
+      { parse_mode: 'HTML', ...getAdminSearchKeyboard() },
+      true
+    );
   });
 
   bot.hears(['⏳ المعلقة', '📥 الطلبات المعلقة'], async (ctx) => {
@@ -343,7 +470,7 @@ module.exports = function registerAdmin(bot, core) {
   });
 
   async function deliverAdminReplyToUser(ctx, adminId, targetUserId, payloadType, content, adId = null) {
-    const adLine = adId ? `📌 <b>بخصوص الإعلان رقم:</b> <code>#${adId}</code>\n` : '';
+    const adLine = adId ? `📌 <b>بخصوص الإعلان:</b> <code>#${adId}</code>\n` : '';
     const header = `📩 <b>رسالة من الإدارة:</b>\n${adLine}━━━━━━━━━━━━━━━━━━━━\n`;
 
     try {
@@ -381,6 +508,18 @@ module.exports = function registerAdmin(bot, core) {
 
     if (text.startsWith('/') && text !== '/start') {
       return openAdminHome(ctx);
+    }
+
+    if (state && state.step === 'searching_admin_ads') {
+      delete userState[adminId];
+      const matches = await searchAdminAds(text);
+      adminBrowseState[adminId] = {
+        filter: 'search',
+        items: matches,
+        index: 0,
+        query: text
+      };
+      return renderAdminAdAt(ctx, adminId, 'search', 0, false);
     }
 
     if (state && state.step === 'replying_to_support_user') {
