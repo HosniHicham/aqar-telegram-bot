@@ -12,7 +12,7 @@ module.exports = function registerUsers(bot, core) {
     getSetting, getAdminIds, getUserRecord, isUserVerified,
     chunkButtons, sanitizeNumericPrice, formatMoney, formatDateTime, escapeHtml,
     normalizeMediaRef, parseMediaListFromField, parseImagesFromImageUrl, buildOrderedBrowsingMedia,
-    getMainMenuKeyboard, getAuthKeyboard
+    getMainMenuKeyboard, getAuthKeyboard, getWebsiteUrl
   } = core;
 
   // =========================================================================
@@ -614,6 +614,17 @@ module.exports = function registerUsers(bot, core) {
   });
 
   // ملاحظة: زر "تصفح الموقع الرسمي" صار WebApp في القائمة الرئيسية (يفتح الموقع مباشرة بدون إظهار رابط)
+
+  // احتياط: لو ظهرت للمستخدم لوحة قديمة فيها الزر النصي، نعرض زر رابط مخفي بدل كتابة الرابط
+  bot.hears(['🌐 تصفح الموقع الرسمي (البروزر)', '🌐 تصفح الموقع الرسمي'], async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    const userId = ctx.from.id;
+    await replyTracked(ctx, userId, '🌐 <b>منصة عقار الجزائر</b>', {
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard([[Markup.button.url('🌐 فتح الموقع الرسمي', getWebsiteUrl())]])
+    }, true);
+    await ctx.reply('👇', { ...getMainMenuKeyboard(userId) }).then(m => trackBotMessage(userId, ctx.chat.id, m.message_id)).catch(() => {});
+  });
 
   bot.hears('ℹ️ عن المنصة', async (ctx) => {
     await safeDeleteUserMessage(ctx);
