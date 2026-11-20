@@ -303,6 +303,23 @@ function formatMoney(val) {
   return Number(clean).toLocaleString('en-US') + ' دج';
 }
 
+function formatDateTime(dateInput) {
+  const target = dateInput ? new Date(dateInput) : new Date();
+  if (isNaN(target.getTime())) return String(dateInput || 'غير محدد');
+  try {
+    return target.toLocaleString('fr-DZ', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    });
+  } catch (e) {
+    return target.toISOString().replace('T', ' ').slice(0, 16);
+  }
+}
+
 function escapeHtml(str) {
   return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
@@ -310,7 +327,7 @@ function escapeHtml(str) {
 function normalizeMediaRef(v) {
   if (typeof v !== 'string') return null;
   const clean = v.trim();
-  if (!clean || clean === 'EMPTY') return null;
+  if (!clean || clean === 'EMPTY' || clean === 'FREE_NO_RECEIPT') return null;
   return clean.startsWith('tg:') ? clean.slice(3) : clean;
 }
 
@@ -551,11 +568,6 @@ const WIZ_STEPS = [
 const WIZ_KEYS = ['property_type', 'state_name', 'price', 'phone', 'description', 'media_label', null, null];
 const WIZ_LABELS = ['🏠 النوع', '📍 الولاية', '💰 السعر', '📞 الهاتف', '📝 الوصف', '📸 الصور والفيديو', '💳 الدفع'];
 
-async function isFreeDirectPublishEnabled() {
-  const val = await getSetting('allow_free_publish', 'true');
-  return !['false', '0', 'off', 'no'].includes(String(val).trim().toLowerCase());
-}
-
 async function getWizardPrompt(stepIndex) {
   const prompts = [
     'اختر <b>نوع العقار</b> من القائمة في الأسفل:',
@@ -564,7 +576,7 @@ async function getWizardPrompt(stepIndex) {
     'استخدم لوحة الأرقام في الأسفل لإدخال رقم الهاتف، ثم اضغط <b>✅ [ OK ] تأكيد</b>:',
     'اختر <b>مزايا ومواصفات العقار</b> من القائمة في الأسفل (يمكنك اختيار أكثر من ميزة)، ثم اضغط <b>✅ تأكيد الوصف والانتقال</b>:',
     `أرسل الآن <b>عدة صور أو فيديوهات للعقار</b> (حتى ${MAX_PROPERTY_IMAGES} ملفات معاً)، ثم اضغط <b>✅ إنهاء إرفاق الوسائط والانتقال</b>:`,
-    'اختر طريقة الدفع من القائمة في الأسفل:',
+    'اختر طريقة الدفع أو النشر من القائمة في الأسفل:',
     'أرسل الآن <b>صورة وصل الدفع (BaridiMob / CCP)</b>:'
   ];
   return prompts[stepIndex] || '';
@@ -652,16 +664,12 @@ async function getStandardReplyKeyboard(state) {
     return Markup.keyboard(rows).resize();
   } else if (stateStep === 'waiting_for_payment_choice') {
     const publishCost = await getSetting('publish_cost_points', '100');
-    const freeEnabled = await isFreeDirectPublishEnabled();
-    const rows = [
+    return Markup.keyboard([
       ['💳 الدفع عبر BaridiMob / CCP'],
-      [`🪙 النشر مجاناً (${publishCost} نقطة)`]
-    ];
-    if (freeEnabled) {
-      rows.push(['🆓 نشر مجاني']);
-    }
-    rows.push([backText, homeText]);
-    return Markup.keyboard(rows).resize();
+      [`🪙 النشر مجاناً (${publishCost} نقطة)`],
+      ['🆓 نشر مجاني'],
+      [backText, homeText]
+    ]).resize();
   } else {
     return Markup.keyboard([
       [backText, homeText],
@@ -677,14 +685,13 @@ async function renderWizard(ctx, userId, opts = {}) {
   const user = await getUserRecord(userId);
   const currentPoints = user ? (user.points || 0) : 0;
   const publishCost = await getSetting('publish_cost_points', '100');
-  const freeEnabled = await isFreeDirectPublishEnabled();
 
   if (state.step === 'waiting_for_payment_choice' && !opts.footer) {
     opts.footer =
       `💰 <b>اختر طريقة إتمام ونشر الإعلان:</b>\n\n` +
       `1️⃣ <b>الدفع السريع (BaridiMob / CCP):</b> 500 دج (أولوية ومراجعة فورية).\n` +
       `2️⃣ <b>النشر المجاني بالنقاط:</b> يتطلب <b>${publishCost} نقطة</b>\n` +
-      (freeEnabled ? `3️⃣ <b>نشر مجاني:</b> إرسال ونشر الإعلان مجاناً مباشرة.\n` : '') +
+      `3️⃣ <b>نشر مجاني:</b> يُرسل إلى قائمة الانتظار والمراجعة الإدارية كإعلان مجاني.\n` +
       `🪙 <b>رصيدك الحالي:</b> <b>${currentPoints} نقطة</b>`;
   }
 
@@ -990,11 +997,14 @@ async function renderPropertyPage(ctx, userId, pageIndex, mediaIndex = 0) {
       ? `\n${mediaTypeLabel}: <b>${safeMediaIndex + 1} / ${totalMedia}</b>`
       : '';
 
+    const publishedAtText = item.created_at ? formatDateTime(item.created_at) : 'غير مسجل';
+
     const caption =
       `🏛 <b>الولاية:</b> ${escapeHtml(item.state_name || '')} (${pageIndex + 1}/${data.length})\n\n` +
       `🏠 <b>العقار:</b> ${escapeHtml(item.property_type || '')}\n` +
       `💰 <b>السعر:</b> ${formatMoney(item.price)}\n` +
-      `📞 <b>هاتف المالك:</b> <code>${escapeHtml(item.phone || '')}</code>${mediaLine}\n` +
+      `📞 <b>هاتف المالك:</b> <code>${escapeHtml(item.phone || '')}</code>\n` +
+      `🕒 <b>تاريخ ووقت النشر:</b> <code>${escapeHtml(publishedAtText)}</code>${mediaLine}\n` +
       `📝 <b>الوصف:</b> ${escapeHtml(item.description || item.message || '')}`;
 
     const replyKb = getBrowsingKeyboard(pageIndex, data.length, safeMediaIndex, totalMedia);
@@ -1170,16 +1180,11 @@ bot.hears('🆓 نشر مجاني', async (ctx) => {
   const state = userState[userId];
   if (!state || state.step !== 'waiting_for_payment_choice') return;
 
-  if (!(await isFreeDirectPublishEnabled())) {
-    const warnMsg = await ctx.reply('⚠️ <b>خيار النشر المجاني المباشر غير مفعل حالياً.</b>', { parse_mode: 'HTML' });
-    setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warnMsg.message_id).catch(() => {}), 3000);
-    return;
-  }
-
-  state.data.payment_label = '🆓 نشر مجاني';
+  state.data.payment_label = '🆓 إعلان مجاني (بانتظار الإدارة)';
   state.step = 'publishing';
+
   try {
-    const publishingText = await getSetting('publishing_text', '⏳ جاري المعالجة والحفظ...');
+    const publishingText = await getSetting('publishing_text', '⏳ جاري المعالجة وإرسال الإعلان المجاني للإدارة...');
     await renderWizard(ctx, userId, { footer: publishingText });
 
     const mediaItems = state.data.media_items || [];
@@ -1188,29 +1193,105 @@ bot.hears('🆓 نشر مجاني', async (ctx) => {
 
     const numericPrice = sanitizeNumericPrice(state.data.price);
     const cleanPhone = String(state.data.phone || '').replace(/\D/g, '').trim();
+    const submittedAt = formatDateTime(new Date());
 
-    await supabase.from('test_messages').insert([{
-      user_id: userId,
-      property_type: state.data.property_type,
-      state_name: state.data.state_name,
-      price: numericPrice,
-      phone: cleanPhone,
-      description: state.data.description,
-      message: state.data.description,
-      image_url: combinedImagesUrl,
-      video_url: videoUrl
-    }]);
+    const { data: insertedRow, error: insertError } = await supabase
+      .from('pending_properties')
+      .insert([{
+        user_id: userId,
+        property_type: state.data.property_type,
+        state_name: state.data.state_name,
+        price: numericPrice,
+        phone: cleanPhone,
+        description: state.data.description,
+        image_url: combinedImagesUrl,
+        video_url: videoUrl,
+        receipt_url: 'FREE_NO_RECEIPT',
+        status: 'pending'
+      }])
+      .select()
+      .single();
+
+    if (insertError) throw insertError;
+
+    const requestId = insertedRow.id;
+    const photosCount = parseImagesFromImageUrl(combinedImagesUrl).length;
+    const videosCount = parseMediaListFromField(videoUrl).length;
+    const dbUser = await getUserRecord(userId);
+    const senderName = escapeHtml(
+      [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' ') ||
+      dbUser?.first_name ||
+      'مستخدم'
+    );
+
+    const adminCaption =
+      `🆓 <b>إعلان مجاني جديد في قائمة الانتظار (#${requestId})</b>\n` +
+      `🏷 <b>النوع المالي:</b> <b>إعلان مجاني (بدون وصل دفع / بدون خصم نقاط)</b>\n` +
+      `🕒 <b>التاريخ والوقت:</b> <code>${escapeHtml(submittedAt)}</code>\n\n` +
+      `👤 <b>المرسل:</b> ${senderName} (<code>${userId}</code>)\n` +
+      `🏠 <b>العقار:</b> ${escapeHtml(state.data.property_type || '')}\n` +
+      `📍 <b>الولاية:</b> ${escapeHtml(state.data.state_name || '')}\n` +
+      `💰 <b>السعر:</b> ${formatMoney(numericPrice)}\n` +
+      `📞 <b>الهاتف:</b> <code>${escapeHtml(cleanPhone)}</code>\n` +
+      `🖼 <b>عدد الصور:</b> ${photosCount}\n` +
+      `🎥 <b>عدد الفيديوهات:</b> ${videosCount}\n` +
+      `📝 <b>الوصف:</b> ${escapeHtml(state.data.description || '')}`;
+
+    const adminButtons = Markup.inlineKeyboard([
+      [
+        Markup.button.callback(`❌ رفض (#${requestId})`, `reject_${requestId}`),
+        Markup.button.callback(`✅ قبول ونشر (#${requestId})`, `approve_${requestId}`)
+      ],
+      [
+        Markup.button.callback(`✉️ رد على العميل (${userId})`, `support_reply_${userId}`)
+      ]
+    ]);
+
+    const adminIds = await getAdminIds();
+    const firstPhotoRef = parseImagesFromImageUrl(combinedImagesUrl)[0];
+
+    for (const currentAdminId of adminIds) {
+      try {
+        if (firstPhotoRef) {
+          await ctx.telegram.sendPhoto(currentAdminId, firstPhotoRef, {
+            caption: adminCaption + `\n\n👇 <b>تنبيه للإدارة: هذا إعلان مجاني — يرجى مراجعته واتخاذ القرار:</b>`,
+            parse_mode: 'HTML',
+            ...adminButtons
+          });
+        } else {
+          await ctx.telegram.sendMessage(currentAdminId, adminCaption, {
+            parse_mode: 'HTML',
+            ...adminButtons
+          });
+        }
+      } catch (sendErr) {
+        console.error(`Failed to send free ad admin notification to ${currentAdminId}:`, sendErr.message);
+        await ctx.telegram.sendMessage(currentAdminId, adminCaption, {
+          parse_mode: 'HTML',
+          ...adminButtons
+        }).catch(() => {});
+      }
+    }
 
     delete userState[userId];
     await replyTracked(ctx, userId,
-      '🎉 <b>تم إرسال ونشر إعلانك مجاناً بنجاح في المنصة!</b>',
+      `⏳ <b>تم تسجيل إعلانك المجاني في قائمة الانتظار برقم (#${requestId}) وإرساله إلى الإدارة!</b>\n\n` +
+      `🆓 <b>نوع الطلب:</b> إعلان مجاني\n` +
+      `🕒 <b>تاريخ ووقت الإرسال:</b> <code>${escapeHtml(submittedAt)}</code>\n\n` +
+      `سيتم نشره في التصفح فور موافقة الإدارة عليه.`,
       { parse_mode: 'HTML', ...getMainMenuKeyboard() },
       true
     );
   } catch (err) {
-    console.error('Direct free publish error:', err);
+    console.error('Free ad pending publish error:', err);
     delete userState[userId];
-    await replyTracked(ctx, userId, '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getMainMenuKeyboard(), true);
+    await replyTracked(
+      ctx,
+      userId,
+      `⚠️ <b>تعذر إرسال الإعلان المجاني إلى قائمة الانتظار:</b>\n<code>${escapeHtml(err.message || 'خطأ غير معروف')}</code>`,
+      { parse_mode: 'HTML', ...getMainMenuKeyboard() },
+      true
+    );
   }
 });
 
@@ -1246,6 +1327,7 @@ bot.hears(/^🪙 النشر مجاناً/, async (ctx) => {
 
     const numericPrice = sanitizeNumericPrice(state.data.price);
     const cleanPhone = String(state.data.phone || '').replace(/\D/g, '').trim();
+    const nowIso = new Date().toISOString();
 
     await supabase.from('test_messages').insert([{
       property_type: state.data.property_type,
@@ -1255,12 +1337,13 @@ bot.hears(/^🪙 النشر مجاناً/, async (ctx) => {
       description: state.data.description,
       message: state.data.description,
       image_url: combinedImagesUrl,
-      video_url: videoUrl
+      video_url: videoUrl,
+      created_at: nowIso
     }]);
 
     delete userState[userId];
     await replyTracked(ctx, userId,
-      `🎉 <b>تم خصم ${publishCost} نقطة ونشر إعلانك بنجاح في المنصة مجاناً!</b>`,
+      `🎉 <b>تم خصم ${publishCost} نقطة ونشر إعلانك بنجاح في المنصة مجاناً!</b>\n🕒 <b>تاريخ ووقت النشر:</b> <code>${escapeHtml(formatDateTime(nowIso))}</code>`,
       { parse_mode: 'HTML', ...getMainMenuKeyboard() },
       true
     );
@@ -1500,13 +1583,17 @@ async function renderUserOwnAdBrowser(ctx, userId, adIndex = 0, mediaIndex = 0) 
     ? `\n${currentMedia.type === 'video' ? '🎥 فيديو' : '🖼 صورة'}: <b>${safeMediaIdx + 1} / ${totalMedia}</b>`
     : '';
 
+  const adDateLine = ad.created_at
+    ? `\n🕒 <b>التاريخ والوقت:</b> <code>${escapeHtml(formatDateTime(ad.created_at))}</code>`
+    : '';
+
   const caption =
     `🗂 <b>إعلاناتك الخاصة (${safeIdx + 1}/${allAds.length})</b> — الحالة: <b>${ad.status_label}</b>\n` +
     `━━━━━━━━━━━━━━━━━━━━\n` +
     `🏠 <b>العقار:</b> ${escapeHtml(ad.property_type || '')}\n` +
     `📍 <b>الولاية:</b> ${escapeHtml(ad.state_name || '')}\n` +
     `💰 <b>السعر:</b> ${formatMoney(ad.price)}\n` +
-    `📞 <b>الهاتف:</b> <code>${escapeHtml(ad.phone || '')}</code>${mediaLine}\n` +
+    `📞 <b>الهاتف:</b> <code>${escapeHtml(ad.phone || '')}</code>${adDateLine}${mediaLine}\n` +
     `📝 <b>الوصف:</b> ${escapeHtml(ad.description || ad.message || '')}`;
 
   const kb = getUserOwnBrowsingKeyboard(safeIdx, allAds.length, safeMediaIdx, totalMedia);
@@ -1594,6 +1681,7 @@ async function sendStructuredTicketToAdmins(ctx, senderUserId, ticketTitle, deta
 
   const resolvedAd = await resolvePendingRecordForReview(relatedAd, senderUserId, fallbackAdId);
   const receiptRef = normalizeMediaRef(resolvedAd?.receipt_url);
+  const isFreeAd = resolvedAd?.receipt_url === 'FREE_NO_RECEIPT';
 
   const adIdNum = Number(resolvedAd?.id || fallbackAdId);
   const hasNumericAdId = Number.isFinite(adIdNum) && adIdNum > 0;
@@ -1605,16 +1693,22 @@ async function sendStructuredTicketToAdmins(ctx, senderUserId, ticketTitle, deta
 
   const photosCount = parseImagesFromImageUrl(resolvedAd?.image_url).length;
   const videosCount = parseMediaListFromField(resolvedAd?.video_url).length;
+  const adTypeBadge = isFreeAd ? `\n🏷 <b>نوع الإعلان:</b> <b>إعلان مجاني</b>` : '';
+  const adTimeBadge = resolvedAd?.created_at
+    ? `\n🕒 <b>تاريخ الإرسال:</b> <code>${escapeHtml(formatDateTime(resolvedAd.created_at))}</code>`
+    : `\n🕒 <b>وقت الطلب:</b> <code>${escapeHtml(formatDateTime(new Date()))}</code>`;
 
   const adBlock = adIdLabel
     ? `\n📌 <b>الإعلان:</b> <code>#${escapeHtml(String(adIdLabel))}</code>` +
       (resolvedAd?.property_type ? ` (${escapeHtml(resolvedAd.property_type)}${resolvedAd?.state_name ? ` - ${escapeHtml(resolvedAd.state_name)}` : ''}${resolvedAd?.price ? ` - ${formatMoney(resolvedAd.price)}` : ''})` : '') +
       (resolvedAd?.status_label || relatedAd?.status_label ? ` — الحالة: <b>${resolvedAd?.status_label || relatedAd?.status_label}</b>` : '') +
+      adTypeBadge +
+      adTimeBadge +
       (isReminderOrReview && (photosCount > 0 || videosCount > 0)
         ? `\n🖼 <b>الصور:</b> ${photosCount} | 🎥 <b>الفيديو:</b> ${videosCount}`
         : '') +
       (resolvedAd?.description ? `\n📝 <b>الوصف:</b> ${escapeHtml(resolvedAd.description)}` : '')
-    : '';
+    : adTimeBadge;
 
   const header = isReminderOrReview
     ? `🔔 <b>معاينة تذكير إعلان — ${escapeHtml(ticketTitle)}</b>\n` +
@@ -1839,9 +1933,11 @@ bot.hears(/^(⏳ معلقة|✅ مقبولة|❌ مرفوضة|📌 الكل) \(\
 
   supportUserSession[userId] = { mode: 'select_ad_for_action', ads: filtered };
 
-  const listLines = filtered.slice(0, 15).map((ad, idx) =>
-    `${idx + 1}. ${ad.status_label} <b>#${ad.id || '—'}</b> — ${escapeHtml(ad.property_type || '')} (${escapeHtml(ad.state_name || '')}) • ${formatMoney(ad.price)}`
-  );
+  const listLines = filtered.slice(0, 15).map((ad, idx) => {
+    const adKind = ad.receipt_url === 'FREE_NO_RECEIPT' ? ' • 🆓 مجاني' : '';
+    const adDate = ad.created_at ? ` • 🕒 ${formatDateTime(ad.created_at)}` : '';
+    return `${idx + 1}. ${ad.status_label} <b>#${ad.id || '—'}</b> — ${escapeHtml(ad.property_type || '')} (${escapeHtml(ad.state_name || '')}) • ${formatMoney(ad.price)}${adKind}${adDate}`;
+  });
 
   const adButtons = filtered.slice(0, 12).map(ad =>
     `📄 إعلان #${ad.id || '—'} (${escapeHtml(ad.property_type || '')})`
@@ -1903,11 +1999,14 @@ bot.hears(/^📄 إعلان #(\S+) \((.+)\)$/, async (ctx) => {
     selectedAd: targetAd
   };
 
+  const adKindLine = targetAd.receipt_url === 'FREE_NO_RECEIPT' ? `\n• <b>النوع:</b> <b>إعلان مجاني</b>` : '';
+  const adDateLine = targetAd.created_at ? `\n• <b>التاريخ والوقت:</b> <code>${escapeHtml(formatDateTime(targetAd.created_at))}</code>` : '';
+
   const cardText =
     `📄 <b>تفاصيل الإعلان #${escapeHtml(String(targetAd.id || '—'))}</b>\n` +
     `━━━━━━━━━━━━━━━━━━━━\n` +
-    `• <b>الحالة:</b> <b>${targetAd.status_label}</b>\n` +
-    `• <b>النوع:</b> ${escapeHtml(targetAd.property_type || '')}\n` +
+    `• <b>الحالة:</b> <b>${targetAd.status_label}</b>${adKindLine}${adDateLine}\n` +
+    `• <b>العقار:</b> ${escapeHtml(targetAd.property_type || '')}\n` +
     `• <b>الولاية:</b> ${escapeHtml(targetAd.state_name || '')}\n` +
     `• <b>السعر:</b> ${formatMoney(targetAd.price)}\n` +
     `• <b>الوصف:</b> ${escapeHtml(targetAd.description || targetAd.message || '')}\n\n` +
@@ -2308,9 +2407,11 @@ bot.on('photo', async (ctx) => {
       const requestId = insertedRow.id;
       const photosCount = parseImagesFromImageUrl(combinedImagesUrl).length;
       const videosCount = parseMediaListFromField(videoUrl).length;
+      const submittedAt = formatDateTime(insertedRow.created_at || new Date());
 
       const adminCaption =
-        `🚨 <b>طلب إعلان عقاري جديد (#${requestId})</b>\n\n` +
+        `🚨 <b>طلب إعلان عقاري جديد (#${requestId})</b>\n` +
+        `🕒 <b>التاريخ والوقت:</b> <code>${escapeHtml(submittedAt)}</code>\n\n` +
         `👤 <b>معرف المستخدم:</b> <code>${userId}</code>\n` +
         `🏠 <b>النوع:</b> ${escapeHtml(state.data.property_type || '')}\n` +
         `📍 <b>الولاية:</b> ${escapeHtml(state.data.state_name || '')}\n` +
@@ -2352,7 +2453,7 @@ bot.on('photo', async (ctx) => {
 
       delete userState[userId];
       await replyTracked(ctx, userId,
-        `⏳ <b>تم استلام وصل الدفع وحفظ طلبك برقم (#${requestId})!</b>\n\nالإعلان قيد المراجعة من طرف الإدارة وسيتم نشره فور تأكيد التحويل.`,
+        `⏳ <b>تم استلام وصل الدفع وحفظ طلبك برقم (#${requestId})!</b>\n🕒 <b>التاريخ والوقت:</b> <code>${escapeHtml(submittedAt)}</code>\n\nالإعلان قيد المراجعة من طرف الإدارة وسيتم نشره فور تأكيد التحويل.`,
         { parse_mode: 'HTML', ...getMainMenuKeyboard() },
         true
       );
@@ -2416,12 +2517,15 @@ const handleAdminAction = async (ctx, action) => {
     }
 
     const targetUserId = pendingItem.user_id;
+    const isFreeAd = pendingItem.receipt_url === 'FREE_NO_RECEIPT';
 
     if (action === 'approve') {
       const numericPrice = sanitizeNumericPrice(pendingItem.price);
       const cleanPhone = String(pendingItem.phone || '').replace(/\D/g, '').trim();
+      const nowIso = new Date().toISOString();
 
-      const { error: publishError } = await supabase.from('test_messages').insert([{
+      let { error: publishError } = await supabase.from('test_messages').insert([{
+        user_id: targetUserId,
         property_type: pendingItem.property_type,
         state_name: pendingItem.state_name,
         price: numericPrice,
@@ -2429,8 +2533,23 @@ const handleAdminAction = async (ctx, action) => {
         description: pendingItem.description,
         message: pendingItem.description,
         image_url: pendingItem.image_url || 'EMPTY',
-        video_url: pendingItem.video_url || 'EMPTY'
+        video_url: pendingItem.video_url || 'EMPTY',
+        created_at: nowIso
       }]);
+
+      if (publishError) {
+        const retryRes = await supabase.from('test_messages').insert([{
+          property_type: pendingItem.property_type,
+          state_name: pendingItem.state_name,
+          price: numericPrice,
+          phone: cleanPhone,
+          description: pendingItem.description,
+          message: pendingItem.description,
+          image_url: pendingItem.image_url || 'EMPTY',
+          video_url: pendingItem.video_url || 'EMPTY'
+        }]);
+        publishError = retryRes.error;
+      }
 
       if (publishError) throw publishError;
 
@@ -2438,25 +2557,29 @@ const handleAdminAction = async (ctx, action) => {
 
       await ctx.telegram.sendMessage(
         targetUserId,
-        `🎉 <b>تم قبول إعلانك رقم (#${requestId}) ونشره بنجاح في المنصة!</b>`,
+        `🎉 <b>تم قبول إعلانك رقم (#${requestId}) ونشره بنجاح في المنصة!</b>\n🕒 <b>تاريخ ووقت النشر:</b> <code>${escapeHtml(formatDateTime(nowIso))}</code>`,
         { parse_mode: 'HTML' }
       ).catch(() => {});
 
       await ctx.editMessageCaption(
-        `✅ <b>تم قبول الطلب (#${requestId}) ونشره بنجاح!</b>\n👤 المستخدم: <code>${targetUserId}</code>\n📌 الحالة: <b>مقبول (مُحفظ في جدول test_messages)</b>`,
+        `✅ <b>تم قبول الطلب (#${requestId}) ونشره بنجاح!</b>\n👤 المستخدم: <code>${targetUserId}</code>\n🏷 النوع: <b>${isFreeAd ? 'إعلان مجاني' : 'مدفوع / بوصل'}</b>\n🕒 وقت النشر: <code>${escapeHtml(formatDateTime(nowIso))}</code>\n📌 الحالة: <b>مقبول (مُحفظ في جدول test_messages)</b>`,
         { parse_mode: 'HTML' }
       ).catch(() => {});
     } else {
       await supabase.from('pending_properties').update({ status: 'rejected' }).eq('id', requestId);
 
+      const rejectUserMsg = isFreeAd
+        ? `❌ <b>عذراً، لم تتم الموافقة على نشر إعلانك المجاني رقم (#${requestId}).</b>`
+        : `❌ <b>عذراً، تم رفض وصل الدفع الخاص بطلبك رقم (#${requestId}).</b>`;
+
       await ctx.telegram.sendMessage(
         targetUserId,
-        `❌ <b>عذراً، تم رفض وصل الدفع الخاص بطلبك رقم (#${requestId}).</b>`,
+        rejectUserMsg,
         { parse_mode: 'HTML' }
       ).catch(() => {});
 
       await ctx.editMessageCaption(
-        `❌ <b>تم رفض الطلب (#${requestId}).</b>\n👤 المستخدم: <code>${targetUserId}</code>\n📌 الحالة: <b>مرفوض</b>`,
+        `❌ <b>تم رفض الطلب (#${requestId}).</b>\n👤 المستخدم: <code>${targetUserId}</code>\n🏷 النوع: <b>${isFreeAd ? 'إعلان مجاني' : 'مدفوع / بوصل'}</b>\n📌 الحالة: <b>مرفوض</b>`,
         { parse_mode: 'HTML' }
       ).catch(() => {});
     }
