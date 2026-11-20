@@ -16,11 +16,13 @@ module.exports = function registerAdmin(bot, core) {
 
   // ------------------------- لوحة مفاتيح الأدمن -------------------------
   function getAdminMenuKeyboard() {
-    return Markup.keyboard([
+    const rows = [
       ['📥 الطلبات المعلقة', '📊 إحصائيات المنصة'],
-      ['👁 معاينة المنصة كمستخدم'],
-      [getWebsiteButton()]
-    ]).resize();
+      ['👁 معاينة المنصة كمستخدم']
+    ];
+    const webBtn = getWebsiteButton();
+    if (webBtn) rows.push([webBtn]);
+    return Markup.keyboard(rows).resize();
   }
 
   async function countRows(table, filter) {
@@ -330,4 +332,3 @@ module.exports = function registerAdmin(bot, core) {
   // واجهة عامة يستدعيها الأب
   return { openAdminHome };
 };
-
