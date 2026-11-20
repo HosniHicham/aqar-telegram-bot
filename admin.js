@@ -330,3 +330,4 @@ module.exports = function registerAdmin(bot, core) {
   // واجهة عامة يستدعيها الأب
   return { openAdminHome };
 };
+
