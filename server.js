@@ -3,8 +3,8 @@
 const { Telegraf, Markup } = require('telegraf');
 const express = require('express');
 const { createClient } = require('@supabase/supabase-js');
-const { initUsersServer } = require('./users');
-const { initAdminServer } = require('./admin');
+const { createUsersHandler } = require('./users');
+const { createAdminHandler } = require('./admin');
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const WEBHOOK_DOMAIN = process.env.WEBHOOK_DOMAIN;
@@ -21,13 +21,14 @@ const bot = new Telegraf(BOT_TOKEN);
 const app = express();
 app.use(express.json());
 
-const previewMode = {}; // وضع معاينة الأدمن كـ يوزر
+const previewMode = {};
 
 async function getAdminIds() {
   try {
-    const { data } = await supabase.from('app_settings').select('value').eq('key', 'admin_id').single();
-    if (!data || !data.value) return [];
-    return data.value.split(/[,،\s]+/).map(id => Number(id.trim())).filter(Boolean);
+    const { data } = await supabase.from('app_settings').select('value').eq('key', 'admin_id').limit(1);
+    const raw = data && data[0] ? data[0].value : '';
+    if (!raw) return [];
+    return String(raw).split(/[,،\s]+/).map(id => Number(id.trim())).filter(n => Number.isFinite(n) && n > 0);
   } catch (e) {
     return [];
   }
@@ -39,60 +40,91 @@ async function isAdmin(userId) {
   return ids.includes(Number(userId));
 }
 
-function getPreviewToggleKeyboard(isPreview) {
+function getPreviewKeyboard(isPreview) {
   return Markup.keyboard([
     [isPreview ? '🛡️ العودة لوضع الأدمن' : '👁 معاينة كـ يوزر'],
     ['🏠 القائمة الرئيسية']
   ]).resize();
 }
 
-const usersHandler = initUsersServer({ bot, app, supabase, WEBHOOK_DOMAIN });
-const adminHandler = initAdminServer({ bot, supabase });
+const users = createUsersHandler({ bot, app, supabase, WEBHOOK_DOMAIN, getAdminIds });
+const admin = createAdminHandler({ bot, supabase, getAdminIds });
 
-// تبديل المعاينة للأدمن فقط
-bot.hears(['👁 معاينة كـ يوزر', '🛡️ العودة لوضع الأدمن'], async (ctx, next) => {
+bot.on('callback_query', async (ctx) => {
   const userId = ctx.from?.id;
-  if (!(await isAdmin(userId))) return next();
-
-  await ctx.telegram.deleteMessage(ctx.chat.id, ctx.message.message_id).catch(() => {});
-  const enablePreview = ctx.message.text.trim() === '👁 معاينة كـ يوزر';
-  previewMode[userId] = enablePreview;
-
-  if (enablePreview) {
-    await ctx.reply('👁 <b>تم تفعيل وضع المعاينة كـ يوزر.</b> يمكنك الآن تجربة واجهة اليوزر.', {
-      parse_mode: 'HTML',
-      ...getPreviewToggleKeyboard(true)
-    });
-    return usersHandler.onStart(ctx);
-  } else {
-    return adminHandler.onStart(ctx, getPreviewToggleKeyboard(false));
+  const adminUser = await isAdmin(userId);
+  if (adminUser && !previewMode[userId]) {
+    return admin.handleCallback(ctx);
   }
+  return users.handleCallback(ctx);
 });
 
-// توجيه حسب الصلاحية (أدمن <-> يوزر)
-bot.start(async (ctx) => {
+bot.on('contact', async (ctx) => {
   const userId = ctx.from?.id;
   if (await isAdmin(userId) && !previewMode[userId]) {
-    return adminHandler.onStart(ctx, getPreviewToggleKeyboard(false));
+    return admin.handleStart(ctx, getPreviewKeyboard(false));
   }
-  return usersHandler.onStart(ctx);
+  return users.handleContact(ctx);
 });
 
-bot.use(async (ctx, next) => {
+bot.on('photo', async (ctx) => {
   const userId = ctx.from?.id;
   if (await isAdmin(userId) && !previewMode[userId]) {
-    return adminHandler.route(ctx, next);
+    return admin.handlePhoto(ctx, getPreviewKeyboard(false));
   }
-  return usersHandler.route(ctx, next);
+  return users.handlePhoto(ctx);
+});
+
+bot.on('video', async (ctx) => {
+  const userId = ctx.from?.id;
+  if (await isAdmin(userId) && !previewMode[userId]) {
+    return admin.handleVideo(ctx, getPreviewKeyboard(false));
+  }
+  return users.handleVideo(ctx);
+});
+
+bot.on('text', async (ctx) => {
+  const userId = ctx.from?.id;
+  const text = (ctx.message?.text || '').trim();
+  const adminUser = await isAdmin(userId);
+
+  if (adminUser && (text === '👁 معاينة كـ يوزر' || text === '🛡️ العودة لوضع الأدمن')) {
+    await ctx.telegram.deleteMessage(ctx.chat.id, ctx.message.message_id).catch(() => {});
+    const enable = text === '👁 معاينة كـ يوزر';
+    previewMode[userId] = enable;
+
+    if (enable) {
+      await ctx.reply('👁 <b>تم تفعيل وضع المعاينة كـ يوزر.</b>', {
+        parse_mode: 'HTML',
+        ...getPreviewKeyboard(true)
+      });
+      return users.handleStart(ctx);
+    }
+    return admin.handleStart(ctx, getPreviewKeyboard(false));
+  }
+
+  if (text === '/start') {
+    if (adminUser && !previewMode[userId]) {
+      return admin.handleStart(ctx, getPreviewKeyboard(false));
+    }
+    return users.handleStart(ctx);
+  }
+
+  if (adminUser && !previewMode[userId]) {
+    return admin.handleText(ctx, getPreviewKeyboard(false));
+  }
+  return users.handleText(ctx);
 });
 
 const PORT = process.env.PORT || 3000;
 if (WEBHOOK_DOMAIN) {
   app.post(`/bot${BOT_TOKEN}`, async (req, res) => {
     res.sendStatus(200);
-    if (req.body && req.body.update_id) bot.handleUpdate(req.body);
+    if (req.body && req.body.update_id) {
+      bot.handleUpdate(req.body).catch(err => console.error('handleUpdate error:', err));
+    }
   });
-  bot.telegram.setWebhook(`${WEBHOOK_DOMAIN}/bot${BOT_TOKEN}`);
+  bot.telegram.setWebhook(`${WEBHOOK_DOMAIN}/bot${BOT_TOKEN}`).catch(err => console.error('setWebhook error:', err));
   app.get('/', (req, res) => res.send('Aqar Algeria Production System is online 🚀'));
   app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
 } else {
