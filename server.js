@@ -333,7 +333,7 @@ bot.use(async (ctx, next) => {
 
   // أفعال الإدارة تبقى للأدمن حتى لو كان في وضع المعاينة
   const forceAdmin =
-    /^(approve_|reject_|support_reply_)\d+$/.test(cbData) ||
+    /^(approve_|reject_|requeue_|del_pub_|support_reply_|adm_nav:|adm_home|adm_noop)/.test(cbData) ||
     userState[userId]?.step === 'replying_to_support_user';
 
   if (previewMode[userId]) injectBackButton(ctx);
