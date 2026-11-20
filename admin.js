@@ -1,11 +1,6 @@
 'use strict';
 // =========================================================================
-// 🛡️ SERVER ADMIN — كل ما يخص الأدمن
-// يستدعيه server.js (الأب).
-// - أزرار التنقل والتحكم والمراسلة بخصوص الإعلان (#ID) في لوحة التحكم السفلية
-// - أزرار القبول / الرفض / الحذف / الإعادة أسفل بطاقة الإعلان نفسه
-// - بحث سريع للأدمن برقم الطلب أو رقم الهاتف أو آيدي العميل
-// - تنظيف الرسائل والأوامر غير المهمة
+// 🛡️ SERVER ADMIN — لوحة تحكم الإدارة
 // =========================================================================
 
 module.exports = function registerAdmin(bot, core) {
@@ -17,10 +12,9 @@ module.exports = function registerAdmin(bot, core) {
     getWebsiteButton
   } = core;
 
-  // حالة تصفح الإعلانات للأدمن: adminId -> { filter, index, items }
   const adminBrowseState = {};
 
-  // ------------------------- لوحات المفاتيح السفلية (التحكم والتنقل) -------------------------
+  // ------------------------- لوحات التحكم السفلية -------------------------
   function getAdminMenuKeyboard() {
     const rows = [
       ['⏳ المعلقة', '✅ المنشورة', '❌ المرفوضة'],
@@ -41,7 +35,6 @@ module.exports = function registerAdmin(bot, core) {
     const rows = [];
     if (navRow.length > 0) rows.push(navRow);
 
-    // زر المراسلة بخصوص الإعلان مع الهاشتاج في لوحة التحكم السفلية
     if (currentItem && currentItem.user_id && currentItem.id) {
       rows.push([`✉️ مراسلة بخصوص #${currentItem.id}`]);
     }
@@ -92,15 +85,16 @@ module.exports = function registerAdmin(bot, core) {
     core.resetSessions(adminId);
 
     const { pending, published, rejected, usersCount } = await getFullAdminStats();
-    const name = escapeHtml(ctx.from.first_name || 'الأدمن');
+    const name = escapeHtml(ctx.from.first_name || 'المدير');
 
     const text =
-      `🛡 <b>لوحة تحكم الإدارة</b>${showStatsNotice ? ' — <b>تقرير الإحصائيات</b>' : ''}\n` +
+      `🛡 <b>لوحة تحكم الإدارة</b>${showStatsNotice ? ' • <b>تقرير الإحصائيات</b>' : ''}\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
-      `👋 أهلاً بك يا <b>${name}</b>\n` +
-      `⏳ <b>معلقة:</b> <b>${pending}</b> | ✅ <b>منشورة:</b> <b>${published}</b> | ❌ <b>مرفوضة:</b> <b>${rejected}</b>\n` +
-      `👥 <b>المستخدمون:</b> <b>${usersCount}</b>\n\n` +
-      `👇 اختر من أزرار التحكم أدناه:`;
+      `مرحباً <b>${name}</b>، إليك ملخص المنصة:\n\n` +
+      `⏳ <b>إعلانات قيد المراجعة:</b> <b>${pending}</b>\n` +
+      `✅ <b>إعلانات منشورة:</b> <b>${published}</b>\n` +
+      `❌ <b>إعلانات مرفوضة:</b> <b>${rejected}</b>\n` +
+      `👥 <b>الأعضاء المسجلون:</b> <b>${usersCount}</b>`;
 
     await replyTracked(ctx, adminId, text, { parse_mode: 'HTML', ...getAdminMenuKeyboard() }, true);
   }
@@ -211,7 +205,7 @@ module.exports = function registerAdmin(bot, core) {
     return results;
   }
 
-  // ------------------------- أزرار الإجراء أسفل بطاقة الإعلان نفسه -------------------------
+  // ------------------------- أزرار الإجراء على بطاقة الإعلان -------------------------
   function buildAdInlineButtons(item, filterType) {
     const rows = [];
     const adId = item.id;
@@ -223,11 +217,11 @@ module.exports = function registerAdmin(bot, core) {
       ]);
     } else if (filterType === 'rejected') {
       rows.push([
-        Markup.button.callback(`♻️ إعادة للمعلقة (#${adId})`, `requeue_${adId}`),
+        Markup.button.callback(`♻️ إعادة للمراجعة (#${adId})`, `requeue_${adId}`),
         Markup.button.callback(`✅ قبول ونشر (#${adId})`, `approve_${adId}`)
       ]);
     } else if (filterType === 'published') {
-      rows.push([Markup.button.callback(`🗑 حذف (#${adId})`, `del_pub_${adId}`)]);
+      rows.push([Markup.button.callback(`🗑 حذف المنشور (#${adId})`, `del_pub_${adId}`)]);
     }
 
     return rows.length > 0 ? Markup.inlineKeyboard(rows) : undefined;
@@ -236,31 +230,31 @@ module.exports = function registerAdmin(bot, core) {
   function formatAdminAdCaption(item, idx, total, filterType, stats, searchQuery = '') {
     const effectiveFilter = filterType || item._filterType || 'pending';
     const titleMap = {
-      pending: '⏳ <b>إعلان معلق</b>',
-      published: '✅ <b>إعلان منشور</b>',
-      rejected: '❌ <b>إعلان مرفوض</b>'
+      pending: '⏳ <b>قيد المراجعة</b>',
+      published: '✅ <b>منشور</b>',
+      rejected: '❌ <b>مرفوض</b>'
     };
     const isFree = item.receipt_url === 'FREE_NO_RECEIPT';
     const typeBadge = effectiveFilter === 'published'
-      ? '🌐 منشور'
-      : (isFree ? '🆓 مجاني' : '💳 مدفوع');
+      ? '🌐 عرض عام'
+      : (isFree ? '🆓 باقة مجانية' : '💳 مدفوع بوصل');
 
     const photosCount = parseImagesFromImageUrl(item.image_url).length;
     const videosCount = parseMediaListFromField(item.video_url).length;
     const desc = String(item.description || item.message || '');
-    const searchLine = searchQuery ? `🔎 <b>نتيجة بحث عن:</b> <code>${escapeHtml(searchQuery)}</code>\n` : '';
+    const searchLine = searchQuery ? `🔎 <b>نتيجة البحث:</b> <code>${escapeHtml(searchQuery)}</code>\n` : '';
 
     return (
-      `${searchLine}${titleMap[effectiveFilter] || '📌 <b>إعلان</b>'} — <code>#${item.id}</code> (${idx + 1}/${total})\n` +
-      `📊 <b>الإحصائيات:</b> معلق: <b>${stats.pending}</b> | منشور: <b>${stats.published}</b> | مرفوض: <b>${stats.rejected}</b>\n` +
+      `${searchLine}${titleMap[effectiveFilter] || '📌 <b>إعلان</b>'} • <code>#${item.id}</code> (${idx + 1} من ${total})\n` +
+      `📊 معلق: <b>${stats.pending}</b> | منشور: <b>${stats.published}</b> | مرفوض: <b>${stats.rejected}</b>\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
-      `🏷 <b>النوع:</b> <b>${typeBadge}</b>\n` +
+      `🏷 <b>التصنيف:</b> ${typeBadge}\n` +
       `🕒 <b>التاريخ:</b> <code>${escapeHtml(formatDateTime(item.created_at))}</code>\n` +
-      (item.user_id ? `👤 <b>العميل:</b> <code>${item.user_id}</code>\n` : '') +
+      (item.user_id ? `👤 <b>المعلن:</b> <code>${item.user_id}</code>\n` : '') +
       `🏠 <b>العقار:</b> ${escapeHtml(item.property_type || '')} — 📍 <b>${escapeHtml(item.state_name || '')}</b>\n` +
       `💰 <b>السعر:</b> ${formatMoney(item.price)} — 📞 <code>${escapeHtml(item.phone || '')}</code>\n` +
-      `🖼 <b>صور:</b> ${photosCount} | 🎥 <b>فيديو:</b> ${videosCount}\n` +
-      `📝 <b>الوصف:</b> ${escapeHtml(desc.length > 320 ? desc.slice(0, 320) + '…' : desc)}`
+      `🖼 <b>الصور:</b> ${photosCount} | 🎥 <b>الفيديو:</b> ${videosCount}\n` +
+      `📝 <b>التفاصيل:</b> ${escapeHtml(desc.length > 320 ? desc.slice(0, 320) + '…' : desc)}`
     );
   }
 
@@ -282,18 +276,18 @@ module.exports = function registerAdmin(bot, core) {
     }
 
     if (!st.items || st.items.length === 0) {
-      const queryNote = st?.query ? ` للبحث: <code>${escapeHtml(st.query)}</code>` : '';
+      const queryNote = st?.query ? ` للعبارة: <code>${escapeHtml(st.query)}</code>` : '';
       delete adminBrowseState[adminId];
       const emptyLabels = {
-        pending: 'لا توجد إعلانات معلقة حالياً',
+        pending: 'لا توجد إعلانات بانتظار المراجعة حالياً',
         published: 'لا توجد إعلانات منشورة حالياً',
         rejected: 'لا توجد إعلانات مرفوضة حالياً',
-        search: `لم يتم العثور على أي إعلان مطابق${queryNote}`
+        search: `لا توجد نتائج مطابقة${queryNote}`
       };
       return replyTracked(
         ctx, adminId,
-        `📭 <b>${emptyLabels[filterType] || 'لا توجد عناصر'}.</b>\n` +
-        `📊 <b>الإحصائيات:</b> معلق: <b>${stats.pending}</b> | منشور: <b>${stats.published}</b> | مرفوض: <b>${stats.rejected}</b>`,
+        `📭 <b>${emptyLabels[filterType] || 'لا توجد بيانات'}.</b>\n` +
+        `📊 معلق: <b>${stats.pending}</b> | منشور: <b>${stats.published}</b> | مرفوض: <b>${stats.rejected}</b>`,
         { parse_mode: 'HTML', ...getAdminMenuKeyboard() },
         true
       );
@@ -314,27 +308,54 @@ module.exports = function registerAdmin(bot, core) {
     const inlineKb = buildAdInlineButtons(item, cardFilter);
     const controlKb = getAdminBrowsingKeyboard(safeIdx, st.items.length, filterType, item);
 
+    // دمج أزرار البطاقة ولوحة التحكم السفلية في إرسال واحد دون أي رسالة حشو إضافية
+    const combinedExtra = {
+      caption,
+      parse_mode: 'HTML',
+      reply_markup: {
+        ...(inlineKb ? inlineKb.reply_markup : {}),
+        ...(controlKb ? controlKb.reply_markup : {})
+      }
+    };
+
     let sentCard = null;
     const mediaPhoto = receiptRef || firstPhoto;
-    const cardExtra = inlineKb ? { caption, parse_mode: 'HTML', ...inlineKb } : { caption, parse_mode: 'HTML' };
 
     try {
       if (mediaPhoto) {
-        sentCard = await ctx.replyWithPhoto(mediaPhoto, cardExtra);
+        sentCard = await ctx.replyWithPhoto(mediaPhoto, combinedExtra);
       } else if (firstVideo) {
-        sentCard = await ctx.replyWithVideo(firstVideo, cardExtra);
+        sentCard = await ctx.replyWithVideo(firstVideo, combinedExtra);
       } else {
-        sentCard = await ctx.reply(caption, cardExtra);
+        sentCard = await ctx.reply(caption, {
+          parse_mode: 'HTML',
+          reply_markup: combinedExtra.reply_markup
+        });
       }
     } catch (e) {
-      sentCard = await ctx.reply(caption, cardExtra).catch(() => null);
+      sentCard = await ctx.reply(caption, {
+        parse_mode: 'HTML',
+        reply_markup: combinedExtra.reply_markup
+      }).catch(() => null);
     }
 
-    // لوحة التحكم السفلية (التنقل + المراسلة بخصوص #ID + التحكم)
-    const ctrlMsg = await ctx.reply(
-      `🎛 <b>أزرار التنقل والتحكم (${safeIdx + 1} / ${st.items.length})</b>`,
-      { parse_mode: 'HTML', ...controlKb }
-    ).catch(() => null);
+    // في حال لم يقبل تيليجرام دمج Inline و ReplyKeyboard في نفس الرسالة لبعض العملاء، نعرض البطاقة ثم لوحة التحكم بأسلوب أنيق ومقتضب
+    if (!sentCard) {
+      const fallbackInline = inlineKb ? { caption, parse_mode: 'HTML', ...inlineKb } : { caption, parse_mode: 'HTML' };
+      try {
+        sentCard = mediaPhoto
+          ? await ctx.replyWithPhoto(mediaPhoto, fallbackInline)
+          : (firstVideo ? await ctx.replyWithVideo(firstVideo, fallbackInline) : await ctx.reply(caption, fallbackInline));
+      } catch (e) {
+        sentCard = await ctx.reply(caption, fallbackInline).catch(() => null);
+      }
+    }
+
+    // تحديث لوحة التحكم السفلية عند الحاجة
+    const ctrlMsg = await ctx.reply(`🧭 <b>${safeIdx + 1} / ${st.items.length}</b>`, {
+      parse_mode: 'HTML',
+      ...controlKb
+    }).catch(() => null);
 
     const keepIds = [];
     if (sentCard?.message_id) {
@@ -384,12 +405,9 @@ module.exports = function registerAdmin(bot, core) {
     };
     await replyTracked(
       ctx, adminId,
-      `🔎 <b>البحث السريع في الإعلانات</b>\n` +
+      `🔎 <b>البحث في الإعلانات</b>\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
-      `أرسل الآن أحد المعطيات التالية:\n` +
-      `• <b>رقم الطلب / الإعلان</b> (مثال: <code>15</code> أو <code>#15</code>)\n` +
-      `• <b>رقم الهاتف</b> (مثال: <code>0550...</code>)\n` +
-      `• <b>آيدي العميل (ID)</b> (مثال: <code>5883330772</code>)`,
+      `أدخل <b>رقم الإعلان</b>، أو <b>رقم الهاتف</b>، أو <b>معرّف المعلن (ID)</b>:`,
       { parse_mode: 'HTML', ...getAdminSearchKeyboard() },
       true
     );
@@ -444,7 +462,7 @@ module.exports = function registerAdmin(bot, core) {
     const targetUserId = currentItem?.user_id ? Number(currentItem.user_id) : null;
 
     if (!targetUserId) {
-      return replyTracked(ctx, adminId, `⚠️ لا يوجد آيدي عميل مرتبط بالإعلان <code>#${adId}</code>.`, {
+      return replyTracked(ctx, adminId, `⚠️ لا يوجد حساب معلن مرتبط بالإعلان <code>#${adId}</code>.`, {
         parse_mode: 'HTML', ...getAdminMenuKeyboard()
       }, true);
     }
@@ -458,7 +476,7 @@ module.exports = function registerAdmin(bot, core) {
 
     await replyTracked(
       ctx, adminId,
-      `✉️ <b>وضع المراسلة مع العميل</b> <code>${targetUserId}</code> بخصوص الإعلان <code>#${adId}</code>\n\nاكتب رسالتك الآن أو أرسل صورة/فيديو (أو اضغط "🎛 لوحة الإدارة" للإلغاء):`,
+      `✉️ <b>مراسلة المعلن</b> <code>${targetUserId}</code> بخصوص الإعلان <code>#${adId}</code>\n\nاكتب رسالتك أو أرفق صورة/فيديو لإرسالها مباشرة:`,
       { parse_mode: 'HTML', ...Markup.keyboard([['🎛 لوحة الإدارة']]).resize() },
       true
     );
@@ -486,7 +504,7 @@ module.exports = function registerAdmin(bot, core) {
     const adRefText = adId ? ` بخصوص الإعلان <code>#${adId}</code>` : '';
     await replyTracked(
       ctx, adminId,
-      `✉️ <b>وضع المراسلة مع العميل</b> <code>${targetUserId}</code>${adRefText}\n\nاكتب رسالتك الآن أو أرسل صورة/فيديو (أو اضغط "🎛 لوحة الإدارة" للإلغاء):`,
+      `✉️ <b>مراسلة المعلن</b> <code>${targetUserId}</code>${adRefText}\n\nاكتب رسالتك أو أرفق صورة/فيديو لإرسالها مباشرة:`,
       { parse_mode: 'HTML', ...Markup.keyboard([['🎛 لوحة الإدارة']]).resize() },
       true
     );
@@ -494,14 +512,14 @@ module.exports = function registerAdmin(bot, core) {
 
   async function deliverAdminReplyToUser(ctx, adminId, targetUserId, payloadType, content, adId = null) {
     const adLine = adId ? `📌 <b>بخصوص الإعلان:</b> <code>#${adId}</code>\n` : '';
-    const header = `📩 <b>رسالة من الإدارة:</b>\n${adLine}━━━━━━━━━━━━━━━━━━━━\n`;
+    const header = `📩 <b>رسالة من إدارة عقار الجزائر</b>\n${adLine}━━━━━━━━━━━━━━━━━━━━\n`;
 
     try {
       if (payloadType === 'photo') {
-        const cap = header + (content.caption ? escapeHtml(content.caption) : '🖼 <b>مرفق صورة من الإدارة</b>');
+        const cap = header + (content.caption ? escapeHtml(content.caption) : '🖼 <i>مرفق صورة</i>');
         await ctx.telegram.sendPhoto(targetUserId, content.fileId, { caption: cap, parse_mode: 'HTML' });
       } else if (payloadType === 'video') {
-        const cap = header + (content.caption ? escapeHtml(content.caption) : '🎥 <b>مرفق فيديو من الإدارة</b>');
+        const cap = header + (content.caption ? escapeHtml(content.caption) : '🎥 <i>مرفق فيديو</i>');
         await ctx.telegram.sendVideo(targetUserId, content.fileId, { caption: cap, parse_mode: 'HTML' });
       } else {
         await ctx.telegram.sendMessage(targetUserId, header + escapeHtml(content.text), { parse_mode: 'HTML' });
@@ -509,15 +527,15 @@ module.exports = function registerAdmin(bot, core) {
     } catch (e) {
       delete userState[adminId];
       return replyTracked(ctx, adminId,
-        `⚠️ تعذر إرسال الرسالة للعميل <code>${targetUserId}</code> (ربما حظر البوت).`,
+        `⚠️ تعذر إيصال الرسالة إلى <code>${targetUserId}</code> (قد يكون أوقف استقبال الرسائل).`,
         { parse_mode: 'HTML', ...getAdminMenuKeyboard() }, true);
     }
 
     delete userState[adminId];
     const kb = core.previewMode[adminId] ? core.getMainMenuKeyboard(adminId) : getAdminMenuKeyboard();
-    const doneAdText = adId ? ` (بخصوص الإعلان <code>#${adId}</code>)` : '';
+    const doneAdText = adId ? ` بخصوص الإعلان <code>#${adId}</code>` : '';
     await replyTracked(ctx, adminId,
-      `✅ <b>تم إرسال رسالتك بنجاح إلى العميل</b> <code>${targetUserId}</code>${doneAdText}.`,
+      `✅ <b>تم إرسال الرسالة بنجاح</b> إلى <code>${targetUserId}</code>${doneAdText}.`,
       { parse_mode: 'HTML', ...kb }, true);
   }
 
@@ -526,7 +544,6 @@ module.exports = function registerAdmin(bot, core) {
     const state = userState[adminId];
     const text = ctx.message.text ? ctx.message.text.trim() : '';
 
-    // تنظيف أي رسالة أو أمر يرسله الأدمن خارج السياق
     await safeDeleteUserMessage(ctx);
 
     if (text.startsWith('/') && text !== '/start') {
@@ -607,8 +624,8 @@ module.exports = function registerAdmin(bot, core) {
     try {
       if (action === 'delete_published') {
         await supabase.from('test_messages').delete().eq('id', requestId);
-        await ctx.answerCbQuery('🗑 تم حذف الإعلان المنشور');
-        await editCard(ctx, `🗑 <b>تم حذف الإعلان المنشور (#${requestId}) بنجاح.</b>`);
+        await ctx.answerCbQuery('🗑 تم حذف الإعلان');
+        await editCard(ctx, `🗑 <b>تم حذف الإعلان (#${requestId}) من المنصة.</b>`);
         return;
       }
 
@@ -616,8 +633,8 @@ module.exports = function registerAdmin(bot, core) {
         .from('pending_properties').select('*').eq('id', requestId).single();
 
       if (fetchError || !pendingItem) {
-        await ctx.answerCbQuery('⚠️ الطلب غير موجود أو تم التعامل معه', { show_alert: true });
-        return editCard(ctx, `⚠️ <b>الطلب (#${requestId}) غير موجود أو تم التعامل معه مسبقاً.</b>`);
+        await ctx.answerCbQuery('⚠️ الطلب غير متوفر أو تمت معالجته', { show_alert: true });
+        return editCard(ctx, `⚠️ <b>الطلب (#${requestId}) غير متوفر أو تمت معالجته مسبقاً.</b>`);
       }
 
       const targetUserId = pendingItem.user_id;
@@ -625,8 +642,8 @@ module.exports = function registerAdmin(bot, core) {
 
       if (action === 'requeue') {
         await supabase.from('pending_properties').update({ status: 'pending' }).eq('id', requestId);
-        await ctx.answerCbQuery('♻️ تمت إعادته للمعلقة');
-        await editCard(ctx, `♻️ <b>تمت إعادة الطلب (#${requestId}) إلى قائمة المعلقة.</b>`);
+        await ctx.answerCbQuery('♻️ أُعيد لقائمة المراجعة');
+        await editCard(ctx, `♻️ <b>تمت إعادة الإعلان (#${requestId}) إلى قائمة المراجعة.</b>`);
         return;
       }
 
@@ -668,33 +685,36 @@ module.exports = function registerAdmin(bot, core) {
 
         await ctx.telegram.sendMessage(
           targetUserId,
-          `🎉 <b>تم قبول إعلانك رقم (#${requestId}) ونشره بنجاح في المنصة!</b>\n🕒 <b>تاريخ ووقت النشر:</b> <code>${escapeHtml(formatDateTime(nowIso))}</code>`,
+          `🎉 <b>تمت الموافقة على إعلانك (#${requestId}) ونشره في المنصة.</b>\n🕒 <b>تاريخ النشر:</b> <code>${escapeHtml(formatDateTime(nowIso))}</code>`,
           { parse_mode: 'HTML' }
         ).catch(() => {});
 
         await editCard(
           ctx,
-          `✅ <b>تم قبول الطلب (#${requestId}) ونشره بنجاح!</b>\n👤 المستخدم: <code>${targetUserId}</code>\n🏷 النوع: <b>${isFreeAd ? 'إعلان مجاني' : 'مدفوع / بوصل'}</b>\n🕒 وقت النشر: <code>${escapeHtml(formatDateTime(nowIso))}</code>\n📌 الحالة: <b>مقبول ومنشور</b>`
+          `✅ <b>تم قبول الإعلان (#${requestId}) ونشره بنجاح</b>\n` +
+          `👤 المعلن: <code>${targetUserId}</code> • ${isFreeAd ? 'باقة مجانية' : 'مدفوع بوصل'}\n` +
+          `🕒 وقت النشر: <code>${escapeHtml(formatDateTime(nowIso))}</code>`
         );
       } else {
         await supabase.from('pending_properties').update({ status: 'rejected' }).eq('id', requestId);
         await ctx.answerCbQuery('❌ تم الرفض');
 
         const rejectUserMsg = isFreeAd
-          ? `❌ <b>عذراً، لم تتم الموافقة على نشر إعلانك المجاني رقم (#${requestId}).</b>`
-          : `❌ <b>عذراً، تم رفض وصل الدفع الخاص بطلبك رقم (#${requestId}).</b>`;
+          ? `❌ <b>نعتذر، لم تتم الموافقة على نشر إعلانك المجاني (#${requestId}).</b>`
+          : `❌ <b>نعتذر، تعذّر قبول وصل الدفع الخاص بإعلانك (#${requestId}).</b>`;
 
         await ctx.telegram.sendMessage(targetUserId, rejectUserMsg, { parse_mode: 'HTML' }).catch(() => {});
 
         await editCard(
           ctx,
-          `❌ <b>تم رفض الطلب (#${requestId}).</b>\n👤 المستخدم: <code>${targetUserId}</code>\n🏷 النوع: <b>${isFreeAd ? 'إعلان مجاني' : 'مدفوع / بوصل'}</b>\n📌 الحالة: <b>مرفوض</b>`
+          `❌ <b>تم رفض الإعلان (#${requestId})</b>\n` +
+          `👤 المعلن: <code>${targetUserId}</code> • ${isFreeAd ? 'باقة مجانية' : 'مدفوع بوصل'}`
         );
       }
     } catch (err) {
       console.error(`Admin action error #${requestId}:`, err);
-      await ctx.answerCbQuery('⚠️ حدث خطأ', { show_alert: true }).catch(() => {});
-      await ctx.reply(`⚠️ حدث خطأ أثناء معالجة الطلب #${requestId}: ${err.message}`).catch(() => {});
+      await ctx.answerCbQuery('⚠️ تعذرت العملية', { show_alert: true }).catch(() => {});
+      await ctx.reply(`⚠️ تعذرت معالجة الإعلان #${requestId}: ${escapeHtml(err.message)}`, { parse_mode: 'HTML' }).catch(() => {});
     }
   };
 
@@ -703,6 +723,5 @@ module.exports = function registerAdmin(bot, core) {
   bot.action(/^requeue_(\d+)$/, (ctx) => handleAdminAction(ctx, 'requeue'));
   bot.action(/^del_pub_(\d+)$/, (ctx) => handleAdminAction(ctx, 'delete_published'));
 
-  // واجهة عامة يستدعيها الأب
   return { openAdminHome };
 };
