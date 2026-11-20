@@ -16,7 +16,6 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const WEBHOOK_DOMAIN = process.env.WEBHOOK_DOMAIN;
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://jjrisfyotyryanhbsvlz.supabase.co';
 const SUPABASE_KEY = process.env.SUPABASE_KEY || 'sb_publishable_t7kVxzmOtz16C95U_B52FA_AJl_WK-h';
-const DEFAULT_WEBSITE_URL = process.env.WEBSITE_URL || 'https://hosnihicham.github.io/testHTML';
 const MAX_PROPERTY_IMAGES = 6;
 const BACK_TO_ADMIN = '🔙 العودة لوضع الأدمن';
 
@@ -92,13 +91,13 @@ async function getSetting(key, defaultValue = '') {
 }
 
 // 🌐 رابط الموقع من جدول app_settings (key = website_url) مع كاش 30 ثانية
-let websiteUrl = DEFAULT_WEBSITE_URL;
+let websiteUrl = ''; // يأتي حصراً من الجدول؛ إن كان فارغاً يختفي الزر
 let websiteUrlAt = 0;
 async function refreshWebsiteUrl() {
   if (Date.now() - websiteUrlAt < 30000) return websiteUrl;
   websiteUrlAt = Date.now();
   const v = await getSetting('website_url', '');
-  if (v && /^https:\/\//i.test(String(v).trim())) websiteUrl = String(v).trim();
+  websiteUrl = v && /^https:\/\//i.test(String(v).trim()) ? String(v).trim() : '';
   return websiteUrl;
 }
 function getWebsiteUrl() { return websiteUrl; }
@@ -215,16 +214,17 @@ function buildOrderedBrowsingMedia(item) {
 // ------------------------- لوحات المفاتيح المشتركة -------------------------
 // 🌐 زر الموقع: WebApp => يفتح الموقع مباشرة داخل تيليجرام بدون إظهار أي رابط في المحادثة
 function getWebsiteButton() {
-  return Markup.button.webApp('🌐 تصفح الموقع الرسمي', websiteUrl);
+  return websiteUrl ? Markup.button.webApp('🌐 تصفح الموقع الرسمي', websiteUrl) : null;
 }
 
 function getMainMenuKeyboard(userId) {
   const rows = [
     ['🔍 تصفح العقارات المتاحة', '➕ إضافة عقار جديد'],
     ['🎁 رصيدي وجمع النقاط', '📞 الدعم والإدارة'],
-    ['🌐 تغيير اللغة / Langue', 'ℹ️ عن المنصة'],
-    [getWebsiteButton()]
+    ['🌐 تغيير اللغة / Langue', 'ℹ️ عن المنصة']
   ];
+  const webBtn = getWebsiteButton();
+  if (webBtn) rows.push([webBtn]);
   if (userId && previewMode[userId]) rows.push([BACK_TO_ADMIN]);
   return Markup.keyboard(rows).resize();
 }
