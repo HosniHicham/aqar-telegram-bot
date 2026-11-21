@@ -6,6 +6,7 @@
 const { Telegraf, Markup, Composer } = require('telegraf');
 const express = require('express');
 const { createClient } = require('@supabase/supabase-js');
+const { createMessengerModule } = require('./messenger');
 
 // ------------------------- الإعدادات -------------------------
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -231,11 +232,16 @@ function getWebsiteButton() {
   return websiteUrl ? Markup.button.webApp('🌐 تصفح الموقع الرسمي', websiteUrl) : null;
 }
 
-function getMainMenuKeyboard(userId) {
+function getMainMenuKeyboard(userId, unreadMessagesCount = 0) {
+  const msgBtn = unreadMessagesCount > 0
+    ? `💬 المراسلات (${unreadMessagesCount})`
+    : '💬 المراسلات';
+
   const rows = [
     ['🔍 تصفح العقارات المتاحة', '➕ إضافة عقار جديد'],
-    ['🎁 رصيدي وجمع النقاط', '📞 الدعم والإدارة'],
-    ['🌐 تغيير اللغة / Langue', 'ℹ️ عن المنصة']
+    [msgBtn, '📞 الدعم والإدارة'],
+    ['🎁 رصيدي وجمع النقاط', '🌐 تغيير اللغة / Langue'],
+    ['ℹ️ عن المنصة']
   ];
   const webBtn = getWebsiteButton();
   if (webBtn) rows.push([webBtn]);
@@ -249,7 +255,7 @@ function getAuthKeyboard() {
   ]).resize().oneTime();
 }
 
-// ------------------------- بناء الـ core وتسجيل الوحدتين -------------------------
+// ------------------------- بناء الـ core وتسجيل الوحدات -------------------------
 const core = {
   bot, app, supabase, Markup,
   WEBHOOK_DOMAIN, getWebsiteUrl, MAX_PROPERTY_IMAGES, BACK_TO_ADMIN,
@@ -261,6 +267,10 @@ const core = {
   getWebsiteButton, getMainMenuKeyboard, getAuthKeyboard,
   modules: {}
 };
+
+const messengerModule = createMessengerModule(core);
+core.messenger = messengerModule;
+core.modules.messenger = messengerModule;
 
 core.enterPreview = async (ctx) => {
   const id = ctx.from.id;
@@ -363,6 +373,7 @@ bot.use(async (ctx, next) => {
   if (roleChanged) {
     delete previewMode[userId];
     resetSessions(userId);
+    if (core.messenger?.messengerSession) delete core.messenger.messengerSession[userId];
     await safeDeleteUserMessage(ctx);
     await clearTrackedBotMessages(ctx, userId, []);
 
@@ -387,6 +398,11 @@ bot.use(async (ctx, next) => {
         ...getAuthKeyboard()
       }, true);
     }
+  }
+
+  if (text && !text.startsWith('/')) {
+    const handledByMessenger = await core.messenger?.handleMessengerText?.(ctx);
+    if (handledByMessenger) return;
   }
 
   if (!userIsAdmin) {
