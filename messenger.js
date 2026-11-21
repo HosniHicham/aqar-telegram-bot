@@ -69,14 +69,6 @@ function looksLikeRawTelegramFileId(val) {
   return /^A[A-Za-z0-9_-]{25,}$/.test(s) && !/\s/.test(s);
 }
 
-function toDownloadUrl(url) {
-  const clean = String(url || '').trim();
-  if (!isSafeHttpUrl(clean)) return clean;
-  if (/([?&])download=/.test(clean)) return clean;
-  const sep = clean.includes('?') ? '&' : '?';
-  return `${clean}${sep}download=`;
-}
-
 function createMessengerModule(core) {
   const {
     Markup,
@@ -222,14 +214,14 @@ function createMessengerModule(core) {
 
       await supabase.storage.from('test_media').upload(fileName, buf, { contentType: mime, upsert: true });
       const { data: pubUrl } = supabase.storage.from('test_media').getPublicUrl(fileName);
-      if (pubUrl && pubUrl.publicUrl) return toDownloadUrl(pubUrl.publicUrl);
+      if (pubUrl && pubUrl.publicUrl) return pubUrl.publicUrl;
     } catch (e) {
       console.error('uploadMediaToTestMedia error:', e?.message || e);
     }
 
     try {
       const fallbackLink = await ctx.telegram.getFileLink(String(fileId).trim());
-      return fallbackLink ? toDownloadUrl(String(fallbackLink.href || fallbackLink).trim()) : '';
+      return fallbackLink ? String(fallbackLink.href || fallbackLink).trim() : '';
     } catch (_) {
       return '';
     }
@@ -433,7 +425,7 @@ function createMessengerModule(core) {
 
     for (const part of parts) {
       if (isSafeHttpUrl(part)) {
-        urls.push(toDownloadUrl(part));
+        urls.push(part);
       } else if (!looksLikeRawTelegramFileId(part)) {
         captionParts.push(part);
       }
@@ -494,9 +486,9 @@ function createMessengerModule(core) {
 
         const linkLines = mediaInfo.urls.map((u, idx) => {
           const itemTitle = mediaInfo.urls.length > 1
-            ? `⬇️ تحميل ${kindLabel} ${idx + 1}`
-            : `⬇️ تحميل ال${kindLabel}`;
-          return `${mark}<a href="${escapeHtml(u)}">${escapeHtml(itemTitle)}</a>`;
+            ? `${kindLabel} ${idx + 1}`
+            : `رابط ال${kindLabel}`;
+          return `${mark}🔗 <a href="${escapeHtml(u)}">${escapeHtml(itemTitle)}</a>`;
         });
 
         let block = `${mark}${color} ${kindIcon} <b>${escapeHtml(kindLabel)}</b>${stamp}\n` + linkLines.join('\n');
