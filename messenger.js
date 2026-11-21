@@ -7,9 +7,9 @@ function buildThreadId(propertyId, ownerId, otherUserId) {
 // ───────── إعدادات العرض ─────────
 const LRM = '\u200E'; // الطرف الآخر: يسار
 const RLM = '\u200F'; // أنا: يمين
-const TIMEZONE = 'Africa/Algiers'; // غيّرها حسب بلدك
-const PAGE_SIZE = 30; // عدد الرسائل في كل صفحة
-const NAME_CACHE_TTL = 60 * 60 * 1000; // ساعة
+const TIMEZONE = 'Africa/Algiers';
+const PAGE_SIZE = 30;
+const NAME_CACHE_TTL = 60 * 60 * 1000;
 const LINE = '▬▬▬▬▬▬▬▬▬▬▬▬';
 const SUP = { 0: '⁰', 1: '¹', 2: '²', 3: '³', 4: '⁴', 5: '⁵', 6: '⁶', 7: '⁷', 8: '⁸', 9: '⁹' };
 
@@ -71,8 +71,7 @@ function createMessengerModule(core) {
   } = core;
 
   // { mode: 'list' | 'thread', senderMap, threadId, propertyId, ownerId,
-  //   receiverId, otherName, cardMessageId, page }
-  // page = 0 → آخر الرسائل، 1 → الصفحة الأقدم منها، وهكذا
+  //   receiverId, otherName, cardMessageId, page, photosMap }
   const messengerSession = {};
 
   // كاش الأسماء: id → { name, at }
@@ -90,7 +89,6 @@ function createMessengerModule(core) {
     return nameFromTelegramObj(from) || 'مراسل';
   }
 
-  // الاسم من تيليجرام مباشرة عبر الـ ID (بدون عرض الـ ID أبداً)
   async function fetchTelegramName(userId) {
     try {
       const chat = await core.bot.telegram.getChat(Number(userId));
@@ -100,7 +98,6 @@ function createMessengerModule(core) {
     }
   }
 
-  // الترتيب: كاش ← تيليجرام ← جدول users ← الاسم المخزّن ← "مراسل"
   async function resolveCleanSenderName(otherUserId, fallbackSenderName = '') {
     const id = Number(otherUserId);
     const cached = nameCache.get(id);
@@ -247,7 +244,6 @@ function createMessengerModule(core) {
         }))
       );
 
-      // إذا تكرر نفس الاسم في أكثر من عقار نميّزه برقم العقار (وليس ID المستخدم)
       const nameCount = {};
       base.forEach((t) => { nameCount[t.cleanName] = (nameCount[t.cleanName] || 0) + 1; });
 
@@ -263,8 +259,6 @@ function createMessengerModule(core) {
     }
   }
 
-  // فتح صفحة من المحادثة:
-  // 1) تعليم الواردة كمقروءة  2) عدّ الكل  3) جلب الصفحة المطلوبة فقط
   async function openThreadMessages(userId, threadId, page = 0) {
     const uid = Number(userId);
 
@@ -297,19 +291,45 @@ function createMessengerModule(core) {
     return { messages, total, totalPages, page: safePage };
   }
 
-  // ───────── تصميم بطاقة المحادثة ─────────
-  // الصفحة الأخيرة = أحدث الرسائل. «السابق» للأقدم، «التالي» للأحدث.
-  // اسم كل طرف يظهر مرة واحدة في بداية تسلسل رسائله.
+  // استخراج file_id والتعليق إن وُجد لرسالة صورة
+  function parsePhotoPayload(rawMessage) {
+    const str = String(rawMessage || '').trim();
+    if (!str) return { fileId: '', caption: '' };
+    if (str.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(str);
+        return {
+          fileId: String(parsed.file_id || parsed.fileId || '').trim(),
+          caption: String(parsed.caption || '').trim()
+        };
+      } catch (_) {}
+    }
+    const parts = str.split('||');
+    return {
+      fileId: String(parts[0] || '').trim(),
+      caption: String(parts.slice(1).join('||') || '').trim()
+    };
+  }
+
+  function serializePhotoPayload(fileId, caption = '') {
+    const cleanCap = String(caption || '').trim();
+    return cleanCap ? `${String(fileId).trim()}||${cleanCap}` : String(fileId).trim();
+  }
+
+  // ───────── تصميم بطاقة المحادثة بأسلوب المسنجر + الصور متوسطة العرض والتفاعلية ─────────
   function formatSingleThreadCard(userId, view, meta = {}) {
     const uid = Number(userId);
     const { messages, totalPages, page } = view;
     const otherName = meta.otherName || 'مراسل';
     const myName = meta.myName || 'أنا';
     const propertyId = meta.propertyId || messages[0]?.property_id;
+    const photosMap = meta.photosMap || {};
 
     const out = [];
+    const zoomButtons = [];
     let lastSender = null;
     let lastDay = null;
+    let photoIdx = 0;
 
     for (const m of messages) {
       const mine = Number(m.sender_id) === uid;
@@ -336,15 +356,33 @@ function createMessengerModule(core) {
       }
       lastSender = who;
 
-      const lines = String(m.message).split('\n').map(escapeHtml);
-      lines[lines.length - 1] += stamp;
-      const body = lines.map((l) => `${mark}${color} ${l}`).join('\n');
-      out.push(`<blockquote>${body}</blockquote>`);
+      if (m.message_type === 'image' || m.message_type === 'photo') {
+        photoIdx += 1;
+        const { fileId, caption } = parsePhotoPayload(m.message);
+        const pKey = `p${m.id || photoIdx}`;
+        if (fileId) {
+          photosMap[pKey] = { fileId, caption, senderName: mine ? myName : otherName };
+          zoomButtons.push(
+            Markup.button.callback(`🔍 تكبير الصورة (${photoIdx})`, `msg_zoom:${pKey}`)
+          );
+        }
+
+        // عرض الصورة متوسطة العرض بصرياً داخل البطاقة
+        const centeredFrame =
+          `\n      🖼️ <code>[ صورة #${photoIdx} — عرض متوسط ]</code>` +
+          (caption ? `\n${mark}${color} ${escapeHtml(caption)}` : '');
+        const body = `${mark}${color} <b>مرفق صورة</b>${stamp}${centeredFrame}`;
+        out.push(`<blockquote>${body}</blockquote>`);
+      } else {
+        const lines = String(m.message).split('\n').map(escapeHtml);
+        lines[lines.length - 1] += stamp;
+        const body = lines.map((l) => `${mark}${color} ${l}`).join('\n');
+        out.push(`<blockquote>${body}</blockquote>`);
+      }
     }
 
-    const currentPage = totalPages - page; // الأقدم = 1، الأحدث = الأخيرة
+    const currentPage = totalPages - page;
 
-    // هيدر مختصر: الاسم + العقار + رقم الصفحة (فقط عند وجود أكثر من صفحة)
     const header =
       `${LRM}💬 <b>${escapeHtml(otherName)}</b>` +
       (propertyId ? ` • 🏠 <i>#${propertyId}</i>` : '') +
@@ -353,15 +391,21 @@ function createMessengerModule(core) {
 
     const body = out.length
       ? out.join('\n')
-      : `<i>لا توجد رسائل بعد، اكتب رسالتك الأولى 👇</i>`;
+      : `<i>لا توجد رسائل بعد، اكتب رسالتك أو أرسل صورة 👇</i>`;
 
-    const footer = `\n${LINE}\n✍️ <i>اكتب رسالتك</i>`;
+    const footer = `\n${LINE}\n✍️ <i>اكتب رسالتك أو أرسل صورة</i>`;
 
-    return fitTelegramText(header + body + footer, false);
+    const inlineRows = [];
+    for (let i = 0; i < zoomButtons.length; i += 2) {
+      inlineRows.push(zoomButtons.slice(i, i + 2));
+    }
+
+    return {
+      text: fitTelegramText(header + body + footer, false),
+      inlineMarkup: inlineRows.length ? Markup.inlineKeyboard(inlineRows) : null
+    };
   }
 
-  // ───────── لوحات المفاتيح السفلية ─────────
-  // ثابتة دائماً حتى نقدر نعدّل نفس البطاقة بدون إرسال رسالة جديدة
   function threadKeyboard() {
     return Markup.keyboard([
       [BTN_PREV, BTN_NEXT],
@@ -376,13 +420,16 @@ function createMessengerModule(core) {
     return Markup.keyboard(rows).resize();
   }
 
-  // تعديل البطاقة الحالية، أو إرسال جديدة (forceNew عند تغيير لوحة المفاتيح)
-  async function upsertCard(ctx, userId, text, keyboardExtra, targetMsgId, forceNew = false) {
+  async function upsertCard(ctx, userId, cardObj, keyboardExtra, targetMsgId, forceNew = false) {
+    const text = typeof cardObj === 'string' ? cardObj : cardObj.text;
+    const inlineMarkup = typeof cardObj === 'string' ? null : cardObj.inlineMarkup;
+
     if (targetMsgId && ctx.chat?.id) {
       if (!forceNew) {
         try {
           await ctx.telegram.editMessageText(ctx.chat.id, targetMsgId, undefined, text, {
-            parse_mode: 'HTML'
+            parse_mode: 'HTML',
+            ...(inlineMarkup ? { reply_markup: inlineMarkup.reply_markup } : { reply_markup: { inline_keyboard: [] } })
           });
           return targetMsgId;
         } catch (e) {
@@ -397,7 +444,11 @@ function createMessengerModule(core) {
       ctx,
       userId,
       text,
-      { parse_mode: 'HTML', ...keyboardExtra },
+      {
+        parse_mode: 'HTML',
+        ...keyboardExtra,
+        ...(inlineMarkup ? { reply_markup: { ...keyboardExtra.reply_markup, ...inlineMarkup.reply_markup } } : {})
+      },
       true
     );
     return sent?.message_id || null;
@@ -447,7 +498,6 @@ function createMessengerModule(core) {
     };
   }
 
-  // opts: { editMessageId, forceNew, page }
   async function renderActiveThread(ctx, userId, threadId, meta = {}, opts = {}) {
     const { editMessageId = null, forceNew = false, page = 0 } = opts;
     const view = await openThreadMessages(userId, threadId, page);
@@ -462,20 +512,19 @@ function createMessengerModule(core) {
       ownerId
     );
 
-    // اسم الطرف الآخر: من تيليجرام عبر الـ ID (مع كاش)
     const otherRow = messages.find((m) => Number(m.sender_id) !== Number(userId));
     const otherName = await resolveCleanSenderName(receiverId, otherRow?.sender_name || meta.otherName || '');
 
-    // اسمي: مباشرة من تيليجرام
     let myName = getUserDisplayName(ctx.from);
     if (myName === 'مراسل') myName = await resolveCleanSenderName(userId, '');
     if (myName === 'مراسل') myName = 'أنا';
 
-    const cardText = formatSingleThreadCard(userId, view, { otherName, myName, propertyId });
+    const photosMap = {};
+    const cardObj = formatSingleThreadCard(userId, view, { otherName, myName, propertyId, photosMap });
 
     const prevSession = messengerSession[userId] || {};
     const targetMsgId = editMessageId || prevSession.cardMessageId || null;
-    const msgId = await upsertCard(ctx, userId, cardText, threadKeyboard(), targetMsgId, forceNew);
+    const msgId = await upsertCard(ctx, userId, cardObj, threadKeyboard(), targetMsgId, forceNew);
 
     messengerSession[userId] = {
       mode: 'thread',
@@ -486,7 +535,8 @@ function createMessengerModule(core) {
       otherName,
       cardMessageId: msgId,
       page: view.page,
-      totalPages: view.totalPages
+      totalPages: view.totalPages,
+      photosMap
     };
     return msgId;
   }
@@ -513,7 +563,6 @@ function createMessengerModule(core) {
       .eq('thread_id', threadId)
       .limit(1);
 
-    // محادثة موجودة: نفتحها مباشرة
     if (Array.isArray(existing) && existing.length > 0) {
       delete userState[userId];
       return renderActiveThread(ctx, userId, threadId, meta, { forceNew: true });
@@ -529,7 +578,7 @@ function createMessengerModule(core) {
     const sent = await replyTracked(
       ctx,
       userId,
-      `💬 <b>${escapeHtml(ownerName)}</b> • 🏠 <i>#${propertyId}</i>\n${LINE}\n✍️ اكتب رسالتك الأولى:`,
+      `💬 <b>${escapeHtml(ownerName)}</b> • 🏠 <i>#${propertyId}</i>\n${LINE}\n✍️ اكتب رسالتك الأولى أو أرسل صورة:`,
       {
         parse_mode: 'HTML',
         ...Markup.keyboard([[BTN_HOME]]).resize()
@@ -537,6 +586,71 @@ function createMessengerModule(core) {
       true
     );
     if (sent?.message_id) userState[userId].wizardMsgId = sent.message_id;
+  }
+
+  // ───────── معالجة الصور المرسلة داخل المحادثة ─────────
+  async function handleMessengerPhoto(ctx) {
+    const userId = ctx.from.id;
+    const photoArr = ctx.message?.photo;
+    if (!Array.isArray(photoArr) || !photoArr.length) return false;
+
+    const bestPhoto = photoArr[photoArr.length - 1];
+    const fileId = bestPhoto?.file_id;
+    if (!fileId) return false;
+
+    const caption = ctx.message?.caption ? ctx.message.caption.trim() : '';
+    const st = userState[userId];
+    const sess = messengerSession[userId];
+    const payload = serializePhotoPayload(fileId, caption);
+
+    if (st && st.step === 'composing_property_message') {
+      await safeDeleteUserMessage(ctx);
+      const { threadId, propertyId, ownerId, receiverId, otherName, wizardMsgId } = st.data || {};
+      delete userState[userId];
+
+      if (wizardMsgId && ctx.chat?.id) {
+        await ctx.telegram.deleteMessage(ctx.chat.id, wizardMsgId).catch(() => {});
+      }
+
+      await insertMessage({
+        propertyId,
+        ownerId,
+        senderId: userId,
+        receiverId,
+        senderName: getUserDisplayName(ctx.from),
+        messageType: 'image',
+        message: payload
+      });
+
+      await renderActiveThread(
+        ctx, userId, threadId,
+        { propertyId, ownerId, receiverId, otherName },
+        { forceNew: true, page: 0 }
+      );
+      return true;
+    }
+
+    if (sess?.mode === 'thread' && sess.threadId) {
+      await safeDeleteUserMessage(ctx);
+
+      await insertMessage({
+        propertyId: sess.propertyId,
+        ownerId: sess.ownerId,
+        senderId: userId,
+        receiverId: sess.receiverId,
+        senderName: getUserDisplayName(ctx.from),
+        messageType: 'image',
+        message: payload
+      });
+
+      await renderActiveThread(ctx, userId, sess.threadId, sess, {
+        editMessageId: sess.cardMessageId,
+        page: 0
+      });
+      return true;
+    }
+
+    return false;
   }
 
   // ───────── معالجة النصوص ─────────
@@ -548,7 +662,6 @@ function createMessengerModule(core) {
     const st = userState[userId];
     const sess = messengerSession[userId];
 
-    // الرئيسية: ننظف جلسة المراسلات ونترك الـ core يعرض القائمة
     if (rawText === BTN_HOME) {
       if (sess?.cardMessageId && ctx.chat?.id) {
         await ctx.telegram.deleteMessage(ctx.chat.id, sess.cardMessageId).catch(() => {});
@@ -557,14 +670,12 @@ function createMessengerModule(core) {
       return false;
     }
 
-    // الرجوع لقائمة المراسلين
     if (rawText === BTN_BACK && sess) {
       await safeDeleteUserMessage(ctx);
       await showInboxList(ctx);
       return true;
     }
 
-    // ── أزرار السابق / التالي (داخل محادثة فقط) ──
     if (sess?.mode === 'thread' && sess.threadId && (rawText === BTN_PREV || rawText === BTN_NEXT)) {
       await safeDeleteUserMessage(ctx);
       const cur = sess.page || 0;
@@ -576,7 +687,6 @@ function createMessengerModule(core) {
       return true;
     }
 
-    // اختيار محادثة من أزرار القائمة السفلية
     if (sess?.mode === 'list' && sess.senderMap?.[rawText]) {
       await safeDeleteUserMessage(ctx);
       const target = sess.senderMap[rawText];
@@ -595,7 +705,6 @@ function createMessengerModule(core) {
       return true;
     }
 
-    // أول رسالة على عقار
     if (st && st.step === 'composing_property_message') {
       await safeDeleteUserMessage(ctx);
       const { threadId, propertyId, ownerId, receiverId, otherName, wizardMsgId } = st.data || {};
@@ -611,6 +720,7 @@ function createMessengerModule(core) {
         senderId: userId,
         receiverId,
         senderName: getUserDisplayName(ctx.from),
+        messageType: 'text',
         message: rawText
       });
 
@@ -622,7 +732,6 @@ function createMessengerModule(core) {
       return true;
     }
 
-    // رسالة داخل محادثة مفتوحة: نحذف رسالة المستخدم ونرجع لآخر الرسائل
     if (sess?.mode === 'thread' && sess.threadId) {
       await safeDeleteUserMessage(ctx);
 
@@ -632,6 +741,7 @@ function createMessengerModule(core) {
         senderId: userId,
         receiverId: sess.receiverId,
         senderName: getUserDisplayName(ctx.from),
+        messageType: 'text',
         message: rawText
       });
 
@@ -645,19 +755,49 @@ function createMessengerModule(core) {
     return false;
   }
 
-  // ───────── الأوامر ─────────
+  // ───────── الأوامر والأحداث ─────────
+  core.bot.on('photo', async (ctx, next) => {
+    const handled = await handleMessengerPhoto(ctx);
+    if (!handled && typeof next === 'function') return next();
+  });
+
   core.bot.hears(/^💬 المراسلات(?: \(\d+\))?$/, async (ctx) => {
     await safeDeleteUserMessage(ctx);
     await showInboxList(ctx);
   });
 
-  // الزر الوحيد inline هو زر "مراسلة المالك" داخل بطاقة العقار
+  // تكبير الصورة التفاعلية بالحجم الكامل عند الضغط عليها
+  core.bot.action(/^msg_zoom:(.+)$/, async (ctx) => {
+    await ctx.answerCbQuery().catch(() => {});
+    const userId = ctx.from.id;
+    const pKey = ctx.match[1];
+    const photoInfo = messengerSession[userId]?.photosMap?.[pKey];
+
+    if (!photoInfo?.fileId) return;
+
+    const capText =
+      `🔍 <b>${escapeHtml(photoInfo.senderName || 'صورة')}</b>` +
+      (photoInfo.caption ? `\n${escapeHtml(photoInfo.caption)}` : '');
+
+    await ctx.replyWithPhoto(photoInfo.fileId, {
+      caption: capText,
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard([[Markup.button.callback('✖️ إغلاق المعاينة', 'msg_zoom_close')]])
+    }).catch(() => {});
+  });
+
+  core.bot.action('msg_zoom_close', async (ctx) => {
+    await ctx.answerCbQuery().catch(() => {});
+    if (ctx.chat?.id && ctx.callbackQuery?.message?.message_id) {
+      await ctx.telegram.deleteMessage(ctx.chat.id, ctx.callbackQuery.message.message_id).catch(() => {});
+    }
+  });
+
   core.bot.action(/^msg_prop:(\d+):(\d+)$/, async (ctx) => {
     await ctx.answerCbQuery().catch(() => {});
     await startPropertyMessage(ctx, { id: Number(ctx.match[1]), user_id: Number(ctx.match[2]) });
   });
 
-  // توافق مع بطاقات قديمة قد تحمل هذه الأزرار
   core.bot.action('msg_list', async (ctx) => {
     await ctx.answerCbQuery().catch(() => {});
     await showInboxList(ctx);
@@ -681,7 +821,8 @@ function createMessengerModule(core) {
     showInboxList,
     renderActiveThread,
     startPropertyMessage,
-    handleMessengerText
+    handleMessengerText,
+    handleMessengerPhoto
   };
 }
 
