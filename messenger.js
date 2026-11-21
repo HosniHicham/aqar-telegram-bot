@@ -4,6 +4,14 @@ function buildThreadId(propertyId, ownerId, otherUserId) {
   return `p_${Number(propertyId)}_o_${Number(ownerId)}_u_${Number(otherUserId)}`;
 }
 
+function stripAnyIdWords(str = '') {
+  return String(str || '')
+    .replace(/\b(مستخدم|user|id|آيدي)\s*#?\s*\d*\b/gi, '')
+    .replace(/#\d+/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
 function createMessengerModule(core) {
   const {
     Markup,
@@ -21,21 +29,18 @@ function createMessengerModule(core) {
   } = core;
 
   // جلسة المراسلات لكل مستخدم:
-  // { mode: 'list' | 'thread', threadId, propertyId, ownerId, receiverId, otherName, cardMessageId, senderMap }
+  // { mode: 'list' | 'thread', threadId, propertyId, ownerId, receiverId, otherName, cardMessageId, threads }
   const messengerSession = {};
 
   function getUserDisplayName(from) {
     if (!from) return 'مراسل';
     const full = [from.first_name, from.last_name].filter(Boolean).join(' ').trim();
-    return full || from.username || 'مراسل';
+    return stripAnyIdWords(full || from.username || 'مراسل') || 'مراسل';
   }
 
   // جلب الاسم الحقيقي من جدول users أو من sender_name في messanger بدون أي ID أبداً
   async function resolveCleanSenderName(otherUserId, fallbackSenderName = '') {
-    const cleanFallback = String(fallbackSenderName || '')
-      .replace(/\b(مستخدم|user|id)\s*#?\s*\d*\b/gi, '')
-      .trim();
-
+    const cleanFallback = stripAnyIdWords(fallbackSenderName);
     if (cleanFallback) {
       return cleanFallback;
     }
@@ -49,9 +54,12 @@ function createMessengerModule(core) {
 
       const row = Array.isArray(data) ? data[0] : data;
       if (row) {
-        const full = [row.first_name, row.last_name].filter(Boolean).join(' ').trim();
+        const full = stripAnyIdWords([row.first_name, row.last_name].filter(Boolean).join(' ').trim());
         if (full) return full;
-        if (row.username) return String(row.username).trim();
+        if (row.username) {
+          const cleanUser = stripAnyIdWords(row.username);
+          if (cleanUser) return cleanUser;
+        }
       }
     } catch (e) {}
 
@@ -118,9 +126,7 @@ function createMessengerModule(core) {
     const otherId = sId === oId ? rId : sId;
     const threadId = buildThreadId(pId, oId, otherId);
 
-    const safeName = String(senderName || 'مراسل')
-      .replace(/\b(مستخدم|user|id)\s*#?\s*\d*\b/gi, '')
-      .trim() || 'مراسل';
+    const safeName = stripAnyIdWords(senderName) || 'مراسل';
 
     const { data, error } = await supabase
       .from('messanger')
@@ -236,19 +242,14 @@ function createMessengerModule(core) {
   function formatSingleThreadCard(userId, messages, meta = {}) {
     const uid = Number(userId);
     const otherRow = messages.find((m) => Number(m.sender_id) !== uid);
-    const otherName = (otherRow?.sender_name || meta.otherName || 'مراسل')
-      .replace(/\b(مستخدم|user|id)\s*#?\s*\d*\b/gi, '')
-      .trim() || 'مراسل';
+    const otherName = stripAnyIdWords(otherRow?.sender_name || meta.otherName || 'مراسل') || 'مراسل';
 
     const lines = messages.map((m) => {
       const isRight = Number(m.sender_id) === uid;
-      const cleanWho = (m.sender_name || otherName)
-        .replace(/\b(مستخدم|user|id)\s*#?\s*\d*\b/gi, '')
-        .trim() || otherName;
+      const cleanWho = stripAnyIdWords(m.sender_name || otherName) || otherName;
       const smallTime = m.created_at ? ` <small>${escapeHtml(formatCompactTime(m.created_at))}</small>` : '';
       const msgBody = escapeHtml(m.message || '');
 
-      // تقنية Left / Right للرسائل
       if (isRight) {
         return `↪️ <b>${escapeHtml(cleanWho)}</b>${smallTime}\n      <code>${msgBody}</code>`;
       } else {
@@ -283,18 +284,12 @@ function createMessengerModule(core) {
       );
     }
 
-    const senderMap = {};
-    const buttonLabels = [];
-    for (const t of threads) {
-      senderMap[t.buttonText] = t;
-      buttonLabels.push(t.buttonText);
-    }
-
     messengerSession[userId] = {
       mode: 'list',
-      senderMap
+      threads
     };
 
+    const buttonLabels = threads.map((t) => t.buttonText);
     const rows = chunkButtons ? chunkButtons(buttonLabels, 2) : [];
     if (!rows.length) {
       for (let i = 0; i < buttonLabels.length; i += 2) {
@@ -315,6 +310,20 @@ function createMessengerModule(core) {
     );
   }
 
+  // البحث عن المراسل المطابق للنص المدخل حتى لو تغير العداد أو الإشارة
+  function findMatchingThread(threads = [], rawText = '') {
+    const cleanInput = String(rawText || '').trim();
+    if (!cleanInput || !Array.isArray(threads)) return null;
+
+    const exact = threads.find((t) => t.buttonText === cleanInput || t.cleanName === cleanInput);
+    if (exact) return exact;
+
+    const normalizedInput = stripAnyIdWords(cleanInput.replace(/^🟢\s*/, '').replace(/\s*\(\d+\)\s*$/, ''));
+    if (!normalizedInput) return null;
+
+    return threads.find((t) => stripAnyIdWords(t.cleanName) === normalizedInput) || null;
+  }
+
   // عرض / تحديث البطاقة الواحدة للمحادثة النشطة
   async function renderActiveThread(ctx, userId, threadId, meta = {}, editMessageId = null) {
     const messages = await openThreadMessages(userId, threadId);
@@ -328,7 +337,7 @@ function createMessengerModule(core) {
       (Number(first.sender_id) === Number(userId) ? first.receiver_id : first.sender_id) ||
       ownerId
     );
-    const otherName = meta.otherName || first.sender_name || 'مراسل';
+    const otherName = stripAnyIdWords(meta.otherName || first.sender_name || 'مراسل') || 'مراسل';
 
     const cardText = formatSingleThreadCard(userId, messages, {
       ...meta,
@@ -467,16 +476,18 @@ function createMessengerModule(core) {
       return true;
     }
 
-    if (sess && sess.mode === 'list' && sess.senderMap && sess.senderMap[rawText]) {
-      await safeDeleteUserMessage(ctx);
-      const target = sess.senderMap[rawText];
-      await renderActiveThread(ctx, userId, target.threadId, {
-        propertyId: target.propertyId,
-        ownerId: target.ownerId,
-        receiverId: target.otherId,
-        otherName: target.cleanName
-      });
-      return true;
+    if (sess && sess.mode === 'list') {
+      const target = findMatchingThread(sess.threads, rawText);
+      if (target) {
+        await safeDeleteUserMessage(ctx);
+        await renderActiveThread(ctx, userId, target.threadId, {
+          propertyId: target.propertyId,
+          ownerId: target.ownerId,
+          receiverId: target.otherId,
+          otherName: target.cleanName
+        });
+        return true;
+      }
     }
 
     if (st && st.step === 'composing_property_message') {
