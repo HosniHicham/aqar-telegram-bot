@@ -8,13 +8,13 @@ function buildThreadId(propertyId, ownerId, otherUserId) {
 const LRM = '\u200E'; // الطرف الآخر: يسار
 const RLM = '\u200F'; // أنا: يمين
 const TIMEZONE = 'Africa/Algiers'; // غيّرها حسب بلدك
-const PAGE_SIZE = 30; // عدد الرسائل في كل صفحة من السجل
+const PAGE_SIZE = 30; // عدد الرسائل في كل صفحة
+const NAME_CACHE_TTL = 60 * 60 * 1000; // ساعة
 const LINE = '▬▬▬▬▬▬▬▬▬▬▬▬';
 const SUP = { 0: '⁰', 1: '¹', 2: '²', 3: '³', 4: '⁴', 5: '⁵', 6: '⁶', 7: '⁷', 8: '⁸', 9: '⁹' };
 
 const BTN_PREV = '◀️ السابق';
 const BTN_NEXT = 'التالي ▶️';
-
 const BTN_BACK = '⬅️ قائمة المراسلين';
 const BTN_HOME = '🏠 القائمة الرئيسية';
 
@@ -75,34 +75,57 @@ function createMessengerModule(core) {
   // page = 0 → آخر الرسائل، 1 → الصفحة الأقدم منها، وهكذا
   const messengerSession = {};
 
-  function getUserDisplayName(from) {
-    if (!from) return 'مراسل';
-    const full = [from.first_name, from.last_name].filter(Boolean).join(' ').trim();
-    const name = full || from.username || '';
-    return isBadName(name) ? 'مراسل' : name;
+  // كاش الأسماء: id → { name, at }
+  const nameCache = new Map();
+
+  function nameFromTelegramObj(obj) {
+    if (!obj) return '';
+    const full = [obj.first_name, obj.last_name].filter(Boolean).join(' ').trim();
+    if (!isBadName(full)) return full;
+    if (!isBadName(obj.username)) return String(obj.username).trim();
+    return '';
   }
 
-  // اسم حقيقي دائماً، بدون أي ID
-  async function resolveCleanSenderName(otherUserId, fallbackSenderName = '') {
-    const fallback = String(fallbackSenderName || '').trim();
-    if (!isBadName(fallback)) return fallback;
+  function getUserDisplayName(from) {
+    return nameFromTelegramObj(from) || 'مراسل';
+  }
 
+  // الاسم من تيليجرام مباشرة عبر الـ ID (بدون عرض الـ ID أبداً)
+  async function fetchTelegramName(userId) {
     try {
-      const { data } = await supabase
-        .from('users')
-        .select('first_name, last_name, username')
-        .eq('id', Number(otherUserId))
-        .limit(1);
+      const chat = await core.bot.telegram.getChat(Number(userId));
+      return nameFromTelegramObj(chat);
+    } catch (_) {
+      return '';
+    }
+  }
 
-      const row = Array.isArray(data) ? data[0] : data;
-      if (row) {
-        const full = [row.first_name, row.last_name].filter(Boolean).join(' ').trim();
-        if (!isBadName(full)) return full;
-        if (!isBadName(row.username)) return String(row.username).trim();
-      }
-    } catch (e) {}
+  // الترتيب: كاش ← تيليجرام ← جدول users ← الاسم المخزّن ← "مراسل"
+  async function resolveCleanSenderName(otherUserId, fallbackSenderName = '') {
+    const id = Number(otherUserId);
+    const cached = nameCache.get(id);
+    if (cached && Date.now() - cached.at < NAME_CACHE_TTL) return cached.name;
 
-    return 'مراسل';
+    let name = id ? await fetchTelegramName(id) : '';
+
+    if (!name && id) {
+      try {
+        const { data } = await supabase
+          .from('users')
+          .select('first_name, last_name, username')
+          .eq('id', id)
+          .limit(1);
+        name = nameFromTelegramObj(Array.isArray(data) ? data[0] : data);
+      } catch (_) {}
+    }
+
+    if (name) {
+      nameCache.set(id, { name, at: Date.now() });
+      return name;
+    }
+
+    const fallback = String(fallbackSenderName || '').trim();
+    return isBadName(fallback) ? 'مراسل' : fallback;
   }
 
   async function getUnreadCount(userId) {
@@ -275,11 +298,11 @@ function createMessengerModule(core) {
   }
 
   // ───────── تصميم بطاقة المحادثة ─────────
-  // الصفحة الأخيرة = أحدث الرسائل. «السابق» يرجع للأقدم، «التالي» يتقدم للأحدث.
+  // الصفحة الأخيرة = أحدث الرسائل. «السابق» للأقدم، «التالي» للأحدث.
   // اسم كل طرف يظهر مرة واحدة في بداية تسلسل رسائله.
   function formatSingleThreadCard(userId, view, meta = {}) {
     const uid = Number(userId);
-    const { messages, total, totalPages, page } = view;
+    const { messages, totalPages, page } = view;
     const otherName = meta.otherName || 'مراسل';
     const myName = meta.myName || 'أنا';
     const propertyId = meta.propertyId || messages[0]?.property_id;
@@ -304,7 +327,6 @@ function createMessengerModule(core) {
         lastSender = null;
       }
 
-      // الاسم مرة واحدة لكل تسلسل: اسمي يمين، واسم الطرف الآخر يسار
       if (lastSender !== who) {
         out.push(
           mine
@@ -321,36 +343,21 @@ function createMessengerModule(core) {
     }
 
     const currentPage = totalPages - page; // الأقدم = 1، الأحدث = الأخيرة
-    const hasOlder = page < totalPages - 1;
-    const hasNewer = page > 0;
 
+    // هيدر مختصر: الاسم + العقار + رقم الصفحة (فقط عند وجود أكثر من صفحة)
     const header =
-      `${LRM}💬 <b>${escapeHtml(otherName)}</b>\n` +
-      (propertyId ? `${LRM}🏠 <i>عقار #${propertyId}</i>\n` : '') +
-      (totalPages > 1
-        ? `${LRM}📄 صفحة <b>${currentPage}</b> / <b>${totalPages}</b> • <i>${total} رسالة</i>\n`
-        : `${LRM}📨 <i>${total} رسالة</i>\n`) +
-      `${LINE}\n`;
+      `${LRM}💬 <b>${escapeHtml(otherName)}</b>` +
+      (propertyId ? ` • 🏠 <i>#${propertyId}</i>` : '') +
+      (totalPages > 1 ? ` • 📄 <b>${currentPage}/${totalPages}</b>` : '') +
+      `\n${LINE}\n`;
 
-    const olderLeft = Math.max(0, total - (page + 1) * PAGE_SIZE);
-    const topNote = hasOlder
-      ? `${LRM}◀️ <i>${olderLeft} رسالة أقدم — «السابق»</i>\n\n`
-      : (total > 0 ? `${LRM}🏁 <i>بداية المحادثة</i>\n\n` : '');
-
-    const newerLeft = page * PAGE_SIZE;
-    const bottomNote = hasNewer
-      ? `\n\n${LRM}▶️ <i>${newerLeft} رسالة أحدث — «التالي»</i>`
-      : '';
-
-    const bodyAll = out.length
+    const body = out.length
       ? out.join('\n')
       : `<i>لا توجد رسائل بعد، اكتب رسالتك الأولى 👇</i>`;
 
-    const footer = hasNewer
-      ? `\n${LINE}\n📜 <i>أنت تتصفح السجل — اكتب رسالة للعودة لآخر الرسائل</i>`
-      : `\n${LINE}\n✍️ <i>اكتب رسالتك وسترسل مباشرة</i>`;
+    const footer = `\n${LINE}\n✍️ <i>اكتب رسالتك</i>`;
 
-    return fitTelegramText(header + topNote + bodyAll + bottomNote + footer, false);
+    return fitTelegramText(header + body + footer, false);
   }
 
   // ───────── لوحات المفاتيح السفلية ─────────
@@ -358,7 +365,6 @@ function createMessengerModule(core) {
   function threadKeyboard() {
     return Markup.keyboard([
       [BTN_PREV, BTN_NEXT],
-      [BTN_REFRESH],
       [BTN_BACK, BTN_HOME]
     ]).resize();
   }
@@ -416,7 +422,7 @@ function createMessengerModule(core) {
       await replyTracked(
         ctx,
         userId,
-        `📭 <b>صندوق المراسلات فارغ</b>\n${LINE}\n<i>ستظهر هنا محادثاتك مع أصحاب العقارات.</i>`,
+        `📭 <b>صندوق المراسلات فارغ</b>`,
         { parse_mode: 'HTML', ...core.getMainMenuKeyboard(userId, unreadCount) },
         true
       );
@@ -426,14 +432,10 @@ function createMessengerModule(core) {
     const senderMap = {};
     threads.forEach((t) => { senderMap[t.buttonText] = t; });
 
-    const totalUnread = threads.reduce((s, t) => s + t.unreadCount, 0);
-    const text =
-      `👇 <i>اختر محادثة من الأزرار بالأسفل</i>`;
-
     const sent = await replyTracked(
       ctx,
       userId,
-      text,
+      `💬 <b>المراسلات</b>\n👇 <i>اختر محادثة</i>`,
       { parse_mode: 'HTML', ...inboxKeyboard(Object.keys(senderMap)) },
       true
     );
@@ -460,12 +462,11 @@ function createMessengerModule(core) {
       ownerId
     );
 
-    let otherName = meta.otherName;
-    if (isBadName(otherName)) {
-      const otherRow = messages.find((m) => Number(m.sender_id) !== Number(userId));
-      otherName = await resolveCleanSenderName(receiverId, otherRow?.sender_name || '');
-    }
+    // اسم الطرف الآخر: من تيليجرام عبر الـ ID (مع كاش)
+    const otherRow = messages.find((m) => Number(m.sender_id) !== Number(userId));
+    const otherName = await resolveCleanSenderName(receiverId, otherRow?.sender_name || meta.otherName || '');
 
+    // اسمي: مباشرة من تيليجرام
     let myName = getUserDisplayName(ctx.from);
     if (myName === 'مراسل') myName = await resolveCleanSenderName(userId, '');
     if (myName === 'مراسل') myName = 'أنا';
@@ -528,7 +529,7 @@ function createMessengerModule(core) {
     const sent = await replyTracked(
       ctx,
       userId,
-      `💬 <b>${escapeHtml(ownerName)}</b>\n🏠 <i>عقار #${propertyId}</i>\n${LINE}\n✍️ اكتب رسالتك الأولى الآن:`,
+      `💬 <b>${escapeHtml(ownerName)}</b> • 🏠 <i>#${propertyId}</i>\n${LINE}\n✍️ اكتب رسالتك الأولى:`,
       {
         parse_mode: 'HTML',
         ...Markup.keyboard([[BTN_HOME]]).resize()
@@ -563,22 +564,16 @@ function createMessengerModule(core) {
       return true;
     }
 
-    // ── أزرار السجل (داخل محادثة فقط) ──
-    if (sess?.mode === 'thread' && sess.threadId) {
-      const navTargets = {
-        [BTN_PREV]: (sess.page || 0) + 1, // أقدم
-        [BTN_NEXT]: Math.max(0, (sess.page || 0) - 1), // أحدث
-        [BTN_REFRESH]: sess.page || 0
-      };
-
-      if (rawText in navTargets) {
-        await safeDeleteUserMessage(ctx);
-        await renderActiveThread(ctx, userId, sess.threadId, sess, {
-          editMessageId: sess.cardMessageId,
-          page: navTargets[rawText]
-        });
-        return true;
-      }
+    // ── أزرار السابق / التالي (داخل محادثة فقط) ──
+    if (sess?.mode === 'thread' && sess.threadId && (rawText === BTN_PREV || rawText === BTN_NEXT)) {
+      await safeDeleteUserMessage(ctx);
+      const cur = sess.page || 0;
+      const target = rawText === BTN_PREV ? cur + 1 : Math.max(0, cur - 1);
+      await renderActiveThread(ctx, userId, sess.threadId, sess, {
+        editMessageId: sess.cardMessageId,
+        page: target
+      });
+      return true;
     }
 
     // اختيار محادثة من أزرار القائمة السفلية
