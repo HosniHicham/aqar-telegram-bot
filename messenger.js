@@ -11,13 +11,14 @@ const TIMEZONE = 'Africa/Algiers';
 const PAGE_SIZE = 30;
 const NAME_CACHE_TTL = 60 * 60 * 1000;
 const LINE = '▬▬▬▬▬▬▬▬▬▬▬▬';
-const ALBUM_FLUSH_MS = 650; // مهلة تجميع عدة صور أو عدة فيديوهات مرسلة كألبوم واحد
+const ALBUM_FLUSH_MS = 650;
 const SUP = { 0: '⁰', 1: '¹', 2: '²', 3: '³', 4: '⁴', 5: '⁵', 6: '⁶', 7: '⁷', 8: '⁸', 9: '⁹' };
 
 const BTN_PREV = '◀️ السابق';
 const BTN_NEXT = 'التالي ▶️';
 const BTN_BACK = '⬅️ قائمة المراسلين';
 const BTN_HOME = '🏠 القائمة الرئيسية';
+const BTN_BACK_TO_THREAD = '↩️ رجوع للمحادثة';
 
 function isBadName(name) {
   const n = String(name || '').trim();
@@ -76,14 +77,8 @@ function createMessengerModule(core) {
     fitTelegramText
   } = core;
 
-  // { mode: 'list' | 'thread', senderMap, threadId, propertyId, ownerId,
-  //   receiverId, otherName, cardMessageId, page, mediaMap }
   const messengerSession = {};
-
-  // كاش الأسماء: id → { name, at }
   const nameCache = new Map();
-
-  // مخزن مؤقت لتجميع الألبومات (عدة صور أو عدة فيديوهات بنفس media_group_id)
   const pendingAlbums = new Map();
 
   function nameFromTelegramObj(obj) {
@@ -224,7 +219,6 @@ function createMessengerModule(core) {
       .select()
       .single();
 
-    // fallback إذا لم تكن الأعمدة الإضافية موجودة في جدول قديم
     if (error) {
       const fallbackPayload = {
         thread_id: payload.thread_id,
@@ -352,7 +346,6 @@ function createMessengerModule(core) {
     return { messages, total, totalPages, page: safePage };
   }
 
-  // استخراج روابط الصور أو الفيديوهات والتعليق من رسالة الوسائط
   function extractMediaInfo(m) {
     const mType = String(m.media_type || m.message_type || '').toLowerCase();
     const isVideo = mType === 'video' || mType === 'videos';
@@ -383,13 +376,14 @@ function createMessengerModule(core) {
     };
   }
 
-  // ───────── تصميم بطاقة المحادثة + عرض روابط الصور والفيديوهات التفاعلية ─────────
+  // ───────── تصميم بطاقة المحادثة مع ترقيم الصفحات في الأسفل ─────────
   function formatSingleThreadCard(userId, view, meta = {}) {
     const uid = Number(userId);
     const { messages, totalPages, page } = view;
     const otherName = meta.otherName || 'مراسل';
     const myName = meta.myName || 'أنا';
     const propertyId = meta.propertyId || messages[0]?.property_id;
+    const botUsername = meta.botUsername || core.bot?.botInfo?.username || '';
     const mediaMap = meta.mediaMap || {};
 
     const out = [];
@@ -468,19 +462,30 @@ function createMessengerModule(core) {
 
     const currentPage = totalPages - page;
 
+    // رقم الإعلان تفاعلي عبر رابط فتح العقار مباشرة
+    const propPart = propertyId
+      ? (botUsername
+          ? ` • <a href="https://t.me/${botUsername}?start=prop_${propertyId}">🏠 #${propertyId}</a>`
+          : ` • 🏠 <b>#${propertyId}</b>`)
+      : '';
+
     const header =
       `${LRM}💬 <b>${escapeHtml(otherName)}</b>` +
-      (propertyId ? ` • 🏠 <i>#${propertyId}</i>` : '') +
-      (totalPages > 1 ? ` • 📄 <b>${currentPage}/${totalPages}</b>` : '') +
+      propPart +
       `\n${LINE}\n`;
 
     const body = out.length
       ? out.join('\n')
       : `<i>لا توجد رسائل بعد، اكتب رسالتك أو أرسل صورة أو فيديو 👇</i>`;
 
-    const footer = `\n${LINE}\n✍️ <i>اكتب رسالتك أو أرسل صورة / فيديو</i>`;
+    // ترقيم الصفحات في الأسفل ليكون دائماً على مرأى عين المستخدم
+    const pageBadge = totalPages > 1 ? ` • 📄 <b>${currentPage}/${totalPages}</b>` : '';
+    const footer = `\n${LINE}\n✍️ <i>اكتب رسالتك أو أرسل صورة / فيديو</i>${pageBadge}`;
 
     const inlineRows = [];
+    if (propertyId) {
+      inlineRows.push([Markup.button.callback(`🏠 فتح الإعلان #${propertyId}`, `msg_prop_open:${propertyId}`)]);
+    }
     for (let i = 0; i < previewButtons.length; i += 2) {
       inlineRows.push(previewButtons.slice(i, i + 2));
     }
@@ -494,6 +499,13 @@ function createMessengerModule(core) {
   function threadKeyboard() {
     return Markup.keyboard([
       [BTN_PREV, BTN_NEXT],
+      [BTN_BACK, BTN_HOME]
+    ]).resize();
+  }
+
+  function propertyViewKeyboard() {
+    return Markup.keyboard([
+      [BTN_BACK_TO_THREAD],
       [BTN_BACK, BTN_HOME]
     ]).resize();
   }
@@ -543,6 +555,107 @@ function createMessengerModule(core) {
     return sent?.message_id || null;
   }
 
+  function setThreadReturnContext(userId, threadSess) {
+    if (!userId || !threadSess?.threadId) return;
+    messengerSession[userId] = {
+      ...(messengerSession[userId] || {}),
+      mode: 'property_view',
+      returnThread: {
+        threadId: threadSess.threadId,
+        propertyId: threadSess.propertyId,
+        ownerId: threadSess.ownerId,
+        receiverId: threadSess.receiverId,
+        otherName: threadSess.otherName,
+        page: threadSess.page || 0
+      }
+    };
+  }
+
+  async function openPropertyFromThread(ctx, propertyId) {
+    const userId = ctx.from.id;
+    const propId = Number(propertyId);
+    if (!propId) return;
+
+    const currentSess = messengerSession[userId];
+    if (currentSess?.mode === 'thread' && currentSess.threadId) {
+      setThreadReturnContext(userId, currentSess);
+    }
+
+    if (currentSess?.cardMessageId && ctx.chat?.id) {
+      await ctx.telegram.deleteMessage(ctx.chat.id, currentSess.cardMessageId).catch(() => {});
+    }
+
+    let prop = null;
+    try {
+      const { data } = await supabase
+        .from('properties')
+        .select('*')
+        .eq('id', propId)
+        .limit(1);
+      prop = Array.isArray(data) ? data[0] : data;
+    } catch (_) {}
+
+    if (!prop) {
+      await replyTracked(
+        ctx,
+        userId,
+        `⚠️ <b>الإعلان #${propId} غير متوفر حالياً.</b>`,
+        { parse_mode: 'HTML', ...propertyViewKeyboard() },
+        true
+      );
+      return;
+    }
+
+    const title = escapeHtml(prop.title || prop.type || prop.property_type || 'عقار');
+    const city = escapeHtml(prop.wilaya || prop.city || prop.location || '');
+    const price = prop.price ? escapeHtml(String(prop.price)) : 'غير محدد';
+    const phone = prop.phone || prop.phone_number
+      ? `\n📞 <b>الهاتف:</b> <code>${escapeHtml(String(prop.phone || prop.phone_number))}</code>`
+      : '';
+    const desc = prop.description
+      ? `\n📝 <b>الوصف:</b>\n${escapeHtml(String(prop.description))}`
+      : '';
+
+    const propCard =
+      `🏠 <b>إعلان العقار #${propId}</b>\n${LINE}\n` +
+      `📌 <b>النوع / العنوان:</b> ${title}\n` +
+      (city ? `📍 <b>الموقع:</b> ${city}\n` : '') +
+      `💰 <b>السعر:</b> ${price}` +
+      `${phone}${desc}`;
+
+    const rawImg = prop.image_url || prop.photo_url || prop.images || '';
+    const firstImg = Array.isArray(rawImg)
+      ? rawImg[0]
+      : String(rawImg).split(/\s*\|\|\s*|\s*,\s*|\n+/).map((s) => s.trim()).find((u) => /^https?:\/\//i.test(u));
+
+    let sent = null;
+    if (firstImg) {
+      sent = await ctx.replyWithPhoto(firstImg, {
+        caption: fitTelegramText(propCard, true),
+        parse_mode: 'HTML',
+        ...propertyViewKeyboard()
+      }).catch(() => null);
+    }
+
+    if (!sent) {
+      sent = await replyTracked(
+        ctx,
+        userId,
+        fitTelegramText(propCard, false),
+        { parse_mode: 'HTML', ...propertyViewKeyboard() },
+        true
+      );
+    }
+
+    if (sent?.message_id) {
+      messengerSession[userId] = {
+        ...(messengerSession[userId] || {}),
+        mode: 'property_view',
+        propViewMessageId: sent.message_id
+      };
+    }
+  }
+
   async function showInboxList(ctx) {
     const userId = ctx.from.id;
     delete userState[userId];
@@ -552,6 +665,9 @@ function createMessengerModule(core) {
     const prev = messengerSession[userId] || {};
     if (prev.cardMessageId && ctx.chat?.id) {
       await ctx.telegram.deleteMessage(ctx.chat.id, prev.cardMessageId).catch(() => {});
+    }
+    if (prev.propViewMessageId && ctx.chat?.id) {
+      await ctx.telegram.deleteMessage(ctx.chat.id, prev.propViewMessageId).catch(() => {});
     }
 
     const threads = await fetchSenderThreads(userId);
@@ -609,7 +725,14 @@ function createMessengerModule(core) {
     if (myName === 'مراسل') myName = 'أنا';
 
     const mediaMap = {};
-    const cardObj = formatSingleThreadCard(userId, view, { otherName, myName, propertyId, mediaMap });
+    const botUsername = ctx?.botInfo?.username || core.bot?.botInfo?.username || '';
+    const cardObj = formatSingleThreadCard(userId, view, {
+      otherName,
+      myName,
+      propertyId,
+      botUsername,
+      mediaMap
+    });
 
     const prevSession = messengerSession[userId] || {};
     const targetMsgId = editMessageId || prevSession.cardMessageId || null;
@@ -677,7 +800,7 @@ function createMessengerModule(core) {
     if (sent?.message_id) userState[userId].wizardMsgId = sent.message_id;
   }
 
-  // حفظ دفعة وسائط (صورة واحدة أو عدة صور، فيديو واحد أو عدة فيديوهات) وتحويلها إلى روابط
+  // حفظ دفعة وسائط (مع حفظ نسخة مصغّرة للمعاينة السريعة وحفظ النسخة الكاملة للفتح)
   async function commitMediaBatch(ctx, userId, items, mediaType, mediaGroupId) {
     const st = userState[userId];
     const sess = messengerSession[userId];
@@ -703,11 +826,16 @@ function createMessengerModule(core) {
     }
 
     const urls = [];
+    const thumbUrls = [];
     let caption = '';
 
     for (const item of items) {
-      const url = await fileIdToUrl(item.fileId);
-      if (url) urls.push(url);
+      const fullUrl = await fileIdToUrl(item.fileId);
+      if (fullUrl) urls.push(fullUrl);
+      const compactUrl = item.thumbFileId && item.thumbFileId !== item.fileId
+        ? await fileIdToUrl(item.thumbFileId)
+        : fullUrl;
+      if (compactUrl) thumbUrls.push(compactUrl);
       if (!caption && item.caption) caption = item.caption;
     }
 
@@ -743,7 +871,6 @@ function createMessengerModule(core) {
     return true;
   }
 
-  // ───────── معالجة الصور والفيديوهات (فردية أو متعددة) ─────────
   async function handleMessengerMedia(ctx) {
     const userId = ctx.from?.id;
     if (!userId) return false;
@@ -758,13 +885,18 @@ function createMessengerModule(core) {
 
     let mediaType = null;
     let fileId = '';
+    let thumbFileId = '';
 
     if (Array.isArray(ctx.message?.photo) && ctx.message.photo.length > 0) {
       mediaType = 'image';
       fileId = ctx.message.photo[ctx.message.photo.length - 1]?.file_id || '';
+      // اختيار نسخة مصغّرة/أقل حجماً للمعاينة في المحادثة
+      const smallIdx = Math.min(1, ctx.message.photo.length - 1);
+      thumbFileId = ctx.message.photo[smallIdx]?.file_id || fileId;
     } else if (ctx.message?.video?.file_id) {
       mediaType = 'video';
       fileId = ctx.message.video.file_id;
+      thumbFileId = ctx.message.video.thumb?.file_id || ctx.message.video.thumbnail?.file_id || '';
     }
 
     if (!mediaType || !fileId) return false;
@@ -774,7 +906,6 @@ function createMessengerModule(core) {
     const caption = ctx.message?.caption ? ctx.message.caption.trim() : '';
     const groupId = ctx.message?.media_group_id ? String(ctx.message.media_group_id) : '';
 
-    // إذا كان ضمن ألبوم (عدة صور أو عدة فيديوهات)، نجمّعها ثم نرسلها كرسالة واحدة متكاملة الروابط
     if (groupId) {
       const bucketKey = `${userId}:${groupId}`;
       let bucket = pendingAlbums.get(bucketKey);
@@ -788,7 +919,7 @@ function createMessengerModule(core) {
         pendingAlbums.set(bucketKey, bucket);
       }
 
-      bucket.items.push({ fileId, caption });
+      bucket.items.push({ fileId, thumbFileId, caption });
 
       if (bucket.timer) clearTimeout(bucket.timer);
       bucket.timer = setTimeout(async () => {
@@ -799,10 +930,9 @@ function createMessengerModule(core) {
       return true;
     }
 
-    return commitMediaBatch(ctx, userId, [{ fileId, caption }], mediaType, null);
+    return commitMediaBatch(ctx, userId, [{ fileId, thumbFileId, caption }], mediaType, null);
   }
 
-  // ───────── معالجة النصوص ─────────
   async function handleMessengerText(ctx) {
     const userId = ctx.from.id;
     const rawText = ctx.message?.text ? ctx.message.text.trim() : '';
@@ -815,8 +945,29 @@ function createMessengerModule(core) {
       if (sess?.cardMessageId && ctx.chat?.id) {
         await ctx.telegram.deleteMessage(ctx.chat.id, sess.cardMessageId).catch(() => {});
       }
+      if (sess?.propViewMessageId && ctx.chat?.id) {
+        await ctx.telegram.deleteMessage(ctx.chat.id, sess.propViewMessageId).catch(() => {});
+      }
       delete messengerSession[userId];
       return false;
+    }
+
+    if (rawText === BTN_BACK_TO_THREAD) {
+      await safeDeleteUserMessage(ctx);
+      const ret = messengerSession[userId]?.returnThread;
+      const viewMsgId = messengerSession[userId]?.propViewMessageId;
+      if (viewMsgId && ctx.chat?.id) {
+        await ctx.telegram.deleteMessage(ctx.chat.id, viewMsgId).catch(() => {});
+      }
+      if (ret?.threadId) {
+        await renderActiveThread(ctx, userId, ret.threadId, ret, {
+          forceNew: true,
+          page: ret.page || 0
+        });
+      } else {
+        await showInboxList(ctx);
+      }
+      return true;
     }
 
     if (rawText === BTN_BACK && sess) {
@@ -904,7 +1055,22 @@ function createMessengerModule(core) {
     return false;
   }
 
-  // ───────── الأوامر والأحداث ─────────
+  core.bot.start(async (ctx, next) => {
+    const payload = String(ctx.startPayload || '').trim();
+    const match = payload.match(/^prop_(\d+)$/);
+    if (match) {
+      await safeDeleteUserMessage(ctx);
+      await openPropertyFromThread(ctx, Number(match[1]));
+      return;
+    }
+    if (typeof next === 'function') return next();
+  });
+
+  core.bot.action(/^msg_prop_open:(\d+)$/, async (ctx) => {
+    await ctx.answerCbQuery().catch(() => {});
+    await openPropertyFromThread(ctx, Number(ctx.match[1]));
+  });
+
   core.bot.on(['photo', 'video'], async (ctx, next) => {
     const handled = await handleMessengerMedia(ctx);
     if (!handled && typeof next === 'function') return next();
@@ -915,7 +1081,7 @@ function createMessengerModule(core) {
     await showInboxList(ctx);
   });
 
-  // عرض الوسائط مباشرة داخل المحادثة عند الضغط على زر "عرض #..."
+  // عرض الوسائط مباشرة في المحادثة بأسلوب replyWithPhoto / replyWithVideo وحجم أقل
   core.bot.action(/^msg_media:(.+)$/, async (ctx) => {
     await ctx.answerCbQuery().catch(() => {});
     const userId = ctx.from.id;
@@ -929,15 +1095,19 @@ function createMessengerModule(core) {
 
     for (let i = 0; i < info.urls.length; i += 1) {
       const url = info.urls[i];
-      const cap =
+      const cap = fitTelegramText(
         `<b>${escapeHtml(info.senderName || 'مراسل')}</b>` +
         (info.urls.length > 1 ? ` • (${i + 1}/${info.urls.length})` : '') +
-        (info.caption ? `\n${escapeHtml(info.caption)}` : '');
+        (info.caption ? `\n${escapeHtml(info.caption)}` : ''),
+        true
+      );
 
       if (info.isVideo) {
         await ctx.replyWithVideo(url, {
           caption: cap,
           parse_mode: 'HTML',
+          width: 320,
+          height: 180,
           ...closeKb
         }).catch(async () => {
           await ctx.reply(`🎬 <a href="${escapeHtml(url)}">فتح الفيديو</a>`, {
@@ -994,6 +1164,7 @@ function createMessengerModule(core) {
     formatSingleThreadCard,
     showInboxList,
     renderActiveThread,
+    openPropertyFromThread,
     startPropertyMessage,
     handleMessengerText,
     handleMessengerMedia
