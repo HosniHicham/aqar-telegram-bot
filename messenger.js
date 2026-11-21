@@ -4,14 +4,6 @@ function buildThreadId(propertyId, ownerId, otherUserId) {
   return `p_${Number(propertyId)}_o_${Number(ownerId)}_u_${Number(otherUserId)}`;
 }
 
-function stripAnyIdWords(str = '') {
-  return String(str || '')
-    .replace(/\b(مستخدم|user|id|آيدي)\s*#?\s*\d*\b/gi, '')
-    .replace(/#\d+/g, '')
-    .replace(/\s{2,}/g, ' ')
-    .trim();
-}
-
 function createMessengerModule(core) {
   const {
     Markup,
@@ -25,23 +17,24 @@ function createMessengerModule(core) {
     safeDeleteUserMessage,
     escapeHtml,
     fitTelegramText,
+    formatDateTime,
     chunkButtons
   } = core;
 
   // جلسة المراسلات لكل مستخدم:
-  // { mode: 'list' | 'thread', threadId, propertyId, ownerId, receiverId, otherName, cardMessageId, threads }
+  // { mode: 'list' | 'thread', threadId, propertyId, ownerId, receiverId, otherName, cardMessageId, senderMap }
   const messengerSession = {};
 
   function getUserDisplayName(from) {
     if (!from) return 'مراسل';
     const full = [from.first_name, from.last_name].filter(Boolean).join(' ').trim();
-    return stripAnyIdWords(full || from.username || 'مراسل') || 'مراسل';
+    return full || from.username || 'مراسل';
   }
 
-  // جلب الاسم الحقيقي من جدول users أو من sender_name في messanger بدون أي ID أبداً
+  // جلب الاسم الحقيقي من جدول users إذا كان متوفراً، وإلا من sender_name في messanger بدون إظهار ID
   async function resolveCleanSenderName(otherUserId, fallbackSenderName = '') {
-    const cleanFallback = stripAnyIdWords(fallbackSenderName);
-    if (cleanFallback) {
+    const cleanFallback = String(fallbackSenderName || '').trim();
+    if (cleanFallback && !/^مستخدم\s*\d*$/i.test(cleanFallback)) {
       return cleanFallback;
     }
 
@@ -54,32 +47,16 @@ function createMessengerModule(core) {
 
       const row = Array.isArray(data) ? data[0] : data;
       if (row) {
-        const full = stripAnyIdWords([row.first_name, row.last_name].filter(Boolean).join(' ').trim());
+        const full = [row.first_name, row.last_name].filter(Boolean).join(' ').trim();
         if (full) return full;
-        if (row.username) {
-          const cleanUser = stripAnyIdWords(row.username);
-          if (cleanUser) return cleanUser;
-        }
+        if (row.username) return String(row.username).trim();
       }
     } catch (e) {}
 
-    return 'مراسل';
+    return cleanFallback || 'مراسل';
   }
 
-  // توقيت صغير ومختصر داخل سطر الرسالة
-  function formatCompactTime(dateInput) {
-    const target = dateInput ? new Date(dateInput) : new Date();
-    if (isNaN(target.getTime())) return '';
-    try {
-      const d = target.toLocaleDateString('fr-DZ', { day: '2-digit', month: '2-digit' });
-      const t = target.toLocaleTimeString('fr-DZ', { hour: '2-digit', minute: '2-digit', hour12: false });
-      return `${d} ${t}`;
-    } catch (e) {
-      return target.toISOString().slice(5, 16).replace('T', ' ');
-    }
-  }
-
-  // حساب عدد الرسائل الواردة غير المقروءة للمستخدم الحالي
+  // حساب عدد الرسائل الواردة غير المقروءة للمستخدم (إلى = userId والمرسل ليس userId)
   async function getUnreadCount(userId) {
     const uid = Number(userId);
     if (!uid) return 0;
@@ -126,8 +103,6 @@ function createMessengerModule(core) {
     const otherId = sId === oId ? rId : sId;
     const threadId = buildThreadId(pId, oId, otherId);
 
-    const safeName = stripAnyIdWords(senderName) || 'مراسل';
-
     const { data, error } = await supabase
       .from('messanger')
       .insert([{
@@ -136,7 +111,7 @@ function createMessengerModule(core) {
         owner_id: oId,
         sender_id: sId,
         receiver_id: rId,
-        sender_name: safeName,
+        sender_name: String(senderName || 'مراسل').trim() || 'مراسل',
         message_type: messageType,
         message: cleanMsg,
         is_read: false,
@@ -154,7 +129,7 @@ function createMessengerModule(core) {
     return data;
   }
 
-  // جلب قائمة المراسلين للمستخدم الحالي (الاسم فقط بدون أي ID)
+  // جلب قائمة المراسلين للمستخدم الحالي (اسم فقط بدون ID)
   async function fetchSenderThreads(userId) {
     const uid = Number(userId);
 
@@ -238,32 +213,38 @@ function createMessengerModule(core) {
     return data;
   }
 
-  // تنسيق البطاقة الواحدة بأسلوب Left / Right وتوقيت صغير واسم فقط بدون ID
+  // تنسيق البطاقة الواحدة التي تجمع رسائل المحادثة وتُحدّث باستمرار (بدون إظهار ID)
   function formatSingleThreadCard(userId, messages, meta = {}) {
     const uid = Number(userId);
     const otherRow = messages.find((m) => Number(m.sender_id) !== uid);
-    const otherName = stripAnyIdWords(otherRow?.sender_name || meta.otherName || 'مراسل') || 'مراسل';
+    const otherName = otherRow?.sender_name || meta.otherName || 'مراسل';
+    const propId = messages[0]?.property_id || meta.propertyId;
 
     const lines = messages.map((m) => {
-      const isRight = Number(m.sender_id) === uid;
-      const cleanWho = stripAnyIdWords(m.sender_name || otherName) || otherName;
-      const smallTime = m.created_at ? ` <small>${escapeHtml(formatCompactTime(m.created_at))}</small>` : '';
-      const msgBody = escapeHtml(m.message || '');
-
-      if (isRight) {
-        return `↪️ <b>${escapeHtml(cleanWho)}</b>${smallTime}\n      <code>${msgBody}</code>`;
-      } else {
-        return `↩️ <b>${escapeHtml(cleanWho)}</b>${smallTime}\n${msgBody}`;
-      }
+      const mine = Number(m.sender_id) === uid;
+      const who = mine ? 'أنت' : escapeHtml(m.sender_name || otherName);
+      const timeStr = m.created_at ? ` <code>[${escapeHtml(formatDateTime(m.created_at))}]</code>` : '';
+      const icon = mine ? '🟦' : '🟩';
+      return `${icon} <b>${who}:</b> ${escapeHtml(m.message)}${timeStr}`;
     });
 
-    const header = `💬 <b>${escapeHtml(otherName)}</b>\n──────────────\n`;
-    const body = lines.length > 0 ? lines.join('\n\n') : `<i>ابدأ المحادثة بكتابة رسالة...</i>`;
+    const header =
+      `💬 <b>محادثة مع ${escapeHtml(otherName)}</b>` +
+      (propId ? ` • عقار <code>#${propId}</code>` : '') +
+      `\n━━━━━━━━━━━━━━━━━━━━\n`;
 
-    return fitTelegramText(header + body, false);
+    const body = lines.length > 0
+      ? lines.join('\n')
+      : `<i>لا توجد رسائل بعد. اكتب رسالتك الأولى الآن.</i>`;
+
+    const footer =
+      `\n━━━━━━━━━━━━━━━━━━━━\n` +
+      `✍️ <i>اكتب رسالتك وسيتم إرسالها وتحديث هذه الرسالة مباشرة.</i>`;
+
+    return fitTelegramText(header + body + footer, false);
   }
 
-  // عرض قائمة المراسلين كأزرار في لوحة المفاتيح السفلية (اسم فقط بدون عرض رسائل أو ID)
+  // عرض قائمة المراسلين كأزرار في لوحة المفاتيح السفلية (بدون عرض أي رسائل أو ID)
   async function showInboxList(ctx) {
     const userId = ctx.from.id;
     delete userState[userId];
@@ -284,12 +265,18 @@ function createMessengerModule(core) {
       );
     }
 
+    const senderMap = {};
+    const buttonLabels = [];
+    for (const t of threads) {
+      senderMap[t.buttonText] = t;
+      buttonLabels.push(t.buttonText);
+    }
+
     messengerSession[userId] = {
       mode: 'list',
-      threads
+      senderMap
     };
 
-    const buttonLabels = threads.map((t) => t.buttonText);
     const rows = chunkButtons ? chunkButtons(buttonLabels, 2) : [];
     if (!rows.length) {
       for (let i = 0; i < buttonLabels.length; i += 2) {
@@ -310,20 +297,6 @@ function createMessengerModule(core) {
     );
   }
 
-  // البحث عن المراسل المطابق للنص المدخل حتى لو تغير العداد أو الإشارة
-  function findMatchingThread(threads = [], rawText = '') {
-    const cleanInput = String(rawText || '').trim();
-    if (!cleanInput || !Array.isArray(threads)) return null;
-
-    const exact = threads.find((t) => t.buttonText === cleanInput || t.cleanName === cleanInput);
-    if (exact) return exact;
-
-    const normalizedInput = stripAnyIdWords(cleanInput.replace(/^🟢\s*/, '').replace(/\s*\(\d+\)\s*$/, ''));
-    if (!normalizedInput) return null;
-
-    return threads.find((t) => stripAnyIdWords(t.cleanName) === normalizedInput) || null;
-  }
-
   // عرض / تحديث البطاقة الواحدة للمحادثة النشطة
   async function renderActiveThread(ctx, userId, threadId, meta = {}, editMessageId = null) {
     const messages = await openThreadMessages(userId, threadId);
@@ -337,242 +310,9 @@ function createMessengerModule(core) {
       (Number(first.sender_id) === Number(userId) ? first.receiver_id : first.sender_id) ||
       ownerId
     );
-    const otherName = stripAnyIdWords(meta.otherName || first.sender_name || 'مراسل') || 'مراسل';
+    const otherName = meta.otherName || first.sender_name || 'مراسل';
 
     const cardText = formatSingleThreadCard(userId, messages, {
       ...meta,
       propertyId,
-      ownerId,
-      receiverId,
-      otherName
-    });
-
-    const threadKb = Markup.keyboard([
-      ['⬅️ قائمة المراسلين'],
-      ['🏠 القائمة الرئيسية']
-    ]).resize();
-
-    const prevSession = messengerSession[userId] || {};
-    let targetMsgId = editMessageId || prevSession.cardMessageId || null;
-
-    if (targetMsgId && ctx.chat?.id) {
-      try {
-        await ctx.telegram.editMessageText(ctx.chat.id, targetMsgId, undefined, cardText, {
-          parse_mode: 'HTML'
-        });
-        messengerSession[userId] = {
-          ...prevSession,
-          mode: 'thread',
-          threadId,
-          propertyId,
-          ownerId,
-          receiverId,
-          otherName,
-          cardMessageId: targetMsgId,
-          unreadCount
-        };
-        return targetMsgId;
-      } catch (_) {
-        await ctx.telegram.deleteMessage(ctx.chat.id, targetMsgId).catch(() => {});
-      }
-    }
-
-    const sent = await replyTracked(
-      ctx,
-      userId,
-      cardText,
-      {
-        parse_mode: 'HTML',
-        ...threadKb
-      },
-      true
-    );
-
-    const newMsgId = sent?.message_id || null;
-    messengerSession[userId] = {
-      ...prevSession,
-      mode: 'thread',
-      threadId,
-      propertyId,
-      ownerId,
-      receiverId,
-      otherName,
-      cardMessageId: newMsgId,
-      unreadCount
-    };
-    return newMsgId;
-  }
-
-  // بدء مراسلة جديدة من بطاقة عقار معيّن
-  async function startPropertyMessage(ctx, propertyItem) {
-    const userId = ctx.from.id;
-    const ownerId = Number(propertyItem?.user_id);
-    const propertyId = Number(propertyItem?.id);
-
-    if (!propertyId || !ownerId || ownerId === Number(userId)) {
-      return;
-    }
-
-    const ownerName = await resolveCleanSenderName(ownerId, 'صاحب العقار');
-    const threadId = buildThreadId(propertyId, ownerId, userId);
-
-    userState[userId] = {
-      step: 'composing_property_message',
-      data: {
-        threadId,
-        propertyId,
-        ownerId,
-        receiverId: ownerId,
-        otherName: ownerName
-      },
-      chatId: ctx.chat.id,
-      wizardMsgId: null
-    };
-
-    const existing = await supabase
-      .from('messanger')
-      .select('id')
-      .eq('thread_id', threadId)
-      .limit(1);
-
-    if (Array.isArray(existing.data) && existing.data.length > 0) {
-      return renderActiveThread(ctx, userId, threadId, {
-        propertyId,
-        ownerId,
-        receiverId: ownerId,
-        otherName: ownerName
-      });
-    }
-
-    const promptText = `💬 <b>${escapeHtml(ownerName)}</b>\n──────────────\nاكتب رسالتك:`;
-
-    const sent = await replyTracked(
-      ctx,
-      userId,
-      promptText,
-      {
-        parse_mode: 'HTML',
-        ...Markup.keyboard([['🏠 القائمة الرئيسية']]).resize()
-      },
-      true
-    );
-    if (sent?.message_id) {
-      userState[userId].wizardMsgId = sent.message_id;
-    }
-  }
-
-  // معالجة نص يكتبه المستخدم (اختيار زر اسم المرسل، أو العودة للقائمة، أو إرسال رسالة في المحادثة)
-  async function handleMessengerText(ctx) {
-    const userId = ctx.from.id;
-    const rawText = ctx.message?.text ? ctx.message.text.trim() : '';
-    if (!rawText || rawText.startsWith('/')) return false;
-
-    const st = userState[userId];
-    const sess = messengerSession[userId];
-
-    if (rawText === '⬅️ قائمة المراسلين') {
-      await safeDeleteUserMessage(ctx);
-      await showInboxList(ctx);
-      return true;
-    }
-
-    if (sess && sess.mode === 'list') {
-      const target = findMatchingThread(sess.threads, rawText);
-      if (target) {
-        await safeDeleteUserMessage(ctx);
-        await renderActiveThread(ctx, userId, target.threadId, {
-          propertyId: target.propertyId,
-          ownerId: target.ownerId,
-          receiverId: target.otherId,
-          otherName: target.cleanName
-        });
-        return true;
-      }
-    }
-
-    if (st && st.step === 'composing_property_message') {
-      await safeDeleteUserMessage(ctx);
-      const { threadId, propertyId, ownerId, receiverId, otherName, wizardMsgId } = st.data || {};
-      delete userState[userId];
-
-      if (wizardMsgId && ctx.chat?.id) {
-        await ctx.telegram.deleteMessage(ctx.chat.id, wizardMsgId).catch(() => {});
-      }
-
-      await insertMessage({
-        propertyId,
-        ownerId,
-        senderId: userId,
-        receiverId,
-        senderName: getUserDisplayName(ctx.from),
-        messageType: 'text',
-        message: rawText
-      });
-
-      await renderActiveThread(ctx, userId, threadId, { propertyId, ownerId, receiverId, otherName });
-      return true;
-    }
-
-    if (sess && sess.mode === 'thread' && sess.threadId) {
-      await safeDeleteUserMessage(ctx);
-
-      await insertMessage({
-        propertyId: sess.propertyId,
-        ownerId: sess.ownerId,
-        senderId: userId,
-        receiverId: sess.receiverId,
-        senderName: getUserDisplayName(ctx.from),
-        messageType: 'text',
-        message: rawText
-      });
-
-      await renderActiveThread(ctx, userId, sess.threadId, {
-        propertyId: sess.propertyId,
-        ownerId: sess.ownerId,
-        receiverId: sess.receiverId,
-        otherName: sess.otherName
-      }, sess.cardMessageId);
-      return true;
-    }
-
-    return false;
-  }
-
-  core.bot.hears(/^💬 المراسلات(?: \(\d+\))?$/, async (ctx) => {
-    await safeDeleteUserMessage(ctx);
-    await showInboxList(ctx);
-  });
-
-  core.bot.action('msg_list', async (ctx) => {
-    await showInboxList(ctx);
-  });
-
-  core.bot.action(/^msg_open:(.+)$/, async (ctx) => {
-    const threadId = ctx.match[1];
-    const msgId = ctx.callbackQuery?.message?.message_id || null;
-    await renderActiveThread(ctx, ctx.from.id, threadId, {}, msgId);
-  });
-
-  core.bot.action(/^msg_prop:(\d+):(\d+)$/, async (ctx) => {
-    const propertyId = Number(ctx.match[1]);
-    const ownerId = Number(ctx.match[2]);
-    await startPropertyMessage(ctx, { id: propertyId, user_id: ownerId });
-  });
-
-  return {
-    messengerSession,
-    buildThreadId,
-    getUnreadCount,
-    getMessengerButtonLabel,
-    insertMessage,
-    fetchSenderThreads,
-    openThreadMessages,
-    formatSingleThreadCard,
-    showInboxList,
-    renderActiveThread,
-    startPropertyMessage,
-    handleMessengerText
-  };
-}
-
-module.exports = { createMessengerModule };
+      owner
