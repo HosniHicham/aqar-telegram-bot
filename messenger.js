@@ -514,7 +514,7 @@ function createMessengerModule(core) {
 
     const body = out.length
       ? out.join('\n')
-      : `<i>لا توجد رسائل بعد، اكتب رسالتك أو أرسل صورة أو فيديو 👇</i>`;
+      : `<blockquote><i>لا توجد رسائل بعد، اكتب رسالتك أو أرسل صورة أو فيديو 👇</i></blockquote>`;
 
     // ترقيم الصفحات في الأسفل ليكون دائماً على مرأى عين المستخدم
     const pageBadge = totalPages > 1 ? ` • 📄 <b>${currentPage}/${totalPages}</b>` : '';
@@ -650,7 +650,7 @@ function createMessengerModule(core) {
       const sent = await replyTracked(
         ctx,
         userId,
-        `⚠️ <b>الإعلان #${propId} غير متوفر حالياً.</b>`,
+        `<blockquote>⚠️ <b>الإعلان #${propId} غير متوفر حالياً.</b></blockquote>`,
         { parse_mode: 'HTML', ...propertyBrowseKeyboard(0, 0) },
         true
       );
@@ -677,11 +677,13 @@ function createMessengerModule(core) {
 
     const rawCaption =
       `🏛 <b>الولاية:</b> ${escapeHtml(prop.state_name || '')} • 🏠 <code>#${propId}</code>\n\n` +
+      `<blockquote>` +
       `🏠 <b>العقار:</b> ${escapeHtml(prop.property_type || '')}\n` +
       `💰 <b>السعر:</b> ${formatMoney(prop.price)}\n` +
       `📞 <b>هاتف المالك:</b> <code>${escapeHtml(prop.phone || '')}</code>\n` +
       `🕒 <b>تاريخ ووقت النشر:</b> <code>${escapeHtml(publishedAtText)}</code>${mediaLine}\n` +
-      `📝 <b>الوصف:</b> ${escapeHtml(prop.description || prop.message || '')}`;
+      `📝 <b>الوصف:</b> ${escapeHtml(prop.description || prop.message || '')}` +
+      `</blockquote>`;
 
     const caption = fitTelegramText(rawCaption, !!currentMedia);
     const replyKb = propertyBrowseKeyboard(safeMediaIndex, totalMedia);
@@ -851,7 +853,7 @@ function createMessengerModule(core) {
     const sent = await replyTracked(
       ctx,
       userId,
-      `💬 <b>${escapeHtml(ownerName)}</b> • 🏠 <i>#${propertyId}</i>\n${LINE}\n✍️ اكتب رسالتك الأولى أو أرسل صورة / فيديو:`,
+      `💬 <b>${escapeHtml(ownerName)}</b> • 🏠 <i>#${propertyId}</i>\n${LINE}\n<blockquote>✍️ اكتب رسالتك الأولى أو أرسل صورة / فيديو:</blockquote>`,
       {
         parse_mode: 'HTML',
         ...Markup.keyboard([[BTN_HOME]]).resize()
