@@ -260,7 +260,6 @@ function createMessengerModule(core) {
       console.error('notifyReceiverMessenger error:', e?.message || e);
     }
 
-    // إذا كان الطرف الآخر فاتحاً نفس المحادثة حالياً نحدّث بطاقته فوراً
     const recSess = messengerSession[rId];
     if (recSess?.mode === 'thread' && recSess.threadId === threadId && recSess.cardMessageId) {
       try {
@@ -535,7 +534,7 @@ function createMessengerModule(core) {
     };
   }
 
-  // فتح مرفق الرسالة مباشرة داخل المحادثة دون نافذة Annuler / Ouvrir le lien
+  // فتح مرفق الرسالة مباشرة داخل المحادثة مع تفاصيل خفيفة (المرسل، الوقت، العقار، الوصف)
   async function renderMessageMediaDirectly(ctx, userId, msgId, mediaIdx = 0) {
     const id = Number(msgId);
     if (!id) return;
@@ -569,11 +568,33 @@ function createMessengerModule(core) {
     const mediaUrl = info.urls[safeIdx];
     if (!mediaUrl) return;
 
+    const isMine = Number(row.sender_id) === Number(userId);
+    let senderLabel = isMine ? getUserDisplayName(ctx.from) : '';
+    if (!senderLabel || senderLabel === 'مراسل') {
+      senderLabel = await resolveCleanSenderName(row.sender_id, row.sender_name || '');
+    }
+    if (isMine && (!senderLabel || senderLabel === 'مراسل')) senderLabel = 'أنا';
+
+    const smallTime = formatSmallTime(row.created_at);
+    const dayStr = dayLabel(row.created_at);
+    const fullTime = row.created_at ? formatDateTime(row.created_at) : '';
+    const timeLine = [dayStr, smallTime].filter(Boolean).join(' • ') || fullTime;
+
     const kindText = info.isVideo ? '🎬 فيديو' : '🖼️ صورة';
-    const caption = fitTelegramText(
-      `<blockquote>${kindText}${info.caption ? `\n${escapeHtml(info.caption)}` : ''}</blockquote>`,
-      true
-    );
+    const indexPart = info.urls.length > 1 ? ` <b>(${safeIdx + 1}/${info.urls.length})</b>` : '';
+    const propPart = row.property_id ? `\n🏠 <b>العقار:</b> <code>#${Number(row.property_id)}</code>` : '';
+    const descPart = info.caption ? `\n📝 <b>الوصف:</b> ${escapeHtml(info.caption)}` : '';
+
+    const metaLines =
+      `<blockquote>` +
+      `${kindText}${indexPart}\n` +
+      `👤 <b>المرسل:</b> ${escapeHtml(senderLabel)}` +
+      (timeLine ? `\n🕒 <b>الوقت:</b> <i>${escapeHtml(timeLine)}</i>` : '') +
+      propPart +
+      descPart +
+      `</blockquote>`;
+
+    const caption = fitTelegramText(metaLines, true);
     const kb = Markup.keyboard([[BTN_BACK_TO_THREAD], [BTN_BACK, BTN_HOME]]).resize();
 
     let sentMsg = null;
