@@ -1,6 +1,6 @@
 'use strict';
 // =========================================================================
-// 🧠 SERVER FATHER — العقل المدبّر
+// 🧠 SERVER FATHER — العقل المدبّر (النسخة المحسّنة والمستقرة)
 // =========================================================================
 
 const { Telegraf, Markup, Composer } = require('telegraf');
@@ -9,21 +9,21 @@ const { createClient } = require('@supabase/supabase-js');
 
 // ------------------------- الإعدادات -------------------------
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const WEBHOOK_DOMAIN = process.env.WEBHOOK_DOMAIN;
+const WEBHOOK_DOMAIN = process.env.WEBHOOK_DOMAIN ? process.env.WEBHOOK_DOMAIN.trim().replace(/\/+$/, '') : '';
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://jjrisfyotyryanhbsvlz.supabase.co';
 const SUPABASE_KEY = process.env.SUPABASE_KEY || 'sb_publishable_t7kVxzmOtz16C95U_B52FA_AJl_WK-h';
 const MAX_PROPERTY_IMAGES = 6;
 const BACK_TO_ADMIN = '🔙 العودة لوضع الإدارة';
 
 if (!BOT_TOKEN) {
-  console.error('Error: Required environment variables are missing!');
+  console.error('❌ Error: BOT_TOKEN environment variable is missing!');
   process.exit(1);
 }
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 const bot = new Telegraf(BOT_TOKEN);
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 
 // ------------------------- الحالات المشتركة -------------------------
 const userState = {};
@@ -35,6 +35,7 @@ const previewMode = {};
 const lastKnownRole = {}; // 'admin' | 'user'
 
 function resetSessions(userId) {
+  if (!userId) return;
   delete userState[userId];
   delete browsingSession[userId];
   delete supportUserSession[userId];
@@ -43,9 +44,13 @@ function resetSessions(userId) {
 // ------------------------- تنظيف رسائل البوت -------------------------
 function trackBotMessage(userId, chatId, messageId) {
   if (!userId || !chatId || !messageId) return;
-  if (!botMessagesHistory[userId]) botMessagesHistory[userId] = { chatId, ids: [] };
+  if (!botMessagesHistory[userId]) {
+    botMessagesHistory[userId] = { chatId, ids: [] };
+  }
   botMessagesHistory[userId].chatId = chatId;
-  if (!botMessagesHistory[userId].ids.includes(messageId)) botMessagesHistory[userId].ids.push(messageId);
+  if (!botMessagesHistory[userId].ids.includes(messageId)) {
+    botMessagesHistory[userId].ids.push(messageId);
+  }
 }
 
 function untrackBotMessage(userId, messageId) {
@@ -58,27 +63,39 @@ async function clearTrackedBotMessages(ctx, userId, keepMessageIds = []) {
   const history = botMessagesHistory[userId];
   const keepSet = new Set(Array.isArray(keepMessageIds) ? keepMessageIds : [keepMessageIds].filter(Boolean));
   const chatId = ctx?.chat?.id || history?.chatId;
-  if (!history || !chatId) return;
+  if (!history || !chatId || !Array.isArray(history.ids)) return;
 
   const remaining = [];
   for (const msgId of history.ids) {
-    if (keepSet.has(msgId)) { remaining.push(msgId); continue; }
-    try { await ctx.telegram.deleteMessage(chatId, msgId); } catch (e) {}
+    if (keepSet.has(msgId)) {
+      remaining.push(msgId);
+      continue;
+    }
+    try {
+      await ctx.telegram.deleteMessage(chatId, msgId);
+    } catch (e) {}
   }
   botMessagesHistory[userId].ids = remaining;
 }
 
 async function replyTracked(ctx, userId, text, extra = {}, cleanPrevious = false, keepIds = []) {
-  if (cleanPrevious) await clearTrackedBotMessages(ctx, userId, keepIds);
+  if (cleanPrevious) {
+    await clearTrackedBotMessages(ctx, userId, keepIds);
+  }
   const sent = await ctx.reply(text, extra);
-  if (sent && sent.message_id) trackBotMessage(userId, ctx.chat.id, sent.message_id);
+  const chatId = ctx?.chat?.id || sent?.chat?.id;
+  if (sent && sent.message_id && chatId) {
+    trackBotMessage(userId, chatId, sent.message_id);
+  }
   return sent;
 }
 
 async function safeDeleteUserMessage(ctx) {
   try {
-    if (ctx.message && ctx.message.message_id) {
-      await ctx.telegram.deleteMessage(ctx.chat.id, ctx.message.message_id).catch(() => {});
+    const chatId = ctx?.chat?.id;
+    const msgId = ctx?.message?.message_id;
+    if (chatId && msgId) {
+      await ctx.telegram.deleteMessage(chatId, msgId).catch(() => {});
     }
   } catch (e) {}
 }
@@ -86,7 +103,11 @@ async function safeDeleteUserMessage(ctx) {
 // ------------------------- Supabase مشترك -------------------------
 async function getSetting(key, defaultValue = '') {
   try {
-    const { data } = await supabase.from('app_settings').select('value').eq('key', key).limit(1);
+    const { data } = await supabase
+      .from('app_settings')
+      .select('value')
+      .eq('key', key)
+      .limit(1);
     const row = Array.isArray(data) ? data[0] : data;
     return row && row.value !== undefined && row.value !== null ? String(row.value) : defaultValue;
   } catch (e) {
@@ -96,14 +117,18 @@ async function getSetting(key, defaultValue = '') {
 
 let websiteUrl = '';
 let websiteUrlAt = 0;
+
 async function refreshWebsiteUrl() {
   if (Date.now() - websiteUrlAt < 15000) return websiteUrl;
   websiteUrlAt = Date.now();
   const v = await getSetting('website_url', '');
-  websiteUrl = v && /^https:\/\//i.test(String(v).trim()) ? String(v).trim() : '';
+  websiteUrl = v && /^https?:\/\//i.test(String(v).trim()) ? String(v).trim() : '';
   return websiteUrl;
 }
-function getWebsiteUrl() { return websiteUrl; }
+
+function getWebsiteUrl() {
+  return websiteUrl;
+}
 
 async function getAdminIds() {
   try {
@@ -128,13 +153,18 @@ async function getAdminIds() {
 }
 
 async function isAdmin(userId) {
+  if (!userId) return false;
   const ids = await getAdminIds();
   return ids.includes(Number(userId));
 }
 
 async function getUserRecord(telegramId) {
   try {
-    const { data } = await supabase.from('users').select('*').eq('id', telegramId).limit(1);
+    const { data } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', telegramId)
+      .limit(1);
     return data && data.length > 0 ? data[0] : null;
   } catch (err) {
     return null;
@@ -142,6 +172,7 @@ async function getUserRecord(telegramId) {
 }
 
 async function isUserVerified(telegramId) {
+  if (!telegramId) return false;
   if (previewMode[telegramId]) return true;
   const user = await getUserRecord(telegramId);
   return !!user;
@@ -150,7 +181,9 @@ async function isUserVerified(telegramId) {
 // ------------------------- أدوات التنسيق -------------------------
 function chunkButtons(buttonsArray, chunkSize = 4) {
   const chunked = [];
-  for (let i = 0; i < buttonsArray.length; i += chunkSize) chunked.push(buttonsArray.slice(i, i + chunkSize));
+  for (let i = 0; i < buttonsArray.length; i += chunkSize) {
+    chunked.push(buttonsArray.slice(i, i + chunkSize));
+  }
   return chunked;
 }
 
@@ -176,8 +209,12 @@ function formatDateTime(dateInput) {
   if (isNaN(target.getTime())) return String(dateInput || 'غير محدد');
   try {
     return target.toLocaleString('fr-DZ', {
-      year: 'numeric', month: '2-digit', day: '2-digit',
-      hour: '2-digit', minute: '2-digit', hour12: false
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
     });
   } catch (e) {
     return target.toISOString().replace('T', ' ').slice(0, 16);
@@ -185,7 +222,10 @@ function formatDateTime(dateInput) {
 }
 
 function escapeHtml(str) {
-  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 function fitTelegramText(text, isMediaCaption = false) {
@@ -208,7 +248,9 @@ function parseMediaListFromField(fieldVal) {
   if (trimmed.startsWith('[')) {
     try {
       const arr = JSON.parse(trimmed);
-      if (Array.isArray(arr)) return [...new Set(arr.map(normalizeMediaRef).filter(Boolean))];
+      if (Array.isArray(arr)) {
+        return [...new Set(arr.map(normalizeMediaRef).filter(Boolean))];
+      }
     } catch (e) {}
   }
   return [...new Set(trimmed.split('|').map(normalizeMediaRef).filter(Boolean))];
@@ -220,9 +262,11 @@ function parseImagesFromImageUrl(imageUrlField) {
 
 function buildOrderedBrowsingMedia(item) {
   const videos = parseMediaListFromField(item.video_url)
-    .slice(0, MAX_PROPERTY_IMAGES).map(ref => ({ type: 'video', ref }));
+    .slice(0, MAX_PROPERTY_IMAGES)
+    .map(ref => ({ type: 'video', ref }));
   const photos = parseImagesFromImageUrl(item.image_url)
-    .slice(0, MAX_PROPERTY_IMAGES).map(ref => ({ type: 'photo', ref }));
+    .slice(0, MAX_PROPERTY_IMAGES)
+    .map(ref => ({ type: 'photo', ref }));
   return [...videos, ...photos];
 }
 
@@ -251,14 +295,43 @@ function getAuthKeyboard() {
 
 // ------------------------- بناء الـ core وتسجيل الوحدتين -------------------------
 const core = {
-  bot, app, supabase, Markup,
-  WEBHOOK_DOMAIN, getWebsiteUrl, MAX_PROPERTY_IMAGES, BACK_TO_ADMIN,
-  userState, userLang, browsingSession, supportUserSession, previewMode, resetSessions,
-  trackBotMessage, untrackBotMessage, clearTrackedBotMessages, replyTracked, safeDeleteUserMessage,
-  getSetting, getAdminIds, isAdmin, getUserRecord, isUserVerified,
-  chunkButtons, sanitizeNumericPrice, formatMoney, formatDateTime, escapeHtml, fitTelegramText,
-  normalizeMediaRef, parseMediaListFromField, parseImagesFromImageUrl, buildOrderedBrowsingMedia,
-  getWebsiteButton, getMainMenuKeyboard, getAuthKeyboard,
+  bot,
+  app,
+  supabase,
+  Markup,
+  WEBHOOK_DOMAIN,
+  getWebsiteUrl,
+  MAX_PROPERTY_IMAGES,
+  BACK_TO_ADMIN,
+  userState,
+  userLang,
+  browsingSession,
+  supportUserSession,
+  previewMode,
+  resetSessions,
+  trackBotMessage,
+  untrackBotMessage,
+  clearTrackedBotMessages,
+  replyTracked,
+  safeDeleteUserMessage,
+  getSetting,
+  getAdminIds,
+  isAdmin,
+  getUserRecord,
+  isUserVerified,
+  chunkButtons,
+  sanitizeNumericPrice,
+  formatMoney,
+  formatDateTime,
+  escapeHtml,
+  fitTelegramText,
+  normalizeMediaRef,
+  parseMediaListFromField,
+  parseImagesFromImageUrl,
+  buildOrderedBrowsingMedia,
+  getWebsiteButton,
+  getMainMenuKeyboard,
+  getAuthKeyboard,
   modules: {}
 };
 
@@ -290,8 +363,15 @@ function injectBackButton(ctx) {
     if (!Array.isArray(kb)) return extra;
     const hasBack = kb.some(row => Array.isArray(row) && row.includes(BACK_TO_ADMIN));
     if (hasBack) return extra;
-    return { ...extra, reply_markup: { ...extra.reply_markup, keyboard: [...kb, [BACK_TO_ADMIN]] } };
+    return {
+      ...extra,
+      reply_markup: {
+        ...extra.reply_markup,
+        keyboard: [...kb, [BACK_TO_ADMIN]]
+      }
+    };
   };
+
   for (const m of ['reply', 'replyWithPhoto', 'replyWithVideo']) {
     const orig = ctx[m].bind(ctx);
     ctx[m] = (first, extra, ...rest) => orig(first, addBack(extra), ...rest);
@@ -372,21 +452,25 @@ bot.use(async (ctx, next) => {
 
     if (newRole === 'admin') {
       return core.modules.admin.openAdminHome(ctx);
-    } else {
-      const verified = await isUserVerified(userId);
-      if (verified) {
-        return core.modules.user.openUserHome(ctx);
-      }
-      const userName = ctx.from.first_name || 'مستخدمنا الكريم';
-      const authText = await getSetting(
-        'auth_prompt_template',
-        `أهلاً بك يا <b>${escapeHtml(userName)}</b> في <b>منصة عقار الجزائر (Aqar)</b> 🏠\n\n⚠️ <b>تنبيه أمني:</b>\nللاستفادة من خدمات المنصة وتصفح العقارات، يرجى <b>تأكيد رقم هاتفك</b> أولاً بضغطة زر واحدة:`
-      );
-      return replyTracked(ctx, userId, authText.replace(/\\n/g, '\n'), {
-        parse_mode: 'HTML',
-        ...getAuthKeyboard()
-      }, true);
     }
+
+    const verified = await isUserVerified(userId);
+    if (verified) {
+      return core.modules.user.openUserHome(ctx);
+    }
+
+    const userName = ctx.from.first_name || 'مستخدمنا الكريم';
+    const authText = await getSetting(
+      'auth_prompt_template',
+      `أهلاً بك يا <b>${escapeHtml(userName)}</b> في <b>منصة عقار الجزائر (Aqar)</b> 🏠\n\n⚠️ <b>تنبيه أمني:</b>\nللاستفادة من خدمات المنصة وتصفح العقارات، يرجى <b>تأكيد رقم هاتفك</b> أولاً بضغطة زر واحدة:`
+    );
+    return replyTracked(
+      ctx,
+      userId,
+      authText.replace(/\\n/g, '\n'),
+      { parse_mode: 'HTML', ...getAuthKeyboard() },
+      true
+    );
   }
 
   if (!userIsAdmin) {
@@ -404,12 +488,18 @@ bot.use(async (ctx, next) => {
     ['replying_to_support_user', 'replying_to_inquiry', 'searching_admin_ads'].includes(userState[userId]?.step);
 
   if (previewMode[userId]) injectBackButton(ctx);
+
   try {
-    if (forceAdmin || !previewMode[userId]) return await adminMw(ctx, next);
+    if (forceAdmin || !previewMode[userId]) {
+      return await adminMw(ctx, next);
+    }
     return await userMw(ctx, next);
   } catch (err) {
     console.error('Admin routing error:', err);
-    await ctx.reply(`⚠️ تعذر إتمام العملية: ${escapeHtml(String(err.message || err).slice(0, 200))}`, { parse_mode: 'HTML' }).catch(() => {});
+    await ctx.reply(
+      `⚠️ تعذر إتمام العملية: ${escapeHtml(String(err.message || err).slice(0, 200))}`,
+      { parse_mode: 'HTML' }
+    ).catch(() => {});
   }
 });
 
@@ -419,14 +509,44 @@ bot.catch((err, ctx) => {
 
 // ------------------------- 🚀 تشغيل السيرفر -------------------------
 const PORT = process.env.PORT || 3000;
-if (WEBHOOK_DOMAIN) {
-  app.post(`/bot${BOT_TOKEN}`, async (req, res) => {
-    res.sendStatus(200);
-    if (req.body && req.body.update_id) bot.handleUpdate(req.body);
-  });
-  bot.telegram.setWebhook(`${WEBHOOK_DOMAIN}/bot${BOT_TOKEN}`);
-  app.get('/', (req, res) => res.send('Aqar Algeria Production System is online 🚀'));
-  app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
-} else {
-  bot.launch();
+
+app.get('/', (req, res) => {
+  res.status(200).send('Aqar Algeria Production System is online 🚀');
+});
+
+app.get('/health', (req, res) => {
+  res.status(200).json({ ok: true, uptime: process.uptime() });
+});
+
+async function startServer() {
+  await refreshWebsiteUrl();
+
+  if (WEBHOOK_DOMAIN) {
+    const webhookPath = `/bot${BOT_TOKEN}`;
+    app.post(webhookPath, (req, res) => {
+      res.sendStatus(200);
+      if (req.body && req.body.update_id) {
+        bot.handleUpdate(req.body).catch(err => console.error('handleUpdate error:', err));
+      }
+    });
+
+    app.listen(PORT, '0.0.0.0', async () => {
+      console.log(`✅ Server running on port ${PORT}`);
+      try {
+        await bot.telegram.setWebhook(`${WEBHOOK_DOMAIN}${webhookPath}`);
+        console.log(`🌐 Webhook registered at ${WEBHOOK_DOMAIN}${webhookPath}`);
+      } catch (err) {
+        console.error('❌ Failed to set webhook:', err.message);
+      }
+    });
+  } else {
+    bot.launch().then(() => console.log('✅ Bot started in polling mode')).catch(err => {
+      console.error('❌ Bot launch error:', err);
+    });
+  }
 }
+
+startServer();
+
+process.once('SIGINT', () => bot.stop('SIGINT'));
+process.once('SIGTERM', () => bot.stop('SIGTERM'));
