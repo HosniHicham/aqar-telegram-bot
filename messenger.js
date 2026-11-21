@@ -8,7 +8,7 @@ function buildThreadId(propertyId, ownerId, otherUserId) {
 const LRM = '\u200E'; // الطرف الآخر: يسار
 const RLM = '\u200F'; // أنا: يمين
 const TIMEZONE = 'Africa/Algiers'; // غيّرها حسب بلدك
-const PAGE_SIZE = 8; // عدد الرسائل في كل صفحة من السجل
+const PAGE_SIZE = 30; // عدد الرسائل في كل صفحة من السجل
 const LINE = '▬▬▬▬▬▬▬▬▬▬▬▬';
 const SUP = { 0: '⁰', 1: '¹', 2: '²', 3: '³', 4: '⁴', 5: '⁵', 6: '⁶', 7: '⁷', 8: '⁸', 9: '⁹' };
 
