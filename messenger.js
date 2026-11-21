@@ -8,13 +8,16 @@ function buildThreadId(propertyId, ownerId, otherUserId) {
 const LRM = '\u200E'; // الطرف الآخر: يسار
 const RLM = '\u200F'; // أنا: يمين
 const TIMEZONE = 'Africa/Algiers'; // غيّرها حسب بلدك
-const MAX_CARD_MESSAGES = 12;
+const PAGE_SIZE = 8; // عدد الرسائل في كل صفحة من السجل
 const LINE = '▬▬▬▬▬▬▬▬▬▬▬▬';
 const SUP = { 0: '⁰', 1: '¹', 2: '²', 3: '³', 4: '⁴', 5: '⁵', 6: '⁶', 7: '⁷', 8: '⁸', 9: '⁹' };
 
+const BTN_OLDER = '⏫ رسائل أقدم';
+const BTN_NEWER = '⏬ رسائل أحدث';
+const BTN_LATEST = '⏭ آخر الرسائل';
+const BTN_REFRESH = '🔄 تحديث';
 const BTN_BACK = '⬅️ قائمة المراسلين';
 const BTN_HOME = '🏠 القائمة الرئيسية';
-const BTN_REFRESH = '🔄 تحديث';
 
 function isBadName(name) {
   const n = String(name || '').trim();
@@ -50,10 +53,8 @@ function dayKey(iso) {
 
 function dayLabel(iso) {
   const key = dayKey(iso);
-  const today = dayKey(new Date().toISOString());
-  const yesterday = dayKey(new Date(Date.now() - 86400000).toISOString());
-  if (key === today) return 'اليوم';
-  if (key === yesterday) return 'أمس';
+  if (key === dayKey(new Date().toISOString())) return 'اليوم';
+  if (key === dayKey(new Date(Date.now() - 86400000).toISOString())) return 'أمس';
   return key;
 }
 
@@ -70,7 +71,9 @@ function createMessengerModule(core) {
     fitTelegramText
   } = core;
 
-  // { mode: 'list' | 'thread', senderMap, threadId, propertyId, ownerId, receiverId, otherName, cardMessageId }
+  // { mode: 'list' | 'thread', senderMap, threadId, propertyId, ownerId,
+  //   receiverId, otherName, cardMessageId, page }
+  // page = 0 → آخر الرسائل، 1 → الصفحة الأقدم منها، وهكذا
   const messengerSession = {};
 
   function getUserDisplayName(from) {
@@ -238,7 +241,9 @@ function createMessengerModule(core) {
     }
   }
 
-  async function openThreadMessages(userId, threadId) {
+  // فتح صفحة من المحادثة:
+  // 1) تعليم الواردة كمقروءة  2) عدّ الكل  3) جلب الصفحة المطلوبة فقط
+  async function openThreadMessages(userId, threadId, page = 0) {
     const uid = Number(userId);
 
     await supabase
@@ -249,39 +254,47 @@ function createMessengerModule(core) {
       .neq('sender_id', uid)
       .eq('is_read', false);
 
+    const { count } = await supabase
+      .from('messanger')
+      .select('id', { count: 'exact', head: true })
+      .eq('thread_id', threadId);
+
+    const total = count || 0;
+    const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+    const safePage = Math.min(Math.max(0, Number(page) || 0), totalPages - 1);
+    const from = safePage * PAGE_SIZE;
+
     const { data, error } = await supabase
       .from('messanger')
       .select('*')
       .eq('thread_id', threadId)
-      .order('created_at', { ascending: true });
+      .order('created_at', { ascending: false })
+      .range(from, from + PAGE_SIZE - 1);
 
-    if (error || !Array.isArray(data)) return [];
-    return data;
+    const messages = !error && Array.isArray(data) ? data.reverse() : [];
+    return { messages, total, totalPages, page: safePage };
   }
 
   // ───────── تصميم بطاقة المحادثة ─────────
-  // رسائلي: يمين 🟦 مع علامة ✓ / ✓✓ (مقروءة)
-  // رسائل الطرف الآخر: يسار 🟩 مع اسمه مرة واحدة لكل تسلسل
-  // كل رسالة داخل blockquote، والوقت صغير بأرقام مرتفعة
-  function formatSingleThreadCard(userId, messages, meta = {}) {
+  // رسائلي: يمين 🟦 مع ✓ / ✓✓ — رسائل الطرف الآخر: يسار 🟩 واسمه مرة لكل تسلسل
+  function formatSingleThreadCard(userId, view, meta = {}) {
     const uid = Number(userId);
+    const { messages, total, totalPages, page } = view;
     const otherName = meta.otherName || 'مراسل';
     const propertyId = meta.propertyId || messages[0]?.property_id;
 
-    const visible = messages.slice(-MAX_CARD_MESSAGES);
-    const hidden = messages.length - visible.length;
     const out = [];
     let lastSender = null;
     let lastDay = null;
 
-    for (const m of visible) {
+    for (const m of messages) {
       const mine = Number(m.sender_id) === uid;
       const mark = mine ? RLM : LRM;
+      const color = mine ? '🟦' : '🟩';
       const time = formatSmallTime(m.created_at);
       const tick = mine ? (m.is_read ? ' ✓✓' : ' ✓') : '';
       const stamp = time ? `  <i>${time}${tick}</i>` : '';
 
-      // فاصل اليوم
       const dk = dayKey(m.created_at);
       if (dk && dk !== lastDay) {
         out.push(`\n${LRM}┈┈┈ 📅 <b>${escapeHtml(dayLabel(m.created_at))}</b> ┈┈┈`);
@@ -289,37 +302,57 @@ function createMessengerModule(core) {
         lastSender = null;
       }
 
-      // اسم الطرف الآخر مرة واحدة في بداية تسلسله
       if (!mine && lastSender !== 'other') {
-        out.push(`${LRM}🟩 <b>${escapeHtml(otherName)}</b>`);
+        out.push(`${LRM}${color} <b>${escapeHtml(otherName)}</b>`);
       }
       lastSender = mine ? 'me' : 'other';
 
       const lines = String(m.message).split('\n').map(escapeHtml);
       lines[lines.length - 1] += stamp;
-      const icon = mine ? '🟦 ' : '';
-      out.push(`<blockquote>${mark}${icon}${lines.join(`\n${mark}`)}</blockquote>`);
+      const body = lines.map((l) => `${mark}${color} ${l}`).join('\n');
+      out.push(`<blockquote>${body}</blockquote>`);
     }
 
+    // ── الهيدر: الاسم + العقار + مؤشر السجل ──
+    const inHistory = page > 0;
     const header =
       `${LRM}💬 <b>${escapeHtml(otherName)}</b>\n` +
       (propertyId ? `${LRM}🏠 <i>عقار #${propertyId}</i>\n` : '') +
+      (inHistory
+        ? `${LRM}📜 <b>سجل المحادثة</b> • صفحة <b>${page + 1}</b> من <b>${totalPages}</b>\n`
+        : `${LRM}📨 <i>${total} رسالة</i>\n`) +
       `${LINE}\n`;
 
-    const more = hidden > 0 ? `${LRM}<i>⋯ ${hidden} رسالة سابقة</i>\n` : '';
+    // ── مؤشرات أعلى/أسفل الصفحة ──
+    const olderLeft = Math.max(0, total - (page + 1) * PAGE_SIZE);
+    const topNote = olderLeft > 0
+      ? `${LRM}⏫ <i>${olderLeft} رسالة أقدم — اضغط «رسائل أقدم»</i>\n\n`
+      : (total > 0 ? `${LRM}🏁 <i>بداية المحادثة</i>\n\n` : '');
 
-    const body = out.length
+    const newerLeft = page * PAGE_SIZE;
+    const bottomNote = inHistory
+      ? `\n\n${LRM}⏬ <i>${newerLeft} رسالة أحدث — اضغط «رسائل أحدث» أو «آخر الرسائل»</i>`
+      : '';
+
+    const bodyAll = out.length
       ? out.join('\n')
       : `<i>لا توجد رسائل بعد، اكتب رسالتك الأولى 👇</i>`;
 
-    const footer = `\n${LINE}\n✍️ <i>اكتب رسالتك وسترسل مباشرة</i>`;
+    const footer = inHistory
+      ? `\n${LINE}\n📜 <i>أنت تتصفح السجل — اكتب رسالة للعودة إلى آخر الرسائل</i>`
+      : `\n${LINE}\n✍️ <i>اكتب رسالتك وسترسل مباشرة</i>`;
 
-    return fitTelegramText(header + more + body + footer, false);
+    return fitTelegramText(header + topNote + bodyAll + bottomNote + footer, false);
   }
 
   // ───────── لوحات المفاتيح السفلية ─────────
+  // ثابتة دائماً حتى نقدر نعدّل نفس البطاقة بدون إرسال رسالة جديدة
   function threadKeyboard() {
-    return Markup.keyboard([[BTN_REFRESH], [BTN_BACK, BTN_HOME]]).resize();
+    return Markup.keyboard([
+      [BTN_OLDER, BTN_NEWER],
+      [BTN_LATEST, BTN_REFRESH],
+      [BTN_BACK, BTN_HOME]
+    ]).resize();
   }
 
   function inboxKeyboard(labels) {
@@ -407,8 +440,11 @@ function createMessengerModule(core) {
     };
   }
 
-  async function renderActiveThread(ctx, userId, threadId, meta = {}, editMessageId = null, forceNew = false) {
-    const messages = await openThreadMessages(userId, threadId);
+  // opts: { editMessageId, forceNew, page }
+  async function renderActiveThread(ctx, userId, threadId, meta = {}, opts = {}) {
+    const { editMessageId = null, forceNew = false, page = 0 } = opts;
+    const view = await openThreadMessages(userId, threadId, page);
+    const messages = view.messages;
 
     const first = messages[0] || {};
     const ownerId = Number(first.owner_id || meta.ownerId);
@@ -425,7 +461,7 @@ function createMessengerModule(core) {
       otherName = await resolveCleanSenderName(receiverId, otherRow?.sender_name || '');
     }
 
-    const cardText = formatSingleThreadCard(userId, messages, { otherName, propertyId });
+    const cardText = formatSingleThreadCard(userId, view, { otherName, propertyId });
 
     const prevSession = messengerSession[userId] || {};
     const targetMsgId = editMessageId || prevSession.cardMessageId || null;
@@ -438,7 +474,9 @@ function createMessengerModule(core) {
       ownerId,
       receiverId,
       otherName,
-      cardMessageId: msgId
+      cardMessageId: msgId,
+      page: view.page,
+      totalPages: view.totalPages
     };
     return msgId;
   }
@@ -468,7 +506,7 @@ function createMessengerModule(core) {
     // محادثة موجودة: نفتحها مباشرة
     if (Array.isArray(existing) && existing.length > 0) {
       delete userState[userId];
-      return renderActiveThread(ctx, userId, threadId, meta, null, true);
+      return renderActiveThread(ctx, userId, threadId, meta, { forceNew: true });
     }
 
     userState[userId] = {
@@ -516,11 +554,23 @@ function createMessengerModule(core) {
       return true;
     }
 
-    // تحديث المحادثة (لاستقبال رد الطرف الآخر)
-    if (rawText === BTN_REFRESH && sess?.mode === 'thread') {
-      await safeDeleteUserMessage(ctx);
-      await renderActiveThread(ctx, userId, sess.threadId, sess, sess.cardMessageId);
-      return true;
+    // ── أزرار السجل (داخل محادثة فقط) ──
+    if (sess?.mode === 'thread' && sess.threadId) {
+      const navTargets = {
+        [BTN_OLDER]: (sess.page || 0) + 1,
+        [BTN_NEWER]: Math.max(0, (sess.page || 0) - 1),
+        [BTN_LATEST]: 0,
+        [BTN_REFRESH]: sess.page || 0
+      };
+
+      if (rawText in navTargets) {
+        await safeDeleteUserMessage(ctx);
+        await renderActiveThread(ctx, userId, sess.threadId, sess, {
+          editMessageId: sess.cardMessageId,
+          page: navTargets[rawText]
+        });
+        return true;
+      }
     }
 
     // اختيار محادثة من أزرار القائمة السفلية
@@ -537,8 +587,7 @@ function createMessengerModule(core) {
           receiverId: target.otherId,
           otherName: target.cleanName
         },
-        sess.cardMessageId,
-        true // لوحة مفاتيح مختلفة: رسالة جديدة
+        { editMessageId: sess.cardMessageId, forceNew: true, page: 0 }
       );
       return true;
     }
@@ -562,11 +611,15 @@ function createMessengerModule(core) {
         message: rawText
       });
 
-      await renderActiveThread(ctx, userId, threadId, { propertyId, ownerId, receiverId, otherName }, null, true);
+      await renderActiveThread(
+        ctx, userId, threadId,
+        { propertyId, ownerId, receiverId, otherName },
+        { forceNew: true, page: 0 }
+      );
       return true;
     }
 
-    // رسالة داخل محادثة مفتوحة: نحذف رسالة المستخدم ونحدّث نفس البطاقة
+    // رسالة داخل محادثة مفتوحة: نحذف رسالة المستخدم ونرجع لآخر الرسائل
     if (sess?.mode === 'thread' && sess.threadId) {
       await safeDeleteUserMessage(ctx);
 
@@ -579,7 +632,10 @@ function createMessengerModule(core) {
         message: rawText
       });
 
-      await renderActiveThread(ctx, userId, sess.threadId, sess, sess.cardMessageId);
+      await renderActiveThread(ctx, userId, sess.threadId, sess, {
+        editMessageId: sess.cardMessageId,
+        page: 0
+      });
       return true;
     }
 
@@ -607,7 +663,7 @@ function createMessengerModule(core) {
   core.bot.action(/^msg_open:(.+)$/, async (ctx) => {
     await ctx.answerCbQuery().catch(() => {});
     const msgId = ctx.callbackQuery?.message?.message_id || null;
-    await renderActiveThread(ctx, ctx.from.id, ctx.match[1], {}, msgId, true);
+    await renderActiveThread(ctx, ctx.from.id, ctx.match[1], {}, { editMessageId: msgId, forceNew: true });
   });
 
   return {
