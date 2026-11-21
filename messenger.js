@@ -12,9 +12,8 @@ const PAGE_SIZE = 8; // عدد الرسائل في كل صفحة من السجل
 const LINE = '▬▬▬▬▬▬▬▬▬▬▬▬';
 const SUP = { 0: '⁰', 1: '¹', 2: '²', 3: '³', 4: '⁴', 5: '⁵', 6: '⁶', 7: '⁷', 8: '⁸', 9: '⁹' };
 
-const BTN_OLDER = '⏫ رسائل أقدم';
-const BTN_NEWER = '⏬ رسائل أحدث';
-const BTN_LATEST = '⏭ آخر الرسائل';
+const BTN_PREV = '◀️ السابق';
+const BTN_NEXT = 'التالي ▶️';
 const BTN_REFRESH = '🔄 تحديث';
 const BTN_BACK = '⬅️ قائمة المراسلين';
 const BTN_HOME = '🏠 القائمة الرئيسية';
@@ -276,11 +275,13 @@ function createMessengerModule(core) {
   }
 
   // ───────── تصميم بطاقة المحادثة ─────────
-  // رسائلي: يمين 🟦 مع ✓ / ✓✓ — رسائل الطرف الآخر: يسار 🟩 واسمه مرة لكل تسلسل
+  // الصفحة الأخيرة = أحدث الرسائل. «السابق» يرجع للأقدم، «التالي» يتقدم للأحدث.
+  // اسم كل طرف يظهر مرة واحدة في بداية تسلسل رسائله.
   function formatSingleThreadCard(userId, view, meta = {}) {
     const uid = Number(userId);
     const { messages, total, totalPages, page } = view;
     const otherName = meta.otherName || 'مراسل';
+    const myName = meta.myName || 'أنا';
     const propertyId = meta.propertyId || messages[0]?.property_id;
 
     const out = [];
@@ -289,6 +290,7 @@ function createMessengerModule(core) {
 
     for (const m of messages) {
       const mine = Number(m.sender_id) === uid;
+      const who = mine ? 'me' : 'other';
       const mark = mine ? RLM : LRM;
       const color = mine ? '🟦' : '🟩';
       const time = formatSmallTime(m.created_at);
@@ -302,10 +304,15 @@ function createMessengerModule(core) {
         lastSender = null;
       }
 
-      if (!mine && lastSender !== 'other') {
-        out.push(`${LRM}${color} <b>${escapeHtml(otherName)}</b>`);
+      // الاسم مرة واحدة لكل تسلسل: اسمي يمين، واسم الطرف الآخر يسار
+      if (lastSender !== who) {
+        out.push(
+          mine
+            ? `${RLM}${color} <b>${escapeHtml(myName)}</b>`
+            : `${LRM}${color} <b>${escapeHtml(otherName)}</b>`
+        );
       }
-      lastSender = mine ? 'me' : 'other';
+      lastSender = who;
 
       const lines = String(m.message).split('\n').map(escapeHtml);
       lines[lines.length - 1] += stamp;
@@ -313,33 +320,34 @@ function createMessengerModule(core) {
       out.push(`<blockquote>${body}</blockquote>`);
     }
 
-    // ── الهيدر: الاسم + العقار + مؤشر السجل ──
-    const inHistory = page > 0;
+    const currentPage = totalPages - page; // الأقدم = 1، الأحدث = الأخيرة
+    const hasOlder = page < totalPages - 1;
+    const hasNewer = page > 0;
+
     const header =
       `${LRM}💬 <b>${escapeHtml(otherName)}</b>\n` +
       (propertyId ? `${LRM}🏠 <i>عقار #${propertyId}</i>\n` : '') +
-      (inHistory
-        ? `${LRM}📜 <b>سجل المحادثة</b> • صفحة <b>${page + 1}</b> من <b>${totalPages}</b>\n`
+      (totalPages > 1
+        ? `${LRM}📄 صفحة <b>${currentPage}</b> / <b>${totalPages}</b> • <i>${total} رسالة</i>\n`
         : `${LRM}📨 <i>${total} رسالة</i>\n`) +
       `${LINE}\n`;
 
-    // ── مؤشرات أعلى/أسفل الصفحة ──
     const olderLeft = Math.max(0, total - (page + 1) * PAGE_SIZE);
-    const topNote = olderLeft > 0
-      ? `${LRM}⏫ <i>${olderLeft} رسالة أقدم — اضغط «رسائل أقدم»</i>\n\n`
+    const topNote = hasOlder
+      ? `${LRM}◀️ <i>${olderLeft} رسالة أقدم — «السابق»</i>\n\n`
       : (total > 0 ? `${LRM}🏁 <i>بداية المحادثة</i>\n\n` : '');
 
     const newerLeft = page * PAGE_SIZE;
-    const bottomNote = inHistory
-      ? `\n\n${LRM}⏬ <i>${newerLeft} رسالة أحدث — اضغط «رسائل أحدث» أو «آخر الرسائل»</i>`
+    const bottomNote = hasNewer
+      ? `\n\n${LRM}▶️ <i>${newerLeft} رسالة أحدث — «التالي»</i>`
       : '';
 
     const bodyAll = out.length
       ? out.join('\n')
       : `<i>لا توجد رسائل بعد، اكتب رسالتك الأولى 👇</i>`;
 
-    const footer = inHistory
-      ? `\n${LINE}\n📜 <i>أنت تتصفح السجل — اكتب رسالة للعودة إلى آخر الرسائل</i>`
+    const footer = hasNewer
+      ? `\n${LINE}\n📜 <i>أنت تتصفح السجل — اكتب رسالة للعودة لآخر الرسائل</i>`
       : `\n${LINE}\n✍️ <i>اكتب رسالتك وسترسل مباشرة</i>`;
 
     return fitTelegramText(header + topNote + bodyAll + bottomNote + footer, false);
@@ -349,8 +357,8 @@ function createMessengerModule(core) {
   // ثابتة دائماً حتى نقدر نعدّل نفس البطاقة بدون إرسال رسالة جديدة
   function threadKeyboard() {
     return Markup.keyboard([
-      [BTN_OLDER, BTN_NEWER],
-      [BTN_LATEST, BTN_REFRESH],
+      [BTN_PREV, BTN_NEXT],
+      [BTN_REFRESH],
       [BTN_BACK, BTN_HOME]
     ]).resize();
   }
@@ -461,7 +469,11 @@ function createMessengerModule(core) {
       otherName = await resolveCleanSenderName(receiverId, otherRow?.sender_name || '');
     }
 
-    const cardText = formatSingleThreadCard(userId, view, { otherName, propertyId });
+    let myName = getUserDisplayName(ctx.from);
+    if (myName === 'مراسل') myName = await resolveCleanSenderName(userId, '');
+    if (myName === 'مراسل') myName = 'أنا';
+
+    const cardText = formatSingleThreadCard(userId, view, { otherName, myName, propertyId });
 
     const prevSession = messengerSession[userId] || {};
     const targetMsgId = editMessageId || prevSession.cardMessageId || null;
@@ -557,9 +569,8 @@ function createMessengerModule(core) {
     // ── أزرار السجل (داخل محادثة فقط) ──
     if (sess?.mode === 'thread' && sess.threadId) {
       const navTargets = {
-        [BTN_OLDER]: (sess.page || 0) + 1,
-        [BTN_NEWER]: Math.max(0, (sess.page || 0) - 1),
-        [BTN_LATEST]: 0,
+        [BTN_PREV]: (sess.page || 0) + 1, // أقدم
+        [BTN_NEXT]: Math.max(0, (sess.page || 0) - 1), // أحدث
         [BTN_REFRESH]: sess.page || 0
       };
 
