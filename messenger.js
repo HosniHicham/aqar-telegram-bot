@@ -439,6 +439,72 @@ function createMessengerModule(core) {
     };
   }
 
+  // فتح مرفق الرسالة مباشرة داخل المحادثة دون نافذة Annuler / Ouvrir le lien
+  async function renderMessageMediaDirectly(ctx, userId, msgId, mediaIdx = 0) {
+    const id = Number(msgId);
+    if (!id) return;
+
+    let row = null;
+    try {
+      const { data } = await supabase
+        .from('messanger')
+        .select('*')
+        .eq('id', id)
+        .limit(1);
+      row = Array.isArray(data) ? data[0] : data;
+    } catch (_) {}
+
+    if (!row) return;
+
+    const currentSess = messengerSession[userId] || {};
+    const returnThread = currentSess.mode === 'thread' && currentSess.threadId
+      ? {
+          threadId: currentSess.threadId,
+          propertyId: currentSess.propertyId,
+          ownerId: currentSess.ownerId,
+          receiverId: currentSess.receiverId,
+          otherName: currentSess.otherName,
+          page: currentSess.page || 0
+        }
+      : (currentSess.returnThread || null);
+
+    const info = extractMediaUrlsFromMessage(row);
+    const safeIdx = Math.min(Math.max(0, Number(mediaIdx) || 0), Math.max(0, info.urls.length - 1));
+    const mediaUrl = info.urls[safeIdx];
+    if (!mediaUrl) return;
+
+    const kindText = info.isVideo ? '🎬 فيديو' : '🖼️ صورة';
+    const caption = fitTelegramText(
+      `<blockquote>${kindText}${info.caption ? `\n${escapeHtml(info.caption)}` : ''}</blockquote>`,
+      true
+    );
+    const kb = Markup.keyboard([[BTN_BACK_TO_THREAD], [BTN_BACK, BTN_HOME]]).resize();
+
+    let sentMsg = null;
+    try {
+      sentMsg = info.isVideo
+        ? await ctx.replyWithVideo(mediaUrl, { caption, parse_mode: 'HTML', ...kb })
+        : await ctx.replyWithPhoto(mediaUrl, { caption, parse_mode: 'HTML', ...kb });
+    } catch (_) {}
+
+    if (ctx.chat?.id) {
+      if (currentSess.cardMessageId && currentSess.cardMessageId !== sentMsg?.message_id) {
+        await ctx.telegram.deleteMessage(ctx.chat.id, currentSess.cardMessageId).catch(() => {});
+      }
+      if (currentSess.propViewMessageId && currentSess.propViewMessageId !== sentMsg?.message_id) {
+        await ctx.telegram.deleteMessage(ctx.chat.id, currentSess.propViewMessageId).catch(() => {});
+      }
+    }
+
+    messengerSession[userId] = {
+      mode: 'media_view',
+      msgId: id,
+      mediaIdx: safeIdx,
+      returnThread,
+      propViewMessageId: sentMsg?.message_id || null
+    };
+  }
+
   // ───────── تصميم بطاقة المحادثة مع ترقيم الصفحات في الأسفل ─────────
   function formatSingleThreadCard(userId, view, meta = {}) {
     const uid = Number(userId);
@@ -486,9 +552,12 @@ function createMessengerModule(core) {
 
         const linkLines = mediaInfo.urls.map((u, idx) => {
           const itemTitle = mediaInfo.urls.length > 1
-            ? `${kindLabel} ${idx + 1}`
-            : `رابط ال${kindLabel}`;
-          return `${mark}🔗 <a href="${escapeHtml(u)}">${escapeHtml(itemTitle)}</a>`;
+            ? `عرض ${kindLabel} ${idx + 1}`
+            : `عرض ال${kindLabel}`;
+          const openHref = botUsername && m.id
+            ? `https://t.me/${botUsername}?start=m_${m.id}_${idx}`
+            : u;
+          return `${mark}🔗 <a href="${escapeHtml(openHref)}">${escapeHtml(itemTitle)}</a>`;
         });
 
         let block = `${mark}${color} ${kindIcon} <b>${escapeHtml(kindLabel)}</b>${stamp}\n` + linkLines.join('\n');
@@ -1134,10 +1203,16 @@ function createMessengerModule(core) {
 
   core.bot.start(async (ctx, next) => {
     const payload = String(ctx.startPayload || '').trim();
-    const match = payload.match(/^prop_(\d+)$/);
-    if (match) {
+    const matchProp = payload.match(/^prop_(\d+)$/);
+    if (matchProp) {
       await safeDeleteUserMessage(ctx);
-      await renderPropertyFromThread(ctx, ctx.from.id, Number(match[1]), 0, true);
+      await renderPropertyFromThread(ctx, ctx.from.id, Number(matchProp[1]), 0, true);
+      return;
+    }
+    const matchMedia = payload.match(/^m_(\d+)_(\d+)$/);
+    if (matchMedia) {
+      await safeDeleteUserMessage(ctx);
+      await renderMessageMediaDirectly(ctx, ctx.from.id, Number(matchMedia[1]), Number(matchMedia[2]));
       return;
     }
     if (typeof next === 'function') return next();
@@ -1186,6 +1261,7 @@ function createMessengerModule(core) {
     showInboxList,
     renderActiveThread,
     renderPropertyFromThread,
+    renderMessageMediaDirectly,
     startPropertyMessage,
     handleMessengerText,
     handleMessengerMedia
