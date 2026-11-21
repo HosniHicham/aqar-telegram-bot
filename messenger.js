@@ -10,7 +10,7 @@ const RLM = '\u200F'; // أنا: يمين
 const TIMEZONE = 'Africa/Algiers';
 const PAGE_SIZE = 30;
 const NAME_CACHE_TTL = 60 * 60 * 1000;
-const LINE = '▬▬▬▬▬▬▬▬▬▬▬▬';
+const LINE = '▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬';
 const ALBUM_FLUSH_MS = 650;
 const SUP = { 0: '⁰', 1: '¹', 2: '²', 3: '³', 4: '⁴', 5: '⁵', 6: '⁶', 7: '⁷', 8: '⁸', 9: '⁹' };
 
@@ -62,6 +62,11 @@ function dayLabel(iso) {
 function isSafeHttpUrl(url) {
   const s = String(url || '').trim();
   return /^https?:\/\//i.test(s);
+}
+
+function looksLikeRawTelegramFileId(val) {
+  const s = String(val || '').trim();
+  return /^A[A-Za-z0-9_-]{25,}$/.test(s) && !/\s/.test(s);
 }
 
 function createMessengerModule(core) {
@@ -421,7 +426,7 @@ function createMessengerModule(core) {
     for (const part of parts) {
       if (isSafeHttpUrl(part)) {
         urls.push(part);
-      } else {
+      } else if (!looksLikeRawTelegramFileId(part)) {
         captionParts.push(part);
       }
     }
@@ -446,6 +451,7 @@ function createMessengerModule(core) {
     const out = [];
     let lastSender = null;
     let lastDay = null;
+    let previewUrl = '';
 
     for (const m of messages) {
       const mine = Number(m.sender_id) === uid;
@@ -474,6 +480,7 @@ function createMessengerModule(core) {
 
       const mediaInfo = extractMediaUrlsFromMessage(m);
       if ((mediaInfo.isPhoto || mediaInfo.isVideo) && mediaInfo.urls.length > 0) {
+        previewUrl = mediaInfo.urls[mediaInfo.urls.length - 1];
         const kindLabel = mediaInfo.isVideo
           ? (mediaInfo.urls.length > 1 ? `فيديوهات (${mediaInfo.urls.length})` : 'فيديو')
           : (mediaInfo.urls.length > 1 ? `صور (${mediaInfo.urls.length})` : 'صورة');
@@ -492,7 +499,8 @@ function createMessengerModule(core) {
         }
         out.push(`<blockquote>${block}</blockquote>`);
       } else {
-        const lines = String(m.message).split('\n').map(escapeHtml);
+        const cleanText = looksLikeRawTelegramFileId(m.message) ? '🖼️ صورة' : String(m.message);
+        const lines = cleanText.split('\n').map(escapeHtml);
         lines[lines.length - 1] += stamp;
         const body = lines.map((l) => `${mark}${color} ${l}`).join('\n');
         out.push(`<blockquote>${body}</blockquote>`);
@@ -528,7 +536,8 @@ function createMessengerModule(core) {
 
     return {
       text: fitTelegramText(header + body + footer, false),
-      inlineMarkup
+      inlineMarkup,
+      previewUrl
     };
   }
 
@@ -563,13 +572,19 @@ function createMessengerModule(core) {
   async function upsertCard(ctx, userId, cardObj, keyboardExtra, targetMsgId, forceNew = false) {
     const text = typeof cardObj === 'string' ? cardObj : cardObj.text;
     const inlineMarkup = typeof cardObj === 'string' ? null : cardObj.inlineMarkup;
+    const previewUrl = typeof cardObj === 'string' ? '' : (cardObj.previewUrl || '');
+
+    // معاينة صغيرة أسفل النص (show_above_text: false) حتى لا تكبر الصورة فوق الرسالة أو تخلط التنسيق
+    const linkPreviewOpts = previewUrl
+      ? { is_disabled: false, url: previewUrl, prefer_small_media: true, show_above_text: false }
+      : { is_disabled: true };
 
     if (targetMsgId && ctx.chat?.id) {
       if (!forceNew) {
         try {
           await ctx.telegram.editMessageText(ctx.chat.id, targetMsgId, undefined, text, {
             parse_mode: 'HTML',
-            link_preview_options: { is_disabled: true },
+            link_preview_options: linkPreviewOpts,
             reply_markup: inlineMarkup ? inlineMarkup.reply_markup : { inline_keyboard: [] }
           });
           return targetMsgId;
@@ -583,7 +598,7 @@ function createMessengerModule(core) {
 
     const extraOpts = {
       parse_mode: 'HTML',
-      link_preview_options: { is_disabled: true },
+      link_preview_options: linkPreviewOpts,
       ...keyboardExtra
     };
 
