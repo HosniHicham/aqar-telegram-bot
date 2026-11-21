@@ -232,15 +232,38 @@ module.exports = function registerUsers(bot, core) {
     const cardText = formatClientInquiryCard(currentInquiry, replies, safeIdx, st.items.length);
     const kb = getClientInquiriesKeyboard(safeIdx, st.items.length, currentInquiry);
 
+    const keepIds = [];
+    const latestMediaReply = [...replies].reverse().find(r => r.attachment_url && (r.media_type === 'photo' || r.media_type === 'video'));
+    let sentMedia = null;
+
+    if (latestMediaReply && latestMediaReply.attachment_url) {
+      const cleanRef = normalizeMediaRef(latestMediaReply.attachment_url);
+      if (cleanRef) {
+        const mediaCap = `🖼 <b>مرفق رد الإدارة على الاستعلام #${currentInquiry.id}</b>` +
+          (latestMediaReply.reply_message ? `\n${escapeHtml(latestMediaReply.reply_message)}` : '');
+        try {
+          sentMedia = latestMediaReply.media_type === 'video'
+            ? await ctx.replyWithVideo(cleanRef, { caption: mediaCap, parse_mode: 'HTML' })
+            : await ctx.replyWithPhoto(cleanRef, { caption: mediaCap, parse_mode: 'HTML' });
+        } catch (e) {
+          console.error('renderClientInquiryAt media send error:', e.message);
+        }
+      }
+    }
+
+    if (sentMedia?.message_id) {
+      keepIds.push(sentMedia.message_id);
+      trackBotMessage(userId, ctx.chat.id, sentMedia.message_id);
+    }
+
     const sent = await ctx.reply(cardText, { parse_mode: 'HTML', ...kb }).catch(() => null);
-    const keepIds = sent?.message_id ? [sent.message_id] : [];
-    if (sent?.message_id) trackBotMessage(userId, ctx.chat.id, sent.message_id);
+    if (sent?.message_id) {
+      keepIds.push(sent.message_id);
+      trackBotMessage(userId, ctx.chat.id, sent.message_id);
+    }
     await clearTrackedBotMessages(ctx, userId, keepIds);
   }
 
-  // =========================================================================
-  // 🔄 جلب ديناميكي من Supabase (خاص بالمستخدم)
-  // =========================================================================
   async function getDynamicWilayas() {
     try {
       const { data } = await supabase.from('wilayas').select('name').eq('is_active', true);
@@ -333,9 +356,6 @@ module.exports = function registerUsers(bot, core) {
     }
   }
 
-  // =========================================================================
-  // 📝 لوحات مفاتيح وأدوات الوسائط
-  // =========================================================================
   function getBrowsingKeyboard(currentIndex, totalCount, mediaIdx = 0, totalMedia = 0) {
     const rows = [];
     if (totalMedia > 1) {
@@ -400,9 +420,6 @@ module.exports = function registerUsers(bot, core) {
     return `📎 تم إرفاق ${parts.join(' و ')} (يمكنك إضافة المزيد)`;
   }
 
-  // =========================================================================
-  // 🏠 الصفحة الرئيسية للمستخدم (يستدعيها الأب أيضاً عند المعاينة)
-  // =========================================================================
   async function openUserHome(ctx, prefixNote = '') {
     const userId = ctx.from.id;
     const userName = ctx.from.first_name || 'مستخدمنا الكريم';
@@ -411,9 +428,6 @@ module.exports = function registerUsers(bot, core) {
     await replyTracked(ctx, userId, prefixNote + welcomeText, { parse_mode: 'HTML', ...getMainMenuKeyboard(userId) }, true);
   }
 
-  // =========================================================================
-  // 🎬 صفحة الويب المصغرة لربح النقاط
-  // =========================================================================
   app.get('/watch-ad', async (req, res) => {
     const userId = req.query.uid || '';
     const rewardPoints = await getSetting('ad_reward_points', '25');
@@ -536,9 +550,6 @@ module.exports = function registerUsers(bot, core) {
     }
   });
 
-  // =========================================================================
-  // 🏢 معالج نشر العقار (Wizard)
-  // =========================================================================
   const WIZ_STEPS = [
     'waiting_for_type', 'waiting_for_state', 'waiting_for_price', 'waiting_for_phone',
     'waiting_for_description', 'waiting_for_media', 'waiting_for_payment_choice', 'waiting_for_payment_receipt'
@@ -687,9 +698,6 @@ module.exports = function registerUsers(bot, core) {
     }
   }
 
-  // =========================================================================
-  // 🎯 الأوامر الأساسية
-  // =========================================================================
   bot.start(async (ctx) => {
     await safeDeleteUserMessage(ctx);
     await ctx.sendChatAction('typing');
@@ -756,7 +764,6 @@ module.exports = function registerUsers(bot, core) {
     }
   });
 
-  // حارس التوثيق
   bot.use(async (ctx, next) => {
     if (ctx.message && ctx.message.text && ctx.message.text.startsWith('/')) return next();
     if (ctx.from && ctx.message && (ctx.message.text?.includes('تصفح') || ctx.message.text?.includes('إضافة') || ctx.message.text?.includes('رصيدي'))) {
@@ -858,9 +865,6 @@ module.exports = function registerUsers(bot, core) {
     await replyTracked(ctx, userId, aboutMsg, { parse_mode: 'HTML', ...getMainMenuKeyboard(userId) }, true);
   });
 
-  // =========================================================================
-  // 🔍 تصفح العقارات
-  // =========================================================================
   async function showStatesMenu(ctx) {
     const userId = ctx.from.id;
     try {
@@ -1096,9 +1100,6 @@ module.exports = function registerUsers(bot, core) {
     if (session) renderPropertyPage(ctx, userId, session.page + 1, 0);
   });
 
-  // =========================================================================
-  // ➕ إضافة عقار والدفع
-  // =========================================================================
   bot.hears('➕ إضافة عقار جديد', async (ctx) => {
     await safeDeleteUserMessage(ctx);
     const userId = ctx.from.id;
@@ -1306,9 +1307,6 @@ module.exports = function registerUsers(bot, core) {
     }
   });
 
-  // =========================================================================
-  // 🎛 لوحة العميل ومركز الدعم
-  // =========================================================================
   const AD_INQUIRY_TYPES = {
     why_rejected: '❌ لماذا تم رفض إعلاني؟',
     re_review: '🔄 طلب إعادة مراجعة الإعلان',
@@ -1367,7 +1365,6 @@ module.exports = function registerUsers(bot, core) {
     return ads;
   }
 
-  // زر "📨 استعلاماتي وردود الإدارة" في مقدمة لوحة الدعم
   function getSupportHubKeyboard() {
     return Markup.keyboard([
       ['📨 استعلاماتي وردود الإدارة', '📋 إعلاناتي وحالتها'],
@@ -1461,7 +1458,7 @@ module.exports = function registerUsers(bot, core) {
 
     const points = dbUser?.points ?? 0;
     const name = escapeHtml(dbUser?.first_name || ctx.from.first_name || 'عميلنا الكريم');
-    const supportIntro = await getSetting('support_text', '');
+    const supportIntro = (await getSetting('support_text', '')).replace(/\\n/g, '\n');
 
     supportUserSession[userId] = { mode: 'dashboard', ads: allAds };
     userState[userId] = { step: 'support_dashboard', data: {}, chatId: ctx.chat.id, wizardMsgId: null };
@@ -1570,7 +1567,6 @@ module.exports = function registerUsers(bot, core) {
     return candidate;
   }
 
-  // 📩 حفظ الاستعلام في user_inquiries وإرساله إلى الإدارة
   async function sendStructuredTicketToAdmins(ctx, senderUserId, ticketTitle, detailText, relatedAd = null, payloadType = 'text', mediaContent = {}, fallbackAdId = null) {
     const adminIds = await getAdminIds();
     const dbUser = await getUserRecord(senderUserId);
@@ -1709,7 +1705,6 @@ module.exports = function registerUsers(bot, core) {
     );
   }
 
-  // أزرار معاينة الاستعلامات والتنقل والمتابعة للعميل
   bot.hears('📨 استعلاماتي وردود الإدارة', async (ctx) => {
     await safeDeleteUserMessage(ctx);
     await renderClientInquiryAt(ctx, ctx.from.id, 0, true);
@@ -1753,7 +1748,7 @@ module.exports = function registerUsers(bot, core) {
 
     await replyTracked(
       ctx, userId,
-      `💬 <b>متابعة الاستعلام رقم</b> <code>#${parentInquiryId}</code>\n\nاكتب رسالتك الإضافية ليتم حفظها في استعلاماتك وإرسالها للإدارة:`,
+      `💬 <b>متابعة الاستعلام رقم</b> <code>#${parentInquiryId}</code>\n\nاكتب رسالتك أو أرفق صورة/فيديو ليتم حفظها في استعلاماتك وإرسالها للإدارة:`,
       {
         parse_mode: 'HTML',
         ...Markup.keyboard([['📨 استعلاماتي وردود الإدارة', '⬅️ لوحة العميل']]).resize()
@@ -1762,7 +1757,6 @@ module.exports = function registerUsers(bot, core) {
     );
   });
 
-  // ⚡ أزرار Inline داخل بطاقة الإعلان
   bot.action(/^adinq:([a-z_]+):(.+)$/, async (ctx) => {
     const userId = ctx.from.id;
     const inquiryKey = ctx.match[1];
@@ -1979,9 +1973,6 @@ module.exports = function registerUsers(bot, core) {
     await replyTracked(ctx, userId, confirmMsg, { parse_mode: 'HTML', ...getSupportHubKeyboard() }, true);
   });
 
-  // =========================================================================
-  // 📝 معالجات النص / الصور / الفيديو
-  // =========================================================================
   bot.on('text', async (ctx) => {
     const userId = ctx.from.id;
     const userText = ctx.message.text ? ctx.message.text.trim() : '';
@@ -2147,6 +2138,36 @@ module.exports = function registerUsers(bot, core) {
 
     await safeDeleteUserMessage(ctx);
 
+    if (state && state.step === 'client_following_up_inquiry') {
+      const photo = ctx.message.photo[ctx.message.photo.length - 1];
+      const parentId = state.data?.parentInquiryId;
+      const savedFollow = await sendStructuredTicketToAdmins(
+        ctx,
+        userId,
+        parentId ? `متابعة للاستعلام #${parentId}` : 'متابعة استفسار',
+        ctx.message.caption || '🖼 صورة مرفقة من العميل',
+        null,
+        'photo',
+        { fileId: photo.file_id, caption: ctx.message.caption || '' },
+        parentId || null
+      );
+      delete userState[userId];
+      const followRef = savedFollow?.id ? ` (رقم الاستعلام: <code>#${savedFollow.id}</code>)` : '';
+      return replyTracked(
+        ctx,
+        userId,
+        `✅ <b>تم إرسال الصورة وتسجيل متابعتك للإدارة${followRef}.</b>`,
+        {
+          parse_mode: 'HTML',
+          ...Markup.keyboard([
+            ['📨 استعلاماتي وردود الإدارة', '⬅️ لوحة العميل'],
+            ['🏠 القائمة الرئيسية']
+          ]).resize()
+        },
+        true
+      );
+    }
+
     if (state && state.step === 'waiting_for_media') {
       const photo = ctx.message.photo[ctx.message.photo.length - 1];
       state.data.media_items = state.data.media_items || [];
@@ -2270,6 +2291,35 @@ module.exports = function registerUsers(bot, core) {
     const state = userState[userId];
 
     await safeDeleteUserMessage(ctx);
+
+    if (state && state.step === 'client_following_up_inquiry') {
+      const parentId = state.data?.parentInquiryId;
+      const savedFollow = await sendStructuredTicketToAdmins(
+        ctx,
+        userId,
+        parentId ? `متابعة للاستعلام #${parentId}` : 'متابعة استفسار',
+        ctx.message.caption || '🎥 فيديو مرفق من العميل',
+        null,
+        'video',
+        { fileId: ctx.message.video.file_id, caption: ctx.message.caption || '' },
+        parentId || null
+      );
+      delete userState[userId];
+      const followRef = savedFollow?.id ? ` (رقم الاستعلام: <code>#${savedFollow.id}</code>)` : '';
+      return replyTracked(
+        ctx,
+        userId,
+        `✅ <b>تم إرسال الفيديو وتسجيل متابعتك للإدارة${followRef}.</b>`,
+        {
+          parse_mode: 'HTML',
+          ...Markup.keyboard([
+            ['📨 استعلاماتي وردود الإدارة', '⬅️ لوحة العميل'],
+            ['🏠 القائمة الرئيسية']
+          ]).resize()
+        },
+        true
+      );
+    }
 
     if (state && state.step === 'waiting_for_media') {
       const video = ctx.message.video;
