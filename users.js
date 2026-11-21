@@ -228,7 +228,6 @@ module.exports = function registerUsers(bot, core) {
     const replies = await fetchClientRepliesForInquiry(currentInquiry.id);
     const kb = getClientInquiriesKeyboard(safeIdx, st.items.length, currentInquiry);
 
-    // المرفق يكون داخل نفس رسالة البطاقة (caption) بدون إرسال صورة منفصلة
     const latestMediaReply = [...replies].reverse().find(r => r.attachment_url && (r.media_type === 'photo' || r.media_type === 'video'));
     const replyAttach = latestMediaReply ? normalizeMediaRef(latestMediaReply.attachment_url) : null;
     const inqAttach = normalizeMediaRef(currentInquiry.attachment_url);
@@ -418,9 +417,13 @@ module.exports = function registerUsers(bot, core) {
   async function openUserHome(ctx, prefixNote = '') {
     const userId = ctx.from.id;
     const userName = ctx.from.first_name || 'مستخدمنا الكريم';
+    const unreadCount = core.messenger?.getUnreadCount ? await core.messenger.getUnreadCount(userId) : 0;
     const rawWelcomeTpl = await getSetting('welcome_msg_template', 'أهلاً بك يا <b>{name}</b> في <b>منصة عقار الجزائر (Aqar)</b> 🏠\n\nنظام رقمي احترافي لإدارة وعروض العقارات. اختر من القائمة أدناه:');
     const welcomeText = rawWelcomeTpl.replace('{name}', userName).replace(/\\n/g, '\n');
-    await replyTracked(ctx, userId, prefixNote + welcomeText, { parse_mode: 'HTML', ...getMainMenuKeyboard(userId) }, true);
+    await replyTracked(ctx, userId, prefixNote + welcomeText, {
+      parse_mode: 'HTML',
+      ...getMainMenuKeyboard(userId, unreadCount)
+    }, true);
   }
 
   app.get('/watch-ad', async (req, res) => {
@@ -661,6 +664,7 @@ module.exports = function registerUsers(bot, core) {
     const user = await getUserRecord(userId);
     const currentPoints = user ? (user.points || 0) : 0;
     const publishCost = await getSetting('publish_cost_points', '100');
+    const unreadCount = core.messenger?.getUnreadCount ? await core.messenger.getUnreadCount(userId) : 0;
 
     if (state.step === 'waiting_for_payment_choice' && !opts.footer) {
       opts.footer =
@@ -680,7 +684,7 @@ module.exports = function registerUsers(bot, core) {
       return;
     }
 
-    const replyKeyboard = opts.noKeyboard ? getMainMenuKeyboard(userId) : await getStandardReplyKeyboard(state);
+    const replyKeyboard = opts.noKeyboard ? getMainMenuKeyboard(userId, unreadCount) : await getStandardReplyKeyboard(state);
 
     const sent = await ctx.reply(text, { parse_mode: 'HTML', ...replyKeyboard });
     const oldId = state.wizardMsgId;
@@ -710,6 +714,7 @@ module.exports = function registerUsers(bot, core) {
     delete browsingSession[userId];
     delete supportUserSession[userId];
     delete clientInquiryBrowse[userId];
+    if (core.messenger?.messengerSession) delete core.messenger.messengerSession[userId];
     userLang[userId] = 'ar';
 
     const verified = await isUserVerified(userId);
@@ -751,8 +756,9 @@ module.exports = function registerUsers(bot, core) {
       }
 
       delete userState[userId];
+      const unreadCount = core.messenger?.getUnreadCount ? await core.messenger.getUnreadCount(userId) : 0;
       await replyTracked(ctx, userId, '🎉 <b>تم توثيق حسابك بنجاح!</b>', {
-        parse_mode: 'HTML', ...getMainMenuKeyboard(userId)
+        parse_mode: 'HTML', ...getMainMenuKeyboard(userId, unreadCount)
       }, true);
     } catch (err) {
       await replyTracked(ctx, userId, '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.');
@@ -777,9 +783,11 @@ module.exports = function registerUsers(bot, core) {
     delete browsingSession[userId];
     delete supportUserSession[userId];
     delete clientInquiryBrowse[userId];
+    if (core.messenger?.messengerSession) delete core.messenger.messengerSession[userId];
 
+    const unreadCount = core.messenger?.getUnreadCount ? await core.messenger.getUnreadCount(userId) : 0;
     await replyTracked(ctx, userId, '✅ العودة إلى القائمة الرئيسية:', {
-      parse_mode: 'HTML', ...getMainMenuKeyboard(userId)
+      parse_mode: 'HTML', ...getMainMenuKeyboard(userId, unreadCount)
     }, true);
   });
 
@@ -843,30 +851,33 @@ module.exports = function registerUsers(bot, core) {
   bot.hears(['🌐 تصفح الموقع الرسمي (البروزر)', '🌐 تصفح الموقع الرسمي'], async (ctx) => {
     await safeDeleteUserMessage(ctx);
     const userId = ctx.from.id;
+    const unreadCount = core.messenger?.getUnreadCount ? await core.messenger.getUnreadCount(userId) : 0;
     if (!getWebsiteUrl()) {
-      return replyTracked(ctx, userId, '⚠️ الموقع غير متاح حالياً.', { ...getMainMenuKeyboard(userId) }, true);
+      return replyTracked(ctx, userId, '⚠️ الموقع غير متاح حالياً.', { ...getMainMenuKeyboard(userId, unreadCount) }, true);
     }
     await replyTracked(ctx, userId, '🌐 <b>منصة عقار الجزائر</b>', {
       parse_mode: 'HTML',
       ...Markup.inlineKeyboard([[Markup.button.url('🌐 فتح الموقع الرسمي', getWebsiteUrl())]])
     }, true);
-    await ctx.reply('👇', { ...getMainMenuKeyboard(userId) }).then(m => trackBotMessage(userId, ctx.chat.id, m.message_id)).catch(() => {});
+    await ctx.reply('👇', { ...getMainMenuKeyboard(userId, unreadCount) }).then(m => trackBotMessage(userId, ctx.chat.id, m.message_id)).catch(() => {});
   });
 
   bot.hears('ℹ️ عن المنصة', async (ctx) => {
     await safeDeleteUserMessage(ctx);
     const userId = ctx.from.id;
+    const unreadCount = core.messenger?.getUnreadCount ? await core.messenger.getUnreadCount(userId) : 0;
     const aboutMsg = await getSetting('about_text', '🏛 <b>عن منصة عقار الجزائر (Aqar System):</b>\n\nنظام رقمي ذكي ومتطور لإدارة المعاملات العقارية.');
-    await replyTracked(ctx, userId, aboutMsg, { parse_mode: 'HTML', ...getMainMenuKeyboard(userId) }, true);
+    await replyTracked(ctx, userId, aboutMsg, { parse_mode: 'HTML', ...getMainMenuKeyboard(userId, unreadCount) }, true);
   });
 
   async function showStatesMenu(ctx) {
     const userId = ctx.from.id;
+    const unreadCount = core.messenger?.getUnreadCount ? await core.messenger.getUnreadCount(userId) : 0;
     try {
       const { data, error } = await supabase.from('test_messages').select('state_name');
       if (error) throw error;
       if (!data || data.length === 0) {
-        return replyTracked(ctx, userId, '📭 عذراً، لا توجد أي عقارات مسجلة في المنصة حالياً.', getMainMenuKeyboard(userId), true);
+        return replyTracked(ctx, userId, '📭 عذراً، لا توجد أي عقارات مسجلة في المنصة حالياً.', getMainMenuKeyboard(userId, unreadCount), true);
       }
 
       const uniqueStates = [...new Set(data.map(item => item.state_name).filter(Boolean))];
@@ -878,7 +889,7 @@ module.exports = function registerUsers(bot, core) {
       await replyTracked(ctx, userId, browseTitle, { parse_mode: 'HTML', ...Markup.keyboard(chunkedStates).resize() }, true);
     } catch (err) {
       console.error('showStatesMenu error:', err);
-      await replyTracked(ctx, userId, '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getMainMenuKeyboard(userId), true);
+      await replyTracked(ctx, userId, '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getMainMenuKeyboard(userId, unreadCount), true);
     }
   }
 
@@ -886,6 +897,7 @@ module.exports = function registerUsers(bot, core) {
     await safeDeleteUserMessage(ctx);
     delete browsingSession[ctx.from.id];
     delete supportUserSession[ctx.from.id];
+    if (core.messenger?.messengerSession) delete core.messenger.messengerSession[ctx.from.id];
     showStatesMenu(ctx);
   });
 
@@ -911,6 +923,7 @@ module.exports = function registerUsers(bot, core) {
     const stateList = await getUniqueStatesList();
     if (stateList.includes(selectedState)) {
       delete supportUserSession[userId];
+      if (core.messenger?.messengerSession) delete core.messenger.messengerSession[userId];
       browsingSession[userId] = { state: selectedState, page: 0, photoIndex: 0 };
       renderPropertyPage(ctx, userId, 0, 0);
     }
@@ -920,6 +933,7 @@ module.exports = function registerUsers(bot, core) {
     await safeDeleteUserMessage(ctx);
     const userId = ctx.from.id;
     delete supportUserSession[userId];
+    if (core.messenger?.messengerSession) delete core.messenger.messengerSession[userId];
     browsingSession[userId] = { state: 'ALL', page: 0, photoIndex: 0 };
     renderPropertyPage(ctx, userId, 0, 0);
   });
@@ -929,6 +943,8 @@ module.exports = function registerUsers(bot, core) {
     if (!session) return;
     session.selectingPage = false;
 
+    const unreadCount = core.messenger?.getUnreadCount ? await core.messenger.getUnreadCount(userId) : 0;
+
     try {
       let query = supabase.from('test_messages').select('*').order('id', { ascending: false });
       if (session.state !== 'ALL') query = query.eq('state_name', session.state);
@@ -936,7 +952,7 @@ module.exports = function registerUsers(bot, core) {
       const { data, error } = await query;
       if (error) throw error;
       if (!data || data.length === 0) {
-        return replyTracked(ctx, userId, '📭 عذراً، لا توجد عقارات مسجلة.', getMainMenuKeyboard(userId), true);
+        return replyTracked(ctx, userId, '📭 عذراً، لا توجد عقارات مسجلة.', getMainMenuKeyboard(userId, unreadCount), true);
       }
 
       if (pageIndex < 0) pageIndex = 0;
@@ -967,16 +983,28 @@ module.exports = function registerUsers(bot, core) {
 
       const caption = fitTelegramText(rawCaption, !!currentMedia);
       const replyKb = getBrowsingKeyboard(pageIndex, data.length, safeMediaIndex, totalMedia);
+      const msgInlineKb = (item.user_id && Number(item.user_id) !== Number(userId))
+        ? Markup.inlineKeyboard([
+            [Markup.button.callback('💬 مراسلة المالك', `msg_prop:${item.id}:${item.user_id}`)]
+          ])
+        : undefined;
+
+      const cardExtra = {
+        caption,
+        parse_mode: 'HTML',
+        ...(msgInlineKb || {}),
+        ...replyKb
+      };
 
       let sentMsg = null;
       if (currentMedia) {
         try {
           sentMsg = currentMedia.type === 'video'
-            ? await ctx.replyWithVideo(currentMedia.ref, { caption, parse_mode: 'HTML', ...replyKb })
-            : await ctx.replyWithPhoto(currentMedia.ref, { caption, parse_mode: 'HTML', ...replyKb });
+            ? await ctx.replyWithVideo(currentMedia.ref, cardExtra)
+            : await ctx.replyWithPhoto(currentMedia.ref, cardExtra);
         } catch (mediaErr) {}
       }
-      if (!sentMsg) sentMsg = await ctx.reply(caption, { parse_mode: 'HTML', ...replyKb });
+      if (!sentMsg) sentMsg = await ctx.reply(caption, cardExtra);
 
       const keepId = sentMsg?.message_id ? [sentMsg.message_id] : [];
       if (sentMsg?.message_id) trackBotMessage(userId, ctx.chat.id, sentMsg.message_id);
@@ -984,7 +1012,7 @@ module.exports = function registerUsers(bot, core) {
       await clearTrackedBotMessages(ctx, userId, keepId);
     } catch (err) {
       console.error('renderPropertyPage error:', err);
-      await replyTracked(ctx, userId, '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getMainMenuKeyboard(userId), true);
+      await replyTracked(ctx, userId, '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getMainMenuKeyboard(userId, unreadCount), true);
     }
   }
 
@@ -1099,6 +1127,7 @@ module.exports = function registerUsers(bot, core) {
   bot.hears('➕ إضافة عقار جديد', async (ctx) => {
     await safeDeleteUserMessage(ctx);
     const userId = ctx.from.id;
+    if (core.messenger?.messengerSession) delete core.messenger.messengerSession[userId];
     await clearTrackedBotMessages(ctx, userId);
 
     userState[userId] = {
@@ -1139,6 +1168,7 @@ module.exports = function registerUsers(bot, core) {
     const state = userState[userId];
     if (!state || state.step !== 'waiting_for_payment_choice') return;
 
+    const unreadCount = core.messenger?.getUnreadCount ? await core.messenger.getUnreadCount(userId) : 0;
     state.data.payment_label = '🆓 إعلان مجاني (بانتظار الإدارة)';
     state.step = 'publishing';
 
@@ -1237,7 +1267,7 @@ module.exports = function registerUsers(bot, core) {
         `🆓 <b>نوع الطلب:</b> إعلان مجاني\n` +
         `🕒 <b>تاريخ ووقت الإرسال:</b> <code>${escapeHtml(submittedAt)}</code>\n\n` +
         `سيتم نشره في التصفح فور موافقة الإدارة عليه.`,
-        { parse_mode: 'HTML', ...getMainMenuKeyboard(userId) },
+        { parse_mode: 'HTML', ...getMainMenuKeyboard(userId, unreadCount) },
         true
       );
     } catch (err) {
@@ -1246,7 +1276,7 @@ module.exports = function registerUsers(bot, core) {
       await replyTracked(
         ctx, userId,
         `⚠️ <b>تعذر إرسال الإعلان المجاني إلى قائمة الانتظار:</b>\n<code>${escapeHtml(err.message || 'خطأ غير معروف')}</code>`,
-        { parse_mode: 'HTML', ...getMainMenuKeyboard(userId) },
+        { parse_mode: 'HTML', ...getMainMenuKeyboard(userId, unreadCount) },
         true
       );
     }
@@ -1258,6 +1288,7 @@ module.exports = function registerUsers(bot, core) {
     const state = userState[userId];
     if (!state || state.step !== 'waiting_for_payment_choice') return;
 
+    const unreadCount = core.messenger?.getUnreadCount ? await core.messenger.getUnreadCount(userId) : 0;
     const user = await getUserRecord(userId);
     const currentPoints = user ? (user.points || 0) : 0;
     const publishCost = Number(await getSetting('publish_cost_points', '100'));
@@ -1302,13 +1333,13 @@ module.exports = function registerUsers(bot, core) {
       delete userState[userId];
       await replyTracked(ctx, userId,
         `🎉 <b>تم خصم ${publishCost} نقطة ونشر إعلانك بنجاح في المنصة مجاناً!</b>\n🕒 <b>تاريخ ووقت النشر:</b> <code>${escapeHtml(formatDateTime(nowIso))}</code>`,
-        { parse_mode: 'HTML', ...getMainMenuKeyboard(userId) },
+        { parse_mode: 'HTML', ...getMainMenuKeyboard(userId, unreadCount) },
         true
       );
     } catch (err) {
       console.error('Free publish error:', err);
       delete userState[userId];
-      await replyTracked(ctx, userId, '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getMainMenuKeyboard(userId), true);
+      await replyTracked(ctx, userId, '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getMainMenuKeyboard(userId, unreadCount), true);
     }
   });
 
@@ -2153,6 +2184,7 @@ module.exports = function registerUsers(bot, core) {
   bot.on('photo', async (ctx) => {
     const userId = ctx.from.id;
     const state = userState[userId];
+    const unreadCount = core.messenger?.getUnreadCount ? await core.messenger.getUnreadCount(userId) : 0;
 
     await safeDeleteUserMessage(ctx);
 
@@ -2299,13 +2331,13 @@ module.exports = function registerUsers(bot, core) {
         delete userState[userId];
         await replyTracked(ctx, userId,
           `⏳ <b>تم استلام وصل الدفع وحفظ طلبك برقم (#${requestId})!</b>\n🕒 <b>التاريخ والوقت:</b> <code>${escapeHtml(submittedAt)}</code>\n\nالإعلان قيد المراجعة من طرف الإدارة وسيتم نشره فور تأكيد التحويل.`,
-          { parse_mode: 'HTML', ...getMainMenuKeyboard(userId) },
+          { parse_mode: 'HTML', ...getMainMenuKeyboard(userId, unreadCount) },
           true
         );
       } catch (err) {
         console.error('Receipt publish error:', err);
         delete userState[userId];
-        await replyTracked(ctx, userId, '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getMainMenuKeyboard(userId), true);
+        await replyTracked(ctx, userId, '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getMainMenuKeyboard(userId, unreadCount), true);
       }
     }
   });
