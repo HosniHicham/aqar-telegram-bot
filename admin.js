@@ -16,10 +16,7 @@ module.exports = function registerAdmin(bot, core) {
     getWebsiteButton
   } = core;
 
-  // حالة تصفح الإعلانات للأدمن: adminId -> { filter, index, mediaIndex, items, query }
   const adminBrowseState = {};
-
-  // حالة تصفح الاستعلامات للأدمن: adminId -> { statusFilter, index, items }
   const adminInquiryState = {};
 
   const ROLE_LABELS = {
@@ -37,7 +34,6 @@ module.exports = function registerAdmin(bot, core) {
     closed: '🔒 مغلق'
   };
 
-  // ------------------------- لوحات التحكم السفلية -------------------------
   function getAdminMenuKeyboard() {
     const rows = [
       ['⏳ المعلقة', '✅ المنشورة', '❌ المرفوضة'],
@@ -138,7 +134,6 @@ module.exports = function registerAdmin(bot, core) {
     };
   }
 
-  // استرجاع user_id للناشر حتى لو كان الإعلان منشوراً ولا يحمل user_id مباشرة
   async function resolveAdOwnerUserId(item) {
     if (!item) return null;
     if (item.user_id) return Number(item.user_id);
@@ -192,9 +187,6 @@ module.exports = function registerAdmin(bot, core) {
     await replyTracked(ctx, adminId, text, { parse_mode: 'HTML', ...getAdminMenuKeyboard() }, true);
   }
 
-  // =========================================================================
-  // 📩 إدارة ومعاينة الاستعلامات (user_inquiries + inquiry_replies)
-  // =========================================================================
   async function fetchAdminInquiries(statusFilter = 'all') {
     try {
       let q = supabase
@@ -340,13 +332,40 @@ module.exports = function registerAdmin(bot, core) {
     const inlineKb = buildInquiryInlineButtons(inquiry);
     const bottomKb = getAdminInquiriesKeyboard(safeIdx, st.items.length, inquiry);
 
+    const keepIds = [];
+
+    // عرض مرفق العميل أو أحدث مرفق من الردود إن وُجد
+    const inqAttach = normalizeMediaRef(inquiry.attachment_url);
+    const latestMediaReply = [...replies].reverse().find(r => r.attachment_url && (r.media_type === 'photo' || r.media_type === 'video'));
+    const replyAttach = latestMediaReply ? normalizeMediaRef(latestMediaReply.attachment_url) : null;
+
+    let sentMedia = null;
+    if (replyAttach && latestMediaReply) {
+      const rCap = `🖼 <b>مرفق رد الإدارة على الاستعلام #${inquiry.id}</b>` +
+        (latestMediaReply.reply_message ? `\n${escapeHtml(latestMediaReply.reply_message)}` : '');
+      try {
+        sentMedia = latestMediaReply.media_type === 'video'
+          ? await ctx.replyWithVideo(replyAttach, { caption: rCap, parse_mode: 'HTML' })
+          : await ctx.replyWithPhoto(replyAttach, { caption: rCap, parse_mode: 'HTML' });
+      } catch (e) {}
+    } else if (inqAttach) {
+      const iCap = `📎 <b>مرفق العميل في الاستعلام #${inquiry.id}</b>`;
+      try {
+        sentMedia = await ctx.replyWithPhoto(inqAttach, { caption: iCap, parse_mode: 'HTML' });
+      } catch (e) {}
+    }
+
+    if (sentMedia?.message_id) {
+      keepIds.push(sentMedia.message_id);
+      trackBotMessage(adminId, ctx.chat.id, sentMedia.message_id);
+    }
+
     const sentCard = await ctx.reply(cardText, { parse_mode: 'HTML', ...inlineKb }).catch(() => null);
     const ctrlMsg = await ctx.reply(`🧭 <b>استعلام ${safeIdx + 1} / ${st.items.length}</b>`, {
       parse_mode: 'HTML',
       ...bottomKb
     }).catch(() => null);
 
-    const keepIds = [];
     if (sentCard?.message_id) {
       keepIds.push(sentCard.message_id);
       trackBotMessage(adminId, ctx.chat.id, sentCard.message_id);
@@ -373,7 +392,8 @@ module.exports = function registerAdmin(bot, core) {
       }, true);
     }
 
-    const replyText = payloadType === 'text' ? content.text : (content.caption || '');
+    const rawCaption = payloadType === 'text' ? content.text : (content.caption || '');
+    const replyText = rawCaption || (payloadType === 'photo' ? '🖼 صورة مرفقة' : payloadType === 'video' ? '🎥 فيديو مرفق' : '');
     const attachmentUrl = payloadType === 'text' ? null : `tg:${content.fileId}`;
 
     const { error: insertReplyErr } = await supabase.from('inquiry_replies').insert([{
@@ -404,24 +424,27 @@ module.exports = function registerAdmin(bot, core) {
       `━━━━━━━━━━━━━━━━━━━━\n`;
 
     let delivered = true;
+    let deliverErrorReason = '';
     try {
       if (payloadType === 'photo') {
-        const cap = userHeader + (replyText ? escapeHtml(replyText) : '🖼 <i>مرفق صورة</i>');
+        const cap = userHeader + (rawCaption ? escapeHtml(rawCaption) : '🖼 <i>صورة مرفقة من الإدارة</i>');
         await ctx.telegram.sendPhoto(inquiry.user_id, content.fileId, { caption: cap, parse_mode: 'HTML' });
       } else if (payloadType === 'video') {
-        const cap = userHeader + (replyText ? escapeHtml(replyText) : '🎥 <i>مرفق فيديو</i>');
+        const cap = userHeader + (rawCaption ? escapeHtml(rawCaption) : '🎥 <i>فيديو مرفق من الإدارة</i>');
         await ctx.telegram.sendVideo(inquiry.user_id, content.fileId, { caption: cap, parse_mode: 'HTML' });
       } else {
         await ctx.telegram.sendMessage(inquiry.user_id, userHeader + escapeHtml(replyText), { parse_mode: 'HTML' });
       }
     } catch (e) {
       delivered = false;
+      deliverErrorReason = e?.message || 'خطأ في الإرسال';
+      console.error('deliver inquiry reply to user failed:', deliverErrorReason);
     }
 
     delete userState[adminId];
     const deliveryNote = delivered
       ? `✅ <b>تم حفظ الرد في سجل الاستعلام #${inquiryId} وإرساله للعميل بنجاح.</b>`
-      : `✅ <b>تم حفظ الرد في سجل الاستعلام #${inquiryId}</b> (⚠️ تعذر الإرسال المباشر للعميل عبر تيليجرام).`;
+      : `✅ <b>تم حفظ الرد في سجل الاستعلام #${inquiryId}</b> (⚠️ تعذر الإرسال المباشر للعميل: <code>${escapeHtml(deliverErrorReason)}</code>).`;
 
     await ctx.reply(deliveryNote, { parse_mode: 'HTML' }).catch(() => {});
 
@@ -429,7 +452,6 @@ module.exports = function registerAdmin(bot, core) {
     return renderAdminInquiryAt(ctx, adminId, st?.statusFilter || 'all', st?.index || 0, true);
   }
 
-  // ------------------------- جلب الإعلانات حسب الفئة -------------------------
   async function fetchAdminAdsByFilter(filterType) {
     if (filterType === 'published') {
       const { data, error } = await supabase
@@ -454,7 +476,6 @@ module.exports = function registerAdmin(bot, core) {
     return list.map(row => ({ ...row, _filterType: statusVal }));
   }
 
-  // ------------------------- بحث سريع للأدمن -------------------------
   async function searchAdminAds(rawQuery) {
     const cleanQuery = String(rawQuery || '').replace(/^#/, '').trim();
     if (!cleanQuery) return [];
@@ -535,7 +556,6 @@ module.exports = function registerAdmin(bot, core) {
     return results;
   }
 
-  // ------------------------- أزرار الإجراء على بطاقة الإعلان -------------------------
   function buildAdInlineButtons(item, filterType) {
     const rows = [];
     const adId = item.id;
@@ -639,7 +659,6 @@ module.exports = function registerAdmin(bot, core) {
 
     const cardFilter = item._filterType || (filterType === 'search' ? 'pending' : filterType);
 
-    // بناء قائمة وسائط الإعلان (صور + فيديو) مع إبقاء الوصل في المقدمة إن وُجد لطلبات المراجعة
     const receiptRef = normalizeMediaRef(item.receipt_url);
     const orderedMedia = buildOrderedBrowsingMedia(item);
     const mediaList = [];
@@ -699,7 +718,6 @@ module.exports = function registerAdmin(bot, core) {
     await clearTrackedBotMessages(ctx, adminId, keepIds);
   }
 
-  // ------------------------- أوامر وأزرار التحكم السفلية -------------------------
   bot.start(async (ctx) => {
     await safeDeleteUserMessage(ctx);
     await openAdminHome(ctx);
@@ -723,7 +741,6 @@ module.exports = function registerAdmin(bot, core) {
     await openAdminHome(ctx, true);
   });
 
-  // ------------------------- أزرار قسم الاستعلامات -------------------------
   bot.hears(['📩 الاستعلامات', '📂 كل الاستعلامات'], async (ctx) => {
     await safeDeleteUserMessage(ctx);
     await renderAdminInquiryAt(ctx, ctx.from.id, 'all', 0, true);
@@ -830,7 +847,6 @@ module.exports = function registerAdmin(bot, core) {
     await renderAdminInquiryAt(ctx, adminId, st?.statusFilter || 'all', st?.index || 0, true);
   });
 
-  // ------------------------- بحث سريع وتصفح الإعلانات -------------------------
   bot.hears('🔎 بحث سريع', async (ctx) => {
     await safeDeleteUserMessage(ctx);
     const adminId = ctx.from.id;
@@ -865,7 +881,6 @@ module.exports = function registerAdmin(bot, core) {
     await renderAdminAdAt(ctx, ctx.from.id, 'rejected', 0, true, 0);
   });
 
-  // التنقل بين صور وفيديوهات الإعلان الحالي
   bot.hears('الصورة التالية 🖼', async (ctx) => {
     await safeDeleteUserMessage(ctx);
     const adminId = ctx.from.id;
@@ -890,7 +905,6 @@ module.exports = function registerAdmin(bot, core) {
     await renderAdminAdAt(ctx, adminId, st.filter, st.index || 0, false, st.mediaIndex || 0);
   });
 
-  // التنقل بين الإعلانات
   bot.hears('⬅️ السابق', async (ctx) => {
     await safeDeleteUserMessage(ctx);
     const adminId = ctx.from.id;
@@ -915,7 +929,6 @@ module.exports = function registerAdmin(bot, core) {
     await renderAdminAdAt(ctx, adminId, st.filter, st.index || 0, false, st.mediaIndex || 0);
   });
 
-  // زر المراسلة من لوحة التحكم السفلية مع الهاشتاج #ID (يعمل للمعلق والمرفوض والمنشور)
   bot.hears(/^✉️ مراسلة بخصوص #(\d+)$/, async (ctx) => {
     await safeDeleteUserMessage(ctx);
     const adminId = ctx.from.id;
@@ -945,7 +958,6 @@ module.exports = function registerAdmin(bot, core) {
     );
   });
 
-  // ------------------------- المراسلة المرتبطة بالإعلان والعميل -------------------------
   bot.action(/^support_reply_(\d+)(?:_(\d+))?$/, async (ctx) => {
     const adminId = ctx.from.id;
     const targetUserId = Number(ctx.match[1]);
@@ -1088,7 +1100,6 @@ module.exports = function registerAdmin(bot, core) {
     return next();
   });
 
-  // ------------------------- قبول / رفض / إعادة / حذف الإعلانات -------------------------
   async function editCard(ctx, text, replyMarkup = undefined) {
     const extra = replyMarkup ? { parse_mode: 'HTML', ...replyMarkup } : { parse_mode: 'HTML' };
     try {
