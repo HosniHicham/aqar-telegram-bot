@@ -200,6 +200,89 @@ function createMessengerModule(core) {
     return count > 0 ? `💬 المراسلات (${count})` : '💬 المراسلات';
   }
 
+  // إشعار فوري للطرف الآخر (صوت + اهتزاز طبيعي) وفتح مباشر للمحادثة عند الدخول
+  async function notifyReceiverMessenger(ctx, {
+    threadId,
+    propertyId,
+    senderId,
+    receiverId,
+    senderName,
+    messageType = 'text',
+    messageText = '',
+    mediaCount = 0
+  }) {
+    const sId = Number(senderId);
+    const rId = Number(receiverId);
+    if (!rId || !threadId || sId === rId) return;
+
+    const telegramApi = ctx?.telegram || core.bot?.telegram;
+    if (!telegramApi) return;
+
+    let cleanSender = String(senderName || '').trim();
+    if (isBadName(cleanSender)) {
+      cleanSender = await resolveCleanSenderName(sId, 'مراسل');
+    }
+
+    let previewLine = '';
+    if (messageType === 'video') {
+      previewLine = mediaCount > 1 ? `🎬 أرسل ${mediaCount} فيديوهات` : '🎬 أرسل فيديو';
+    } else if (messageType === 'image' || messageType === 'photo') {
+      previewLine = mediaCount > 1 ? `🖼️ أرسل ${mediaCount} صور` : '🖼️ أرسل صورة';
+    } else {
+      const snippet = String(messageText || '').trim().replace(/\s+/g, ' ');
+      const shortSnippet = snippet.length > 90 ? `${snippet.slice(0, 90)}…` : snippet;
+      previewLine = shortSnippet ? `💬 ${escapeHtml(shortSnippet)}` : '💬 رسالة جديدة';
+    }
+
+    const propBadge = propertyId ? ` • 🏠 <b>#${Number(propertyId)}</b>` : '';
+    const botUsername = ctx?.botInfo?.username || core.bot?.botInfo?.username || '';
+    const deepLink = botUsername
+      ? `https://t.me/${botUsername}?start=chat_${encodeURIComponent(threadId)}`
+      : '';
+
+    const notifText =
+      `🔔 <b>رسالة جديدة من ${escapeHtml(cleanSender)}</b>${propBadge}\n` +
+      `<blockquote>${previewLine}</blockquote>` +
+      (deepLink ? `\n👉 <a href="${escapeHtml(deepLink)}">افتح المحادثة مباشرة</a>` : '');
+
+    const inlineRows = [
+      [Markup.button.callback('💬 فتح المحادثة الآن', `msg_open:${threadId}`)]
+    ];
+
+    try {
+      await telegramApi.sendMessage(rId, notifText, {
+        parse_mode: 'HTML',
+        disable_notification: false,
+        link_preview_options: { is_disabled: true },
+        ...Markup.inlineKeyboard(inlineRows)
+      });
+    } catch (e) {
+      console.error('notifyReceiverMessenger error:', e?.message || e);
+    }
+
+    // إذا كان الطرف الآخر فاتحاً نفس المحادثة حالياً نحدّث بطاقته فوراً
+    const recSess = messengerSession[rId];
+    if (recSess?.mode === 'thread' && recSess.threadId === threadId && recSess.cardMessageId) {
+      try {
+        const view = await openThreadMessages(rId, threadId, 0);
+        const recName = await resolveCleanSenderName(sId, cleanSender);
+        let myRecName = await resolveCleanSenderName(rId, '');
+        if (!myRecName || myRecName === 'مراسل') myRecName = 'أنا';
+        const cardObj = formatSingleThreadCard(rId, view, {
+          otherName: recName,
+          myName: myRecName,
+          propertyId: propertyId || recSess.propertyId,
+          botUsername
+        });
+        await telegramApi.editMessageText(rId, recSess.cardMessageId, undefined, cardObj.text, {
+          parse_mode: 'HTML',
+          link_preview_options: { is_disabled: true },
+          reply_markup: cardObj.inlineMarkup ? cardObj.inlineMarkup.reply_markup : { inline_keyboard: [] }
+        }).catch(() => {});
+      } catch (_) {}
+    }
+  }
+
   // رفع الوسائط إلى test_media وجلب الرابط العام (publicUrl) بنفس أسلوب Users
   async function uploadMediaToTestMedia(ctx, fileId, mediaType, index = 0) {
     if (!fileId) return '';
@@ -237,7 +320,8 @@ function createMessengerModule(core) {
     message,
     mediaType = null,
     mediaUrls = null,
-    mediaGroupId = null
+    mediaGroupId = null,
+    ctx = null
   }) {
     const cleanMsg = String(message || '').trim();
     const urlsArray = Array.isArray(mediaUrls)
@@ -308,6 +392,18 @@ function createMessengerModule(core) {
       console.error('messanger insert error:', error);
       return null;
     }
+
+    await notifyReceiverMessenger(ctx, {
+      threadId,
+      propertyId: pId,
+      senderId: sId,
+      receiverId: rId,
+      senderName: payload.sender_name,
+      messageType,
+      messageText: cleanMsg,
+      mediaCount: urlsArray.length
+    });
+
     return data;
   }
 
@@ -988,7 +1084,8 @@ function createMessengerModule(core) {
       message: caption || urls.join('\n'),
       mediaType,
       mediaUrls: urls,
-      mediaGroupId: mediaGroupId || null
+      mediaGroupId: mediaGroupId || null,
+      ctx
     });
 
     await renderActiveThread(
@@ -1167,7 +1264,8 @@ function createMessengerModule(core) {
         receiverId,
         senderName: getUserDisplayName(ctx.from),
         messageType: 'text',
-        message: rawText
+        message: rawText,
+        ctx
       });
 
       await renderActiveThread(
@@ -1188,7 +1286,8 @@ function createMessengerModule(core) {
         receiverId: sess.receiverId,
         senderName: getUserDisplayName(ctx.from),
         messageType: 'text',
-        message: rawText
+        message: rawText,
+        ctx
       });
 
       await renderActiveThread(ctx, userId, sess.threadId, sess, {
@@ -1203,6 +1302,15 @@ function createMessengerModule(core) {
 
   core.bot.start(async (ctx, next) => {
     const payload = String(ctx.startPayload || '').trim();
+    const matchChat = payload.match(/^chat_(.+)$/);
+    if (matchChat) {
+      await safeDeleteUserMessage(ctx);
+      delete userState[ctx.from.id];
+      delete browsingSession[ctx.from.id];
+      delete supportUserSession[ctx.from.id];
+      await renderActiveThread(ctx, ctx.from.id, decodeURIComponent(matchChat[1]), {}, { forceNew: true, page: 0 });
+      return;
+    }
     const matchProp = payload.match(/^prop_(\d+)$/);
     if (matchProp) {
       await safeDeleteUserMessage(ctx);
