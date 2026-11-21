@@ -1,379 +1,432 @@
 'use strict';
 // =========================================================================
-// 🌐 API — يربط واجهة الويب (aqar-algeria.html) بنفس بيانات البوت (Supabase)
-// الاستخدام في index.js:  require('./api')(core);
-// متغيرات بيئة اختيارية:
-//   API_ADMIN_KEY        مفتاح سري لدخول الإدارة من المتصفح (بدون تيليغرام)
-//   API_ALLOWED_ORIGINS  نطاقات CORS مفصولة بفاصلة (غير مطلوبة إذا خدمت الصفحة من /app)
+// 🧠 SERVER FATHER — العقل المدبّر
 // =========================================================================
-const crypto = require('crypto');
-const path = require('path');
 
-module.exports = function registerApi(core) {
-  const {
-    app, bot, supabase, getAdminIds, getUserRecord, sanitizeNumericPrice,
-    escapeHtml, formatDateTime, fitTelegramText, parseMediaListFromField, MAX_PROPERTY_IMAGES
-  } = core;
+const { Telegraf, Markup, Composer } = require('telegraf');
+const express = require('express');
+const { createClient } = require('@supabase/supabase-js');
 
-  const BOT_TOKEN = process.env.BOT_TOKEN;
-  const ADMIN_KEY = process.env.API_ADMIN_KEY || '';
-  const ALLOWED = (process.env.API_ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
+// ------------------------- الإعدادات -------------------------
+const BOT_TOKEN = process.env.BOT_TOKEN;
+const WEBHOOK_DOMAIN = process.env.WEBHOOK_DOMAIN;
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://jjrisfyotyryanhbsvlz.supabase.co';
+const SUPABASE_KEY = process.env.SUPABASE_KEY || 'sb_publishable_t7kVxzmOtz16C95U_B52FA_AJl_WK-h';
+const MAX_PROPERTY_IMAGES = 6;
+const BACK_TO_ADMIN = '🔙 العودة لوضع الإدارة';
 
-  const ROLE = { 'مراجعة الإعلانات': 'ads_reviewer', 'الدفع': 'payments_admin', 'النقاط': 'points_admin', 'الدعم العام': 'general_support' };
-  const ROLE_REV = Object.fromEntries(Object.entries(ROLE).map(([k, v]) => [v, k]));
-  const INQ_STATUS = { open: 'open', in_progress: 'progress', resolved: 'solved', closed: 'closed' };
+if (!BOT_TOKEN) {
+  console.error('Error: Required environment variables are missing!');
+  process.exit(1);
+}
 
-  app.set('trust proxy', 1);
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+const bot = new Telegraf(BOT_TOKEN);
+const app = express();
+app.use(express.json());
 
-  // ---------- CORS ----------
-  app.use('/api', (req, res, next) => {
-    const o = req.headers.origin;
-    if (o && (ALLOWED.includes('*') || ALLOWED.includes(o))) {
-      res.setHeader('Access-Control-Allow-Origin', o);
-      res.setHeader('Vary', 'Origin');
+// ------------------------- الحالات المشتركة -------------------------
+const userState = {};
+const userLang = {};
+const browsingSession = {};
+const supportUserSession = {};
+const botMessagesHistory = {};
+const previewMode = {};
+const lastKnownRole = {}; // 'admin' | 'user'
+
+function resetSessions(userId) {
+  delete userState[userId];
+  delete browsingSession[userId];
+  delete supportUserSession[userId];
+}
+
+// ------------------------- تنظيف رسائل البوت -------------------------
+function trackBotMessage(userId, chatId, messageId) {
+  if (!userId || !chatId || !messageId) return;
+  if (!botMessagesHistory[userId]) botMessagesHistory[userId] = { chatId, ids: [] };
+  botMessagesHistory[userId].chatId = chatId;
+  if (!botMessagesHistory[userId].ids.includes(messageId)) botMessagesHistory[userId].ids.push(messageId);
+}
+
+function untrackBotMessage(userId, messageId) {
+  const history = botMessagesHistory[userId];
+  if (!history || !messageId) return;
+  history.ids = history.ids.filter(id => id !== messageId);
+}
+
+async function clearTrackedBotMessages(ctx, userId, keepMessageIds = []) {
+  const history = botMessagesHistory[userId];
+  const keepSet = new Set(Array.isArray(keepMessageIds) ? keepMessageIds : [keepMessageIds].filter(Boolean));
+  const chatId = ctx?.chat?.id || history?.chatId;
+  if (!history || !chatId) return;
+
+  const remaining = [];
+  for (const msgId of history.ids) {
+    if (keepSet.has(msgId)) { remaining.push(msgId); continue; }
+    try { await ctx.telegram.deleteMessage(chatId, msgId); } catch (e) {}
+  }
+  botMessagesHistory[userId].ids = remaining;
+}
+
+async function replyTracked(ctx, userId, text, extra = {}, cleanPrevious = false, keepIds = []) {
+  if (cleanPrevious) await clearTrackedBotMessages(ctx, userId, keepIds);
+  const sent = await ctx.reply(text, extra);
+  if (sent && sent.message_id) trackBotMessage(userId, ctx.chat.id, sent.message_id);
+  return sent;
+}
+
+async function safeDeleteUserMessage(ctx) {
+  try {
+    if (ctx.message && ctx.message.message_id) {
+      await ctx.telegram.deleteMessage(ctx.chat.id, ctx.message.message_id).catch(() => {});
     }
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,x-telegram-init-data,x-admin-key');
-    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-    if (req.method === 'OPTIONS') return res.sendStatus(204);
-    next();
-  });
+  } catch (e) {}
+}
 
-  // ---------- Rate limit للكتابة ----------
-  const hits = new Map();
-  function limit(req, res, next) {
-    const now = Date.now();
-    const arr = (hits.get(req.ip) || []).filter(t => now - t < 60000);
-    if (arr.length >= 15) return res.status(429).json({ error: 'محاولات كثيرة، أعد المحاولة بعد دقيقة' });
-    arr.push(now); hits.set(req.ip, arr); next();
+// ------------------------- Supabase مشترك -------------------------
+async function getSetting(key, defaultValue = '') {
+  try {
+    const { data } = await supabase.from('app_settings').select('value').eq('key', key).limit(1);
+    const row = Array.isArray(data) ? data[0] : data;
+    return row && row.value !== undefined && row.value !== null ? String(row.value) : defaultValue;
+  } catch (e) {
+    return defaultValue;
   }
+}
 
-  // ---------- التحقق من هوية تيليغرام (initData) ----------
-  function safeEq(a, b) {
-    const x = Buffer.from(String(a)), y = Buffer.from(String(b));
-    return x.length === y.length && crypto.timingSafeEqual(x, y);
+let websiteUrl = '';
+let websiteUrlAt = 0;
+async function refreshWebsiteUrl() {
+  if (Date.now() - websiteUrlAt < 15000) return websiteUrl;
+  websiteUrlAt = Date.now();
+  const v = await getSetting('website_url', '');
+  websiteUrl = v && /^https:\/\//i.test(String(v).trim()) ? String(v).trim() : '';
+  return websiteUrl;
+}
+function getWebsiteUrl() { return websiteUrl; }
+
+async function getAdminIds() {
+  try {
+    const { data, error } = await supabase
+      .from('app_settings')
+      .select('value')
+      .eq('key', 'admin_id')
+      .limit(1);
+
+    const row = Array.isArray(data) ? data[0] : data;
+    if (error || !row || row.value === undefined || row.value === null) {
+      return [];
+    }
+
+    return String(row.value)
+      .split(/[,،\s]+/)
+      .map(id => Number(String(id).replace(/\D/g, '').trim()))
+      .filter(id => Number.isSafeInteger(id) && id > 0);
+  } catch (e) {
+    return [];
   }
-  function verifyInitData(raw) {
+}
+
+async function isAdmin(userId) {
+  const ids = await getAdminIds();
+  return ids.includes(Number(userId));
+}
+
+async function getUserRecord(telegramId) {
+  try {
+    const { data } = await supabase.from('users').select('*').eq('id', telegramId).limit(1);
+    return data && data.length > 0 ? data[0] : null;
+  } catch (err) {
+    return null;
+  }
+}
+
+async function isUserVerified(telegramId) {
+  if (previewMode[telegramId]) return true;
+  const user = await getUserRecord(telegramId);
+  return !!user;
+}
+
+// ------------------------- أدوات التنسيق -------------------------
+function chunkButtons(buttonsArray, chunkSize = 4) {
+  const chunked = [];
+  for (let i = 0; i < buttonsArray.length; i += chunkSize) chunked.push(buttonsArray.slice(i, i + chunkSize));
+  return chunked;
+}
+
+function sanitizeNumericPrice(val) {
+  if (val === null || val === undefined) return 0;
+  const digitsOnly = String(val).replace(/\D/g, '');
+  if (!digitsOnly) return 0;
+  const num = Number(digitsOnly);
+  return Number.isFinite(num) ? num : 0;
+}
+
+function formatMoney(val) {
+  if (!val) return '0 دج';
+  const str = String(val).trim();
+  if (/[ا-يa-zA-Z]/.test(str)) return str;
+  const clean = str.replace(/\D/g, '');
+  if (!clean) return '0 دج';
+  return Number(clean).toLocaleString('en-US') + ' دج';
+}
+
+function formatDateTime(dateInput) {
+  const target = dateInput ? new Date(dateInput) : new Date();
+  if (isNaN(target.getTime())) return String(dateInput || 'غير محدد');
+  try {
+    return target.toLocaleString('fr-DZ', {
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', hour12: false
+    });
+  } catch (e) {
+    return target.toISOString().replace('T', ' ').slice(0, 16);
+  }
+}
+
+function escapeHtml(str) {
+  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function fitTelegramText(text, isMediaCaption = false) {
+  const limit = isMediaCaption ? 1015 : 3950;
+  const clean = String(text || '');
+  return clean.length > limit ? clean.slice(0, limit - 3) + '…' : clean;
+}
+
+function normalizeMediaRef(v) {
+  if (typeof v !== 'string') return null;
+  const clean = v.trim();
+  if (!clean || clean === 'EMPTY' || clean === 'FREE_NO_RECEIPT') return null;
+  return clean.startsWith('tg:') ? clean.slice(3) : clean;
+}
+
+function parseMediaListFromField(fieldVal) {
+  if (!fieldVal || typeof fieldVal !== 'string') return [];
+  const trimmed = fieldVal.trim();
+  if (!trimmed || trimmed === 'EMPTY') return [];
+  if (trimmed.startsWith('[')) {
     try {
-      if (!raw || !BOT_TOKEN) return null;
-      const p = new URLSearchParams(raw);
-      const hash = p.get('hash');
-      if (!hash) return null;
-      p.delete('hash');
-      const dcs = [...p.entries()].map(([k, v]) => `${k}=${v}`).sort().join('\n');
-      const secret = crypto.createHmac('sha256', 'WebAppData').update(BOT_TOKEN).digest();
-      const calc = crypto.createHmac('sha256', secret).update(dcs).digest('hex');
-      if (!safeEq(calc, hash)) return null;
-      if (Date.now() / 1000 - Number(p.get('auth_date') || 0) > 86400) return null;
-      const id = Number(JSON.parse(p.get('user') || '{}').id);
-      return Number.isSafeInteger(id) && id > 0 ? id : null;
-    } catch (e) { return null; }
+      const arr = JSON.parse(trimmed);
+      if (Array.isArray(arr)) return [...new Set(arr.map(normalizeMediaRef).filter(Boolean))];
+    } catch (e) {}
   }
-  async function auth(req, res, next) {
-    const bearer = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
-    req.tgId = verifyInitData(req.headers['x-telegram-init-data']) || verifyToken(bearer);
-    const key = req.headers['x-admin-key'];
-    const byKey = !!(ADMIN_KEY && key && safeEq(key, ADMIN_KEY));
-    const ids = await getAdminIds();
-    req.isAdmin = byKey || (!!req.tgId && ids.includes(req.tgId));
-    req.adminActor = req.tgId && ids.includes(req.tgId) ? req.tgId : (ids[0] || 0);
-    next();
-  }
-  const needAdmin = (req, res, next) => req.isAdmin ? next() : res.status(403).json({ error: 'للإدارة فقط' });
-  const needUser = async (req, res, next) => {
-    if (!req.tgId) return res.status(401).json({ error: 'سجّل الدخول: أرسل /web للبوت ثم أدخل الرمز في الصفحة' });
-    if (!(await getUserRecord(req.tgId))) return res.status(403).json({ error: 'فعّل حسابك في البوت أولاً (مشاركة رقم الهاتف)' });
-    next();
-  };
+  return [...new Set(trimmed.split('|').map(normalizeMediaRef).filter(Boolean))];
+}
 
-  // ---------- أدوات ----------
-  const isHttp = s => /^https?:\/\/\S+$/i.test(String(s || '').trim());
-  const mediaUrl = ref => isHttp(ref) ? ref : '/api/media/' + encodeURIComponent(ref);
-  const photos = field => parseMediaListFromField(field).slice(0, MAX_PROPERTY_IMAGES).map(mediaUrl);
+function parseImagesFromImageUrl(imageUrlField) {
+  return parseMediaListFromField(imageUrlField);
+}
 
-  function mapAd(r, status, admin) {
-    return {
-      id: r.id,
-      type: r.property_type || '',
-      wilaya: r.state_name || '',
-      commune: '',
-      price: sanitizeNumericPrice(r.price),
-      desc: r.description || r.message || '',
-      feats: [],
-      phone: r.phone || '',
-      date: formatDateTime(r.created_at),
-      status,
-      pkg: status === 'published' ? 'public' : (r.receipt_url === 'FREE_NO_RECEIPT' ? 'free' : 'paid'),
-      user: admin ? String(r.user_id || '') : undefined,
-      imgs: photos(r.image_url)
-    };
-  }
-  function mapInquiry(q, replies, admin) {
-    const att = (q.attachment_url || '').replace(/^tg:/, '');
-    return {
-      id: q.id,
-      status: INQ_STATUS[q.status] || 'open',
-      pid: q.property_id || null,
-      cat: ROLE_REV[q.target_role] || 'الدعم العام',
-      subj: q.subject || '',
-      msg: q.message || '',
-      date: formatDateTime(q.created_at),
-      att: att && att !== 'EMPTY' ? mediaUrl(att) : '',
-      user: admin ? String(q.user_id) : undefined,
-      replies: replies.map(r => `${r.reply_message || (r.media_type === 'photo' ? '🖼 صورة مرفقة' : r.media_type === 'video' ? '🎥 فيديو مرفق' : '')} — الإدارة`)
-    };
-  }
-  async function notifyAdmins(text) {
-    for (const id of await getAdminIds()) {
-      bot.telegram.sendMessage(id, text, { parse_mode: 'HTML' }).catch(() => {});
-    }
-  }
+function buildOrderedBrowsingMedia(item) {
+  const videos = parseMediaListFromField(item.video_url)
+    .slice(0, MAX_PROPERTY_IMAGES).map(ref => ({ type: 'video', ref }));
+  const photos = parseImagesFromImageUrl(item.image_url)
+    .slice(0, MAX_PROPERTY_IMAGES).map(ref => ({ type: 'photo', ref }));
+  return [...videos, ...photos];
+}
 
-  // ---------- وسائط تيليغرام عبر البروكسي (بدون كشف توكن البوت) ----------
-  app.get('/api/media/:id', async (req, res) => {
-    const id = req.params.id;
-    if (!/^[A-Za-z0-9_-]{20,250}$/.test(id)) return res.sendStatus(400);
-    try {
-      const link = await bot.telegram.getFileLink(id);
-      const r = await fetch(String(link));
-      if (!r.ok) return res.sendStatus(404);
-      const p = String(link).toLowerCase();
-      const type = p.endsWith('.mp4') ? 'video/mp4' : p.endsWith('.png') ? 'image/png' : p.endsWith('.webp') ? 'image/webp' : 'image/jpeg';
-      res.setHeader('Content-Type', type);
-      res.setHeader('Cache-Control', 'public, max-age=86400');
-      res.send(Buffer.from(await r.arrayBuffer()));
-    } catch (e) { res.sendStatus(404); }
-  });
+// ------------------------- لوحات المفاتيح المشتركة -------------------------
+function getWebsiteButton() {
+  return websiteUrl ? Markup.button.webApp('🌐 تصفح الموقع الرسمي', websiteUrl) : null;
+}
 
-  // ---------- GET /api/dashboard ----------
-  app.get('/api/dashboard', auth, async (req, res) => {
-    try {
-      const admin = req.isAdmin;
-      const pubQ = supabase.from('test_messages').select('*').order('id', { ascending: false }).limit(100);
-      const penQ = admin
-        ? supabase.from('pending_properties').select('*').order('id', { ascending: false }).limit(100)
-        : Promise.resolve({ data: [] });
-      let inqQ = Promise.resolve({ data: [] });
-      if (admin) inqQ = supabase.from('user_inquiries').select('*').order('id', { ascending: false }).limit(100);
-      else if (req.tgId) inqQ = supabase.from('user_inquiries').select('*').eq('user_id', req.tgId).order('id', { ascending: false }).limit(100);
+function getMainMenuKeyboard(userId) {
+  const rows = [
+    ['🔍 تصفح العقارات المتاحة', '➕ إضافة عقار جديد'],
+    ['🎁 رصيدي وجمع النقاط', '📞 الدعم والإدارة'],
+    ['🌐 تغيير اللغة / Langue', 'ℹ️ عن المنصة']
+  ];
+  const webBtn = getWebsiteButton();
+  if (webBtn) rows.push([webBtn]);
+  if (userId && previewMode[userId]) rows.push([BACK_TO_ADMIN]);
+  return Markup.keyboard(rows).resize();
+}
 
-      const [pub, pen, inq] = await Promise.all([pubQ, penQ, inqQ]);
-      const inqs = inq.data || [];
-      let reps = [];
-      if (inqs.length) {
-        const { data } = await supabase.from('inquiry_replies').select('*').in('inquiry_id', inqs.map(i => i.id)).order('id', { ascending: true });
-        reps = data || [];
-      }
-      const ads = [
-        ...(pub.data || []).map(r => mapAd(r, 'published', admin)),
-        ...(pen.data || []).map(r => mapAd(r, r.status === 'rejected' ? 'rejected' : r.status === 'approved' ? null : 'pending', true)).filter(a => a && a.status)
-      ].filter(a => a.status);
-      res.json({
-        isAdmin: admin,
-        ads,
-        inquiries: inqs.map(q => mapInquiry(q, reps.filter(r => r.inquiry_id === q.id), admin))
-      });
-    } catch (e) {
-      console.error('dashboard error:', e);
-      res.status(500).json({ error: 'تعذّر تحميل البيانات' });
-    }
-  });
+function getAuthKeyboard() {
+  return Markup.keyboard([
+    [Markup.button.contactRequest('📱 مشاركة رقم الهاتف لتفعيل الحساب')]
+  ]).resize().oneTime();
+}
 
-  // ---------- POST /api/ads ----------
-  app.post('/api/ads', limit, auth, needUser, async (req, res) => {
-    try {
-      const b = req.body || {};
-      const type = String(b.type || '').trim().slice(0, 40);
-      const wilaya = String(b.wilaya || '').trim().slice(0, 40);
-      const price = Number(String(b.price).replace(/\D/g, ''));
-      const phone = String(b.phone || '').replace(/[\s.-]/g, '');
-      const commune = String(b.commune || '').trim().slice(0, 60);
-      const desc = String(b.desc || '').trim().slice(0, 1500);
-      const imgs = (Array.isArray(b.imgs) ? b.imgs : []).filter(isHttp).slice(0, MAX_PROPERTY_IMAGES);
-      if (!type || !wilaya) return res.status(400).json({ error: 'النوع والولاية مطلوبان' });
-      if (!Number.isFinite(price) || price <= 0 || price > 1e11) return res.status(400).json({ error: 'سعر غير صالح' });
-      if (!/^0[567]\d{8}$/.test(phone)) return res.status(400).json({ error: 'رقم هاتف غير صالح' });
-      if (b.pkg === 'points') return res.status(400).json({ error: 'النشر بالنقاط متاح عبر البوت فقط حالياً' });
-
-      let receipt = 'FREE_NO_RECEIPT';
-      if (b.pkg === 'paid') {
-        receipt = String(b.receipt || '').trim().slice(0, 500);
-        if (!receipt) return res.status(400).json({ error: 'أرفق رابط الوصل أو ملاحظة الدفع' });
-      }
-      const description = (commune ? `📍 ${commune}\n` : '') + (desc || 'عقار جديد');
-      const { data, error } = await supabase.from('pending_properties').insert([{
-        user_id: req.tgId, property_type: type, state_name: wilaya, price, phone,
-        description, image_url: imgs.length ? imgs.join('|') : 'EMPTY', video_url: 'EMPTY',
-        receipt_url: receipt, status: 'pending'
-      }]).select('id').single();
-      if (error) throw error;
-      notifyAdmins(`🆕 <b>إعلان جديد من الموقع</b> <code>#${data.id}</code>\n🏠 ${escapeHtml(type)} — 📍 ${escapeHtml(wilaya)}\n👤 <code>${req.tgId}</code>`);
-      res.json({ id: data.id });
-    } catch (e) {
-      console.error('POST /api/ads:', e);
-      res.status(500).json({ error: 'تعذّر حفظ الإعلان' });
-    }
-  });
-
-  // ---------- POST /api/inquiries ----------
-  app.post('/api/inquiries', limit, auth, needUser, async (req, res) => {
-    try {
-      const b = req.body || {};
-      const subject = String(b.subj || '').trim().slice(0, 100);
-      const message = String(b.msg || '').trim().slice(0, 2000);
-      if (!subject || !message) return res.status(400).json({ error: 'الموضوع والرسالة مطلوبان' });
-      const pid = Number(b.pid);
-      const att = isHttp(b.att) ? String(b.att).trim() : null;
-      const { data, error } = await supabase.from('user_inquiries').insert([{
-        user_id: req.tgId,
-        property_id: Number.isSafeInteger(pid) && pid > 0 ? pid : null,
-        target_role: ROLE[b.cat] || 'general_support',
-        subject, message, attachment_url: att, status: 'open'
-      }]).select('id').single();
-      if (error) throw error;
-      notifyAdmins(`📩 <b>استعلام جديد من الموقع</b> <code>#${data.id}</code>\n📌 ${escapeHtml(subject)}`);
-      res.json({ id: data.id });
-    } catch (e) {
-      console.error('POST /api/inquiries:', e);
-      res.status(500).json({ error: 'تعذّر حفظ الاستعلام' });
-    }
-  });
-
-  // ---------- POST /api/admin/ads/:id/action ----------
-  app.post('/api/admin/ads/:id/action', limit, auth, needAdmin, async (req, res) => {
-    const id = Number(req.params.id);
-    const action = req.body && req.body.action;
-    if (!Number.isSafeInteger(id) || id <= 0) return res.status(400).json({ error: 'معرّف غير صالح' });
-    try {
-      if (action === 'delete') {
-        await supabase.from('test_messages').delete().eq('id', id);
-        return res.json({ ok: true });
-      }
-      const { data: item, error } = await supabase.from('pending_properties').select('*').eq('id', id).single();
-      if (error || !item) return res.status(404).json({ error: 'الطلب غير متوفر' });
-      if (item.status === 'approved') return res.status(409).json({ error: 'تم نشر الإعلان مسبقاً' });
-      const isFree = item.receipt_url === 'FREE_NO_RECEIPT';
-
-      if (action === 'requeue') {
-        await supabase.from('pending_properties').update({ status: 'pending' }).eq('id', id);
-        return res.json({ ok: true });
-      }
-      if (action === 'approve') {
-        const nowIso = new Date().toISOString();
-        const row = {
-          user_id: item.user_id, property_type: item.property_type, state_name: item.state_name,
-          price: sanitizeNumericPrice(item.price), phone: String(item.phone || '').replace(/\D/g, ''),
-          description: item.description, message: item.description,
-          image_url: item.image_url || 'EMPTY', video_url: item.video_url || 'EMPTY'
-        };
-        let { error: e1 } = await supabase.from('test_messages').insert([{ ...row, created_at: nowIso }]);
-        if (e1) ({ error: e1 } = await supabase.from('test_messages').insert([row]));
-        if (e1) throw e1;
-        await supabase.from('pending_properties').update({ status: 'approved' }).eq('id', id);
-        bot.telegram.sendMessage(item.user_id,
-          `🎉 <b>تمت الموافقة على إعلانك (#${id}) ونشره في المنصة.</b>\n🕒 <code>${escapeHtml(formatDateTime(nowIso))}</code>`,
-          { parse_mode: 'HTML' }).catch(() => {});
-        return res.json({ ok: true });
-      }
-      if (action === 'reject') {
-        await supabase.from('pending_properties').update({ status: 'rejected' }).eq('id', id);
-        bot.telegram.sendMessage(item.user_id,
-          isFree ? `❌ <b>نعتذر، لم تتم الموافقة على نشر إعلانك المجاني (#${id}).</b>`
-                 : `❌ <b>نعتذر، تعذّر قبول وصل الدفع الخاص بإعلانك (#${id}).</b>`,
-          { parse_mode: 'HTML' }).catch(() => {});
-        return res.json({ ok: true });
-      }
-      res.status(400).json({ error: 'إجراء غير معروف' });
-    } catch (e) {
-      console.error('admin action:', e);
-      res.status(500).json({ error: 'تعذّرت العملية' });
-    }
-  });
-
-  // ---------- POST /api/admin/inquiries/:id/reply ----------
-  app.post('/api/admin/inquiries/:id/reply', limit, auth, needAdmin, async (req, res) => {
-    try {
-      const id = Number(req.params.id);
-      const message = String((req.body && req.body.message) || '').trim().slice(0, 2000);
-      if (!Number.isSafeInteger(id) || id <= 0 || !message) return res.status(400).json({ error: 'بيانات غير صالحة' });
-      const { data: inq, error } = await supabase.from('user_inquiries').select('*').eq('id', id).single();
-      if (error || !inq) return res.status(404).json({ error: 'الاستعلام غير موجود' });
-      const { error: e2 } = await supabase.from('inquiry_replies').insert([{
-        inquiry_id: id, admin_id: req.adminActor, admin_role: inq.target_role || 'general_support',
-        reply_message: message, media_type: 'text', attachment_url: null
-      }]);
-      if (e2) throw e2;
-      if (inq.status === 'open') await supabase.from('user_inquiries').update({ status: 'in_progress' }).eq('id', id);
-      const prop = inq.property_id ? `🏠 <b>بخصوص الإعلان:</b> <code>#${inq.property_id}</code>\n` : '';
-      bot.telegram.sendMessage(inq.user_id,
-        fitTelegramText(`📩 <b>رد من إدارة عقار الجزائر على استعلامك #${id}</b>\n${prop}━━━━━━━━━━━━━━━━━━━━\n${escapeHtml(message)}`),
-        { parse_mode: 'HTML' }).catch(() => {});
-      res.json({ ok: true });
-    } catch (e) {
-      console.error('admin reply:', e);
-      res.status(500).json({ error: 'تعذّر حفظ الرد' });
-    }
-  });
-
-  // ---------- 🔑 دخول الموقع بحساب تيليغرام (رمز من البوت) ----------
-  const SECRET = crypto.createHash('sha256').update('aqar-session:' + BOT_TOKEN).digest();
-  const sign = p => crypto.createHmac('sha256', SECRET).update(p).digest('base64url');
-  function signToken(id) {
-    const p = `${id}.${Date.now() + 30 * 864e5}`;
-    return `${p}.${sign(p)}`;
-  }
-  function verifyToken(t) {
-    const m = /^(\d+)\.(\d+)\.([\w-]+)$/.exec(t || '');
-    if (!m || Date.now() > Number(m[2]) || !safeEq(sign(`${m[1]}.${m[2]}`), m[3])) return null;
-    return Number(m[1]);
-  }
-  const loginCodes = new Map(); // code -> { id, exp }
-  setInterval(() => { const n = Date.now(); for (const [c, v] of loginCodes) if (v.exp < n) loginCodes.delete(c); }, 60000).unref();
-
-  // يعمل قبل بقية ميدلوير البوت (يتطلب أن يكون require('./api') قبل أول bot.use)
-  bot.use(async (ctx, next) => {
-    const t = ctx.message && ctx.message.text && ctx.message.text.trim();
-    if (!t || !/^\/(web|login)(@\w+)?$/i.test(t) || !ctx.from) return next();
-    const id = ctx.from.id;
-    if (!(await getUserRecord(id)) && !(await core.isAdmin(id))) {
-      return ctx.reply('⚠️ فعّل حسابك أولاً بمشاركة رقم هاتفك عبر /start.');
-    }
-    for (const [c, v] of loginCodes) if (v.id === id) loginCodes.delete(c);
-    const code = String(crypto.randomInt(100000, 1000000));
-    loginCodes.set(code, { id, exp: Date.now() + 5 * 60000 });
-    await ctx.reply(
-      `🔑 <b>رمز دخول الموقع:</b> <code>${code}</code>\n⏱ صالح 5 دقائق ويُستعمل مرة واحدة.\nأدخله في خانة الربط بالصفحة.`,
-      { parse_mode: 'HTML' }
-    );
-  });
-
-  app.post('/api/auth/code', limit, async (req, res) => {
-    const code = String((req.body && req.body.code) || '').trim();
-    const v = loginCodes.get(code);
-    if (!v || v.exp < Date.now()) return res.status(400).json({ error: 'رمز غير صحيح أو منتهي' });
-    loginCodes.delete(code);
-    const ids = await getAdminIds();
-    res.json({ token: signToken(v.id), id: v.id, isAdmin: ids.includes(v.id) });
-  });
-
-  // ---------- متابعة المستخدم داخل استعلامه (من الموقع) ----------
-  app.post('/api/inquiries/:id/followup', limit, auth, needUser, async (req, res) => {
-    try {
-      const id = Number(req.params.id);
-      const text = String((req.body && req.body.message) || '').trim().slice(0, 800);
-      if (!Number.isSafeInteger(id) || id <= 0 || !text) return res.status(400).json({ error: 'بيانات غير صالحة' });
-      const { data: inq, error } = await supabase.from('user_inquiries').select('*').eq('id', id).single();
-      if (error || !inq || Number(inq.user_id) !== req.tgId) return res.status(404).json({ error: 'الاستعلام غير موجود' });
-      const merged = `${inq.message || ''}\n\n↩️ متابعة (${formatDateTime()}): ${text}`.slice(-4000);
-      const { error: e2 } = await supabase.from('user_inquiries').update({ message: merged, status: 'open' }).eq('id', id);
-      if (e2) throw e2;
-      notifyAdmins(`↩️ <b>متابعة جديدة على الاستعلام</b> <code>#${id}</code>\n${escapeHtml(text)}`);
-      res.json({ ok: true });
-    } catch (e) {
-      console.error('followup:', e);
-      res.status(500).json({ error: 'تعذّر إرسال المتابعة' });
-    }
-  });
-
-  // ---------- تقديم الواجهة من نفس السيرفر: https://DOMAIN/app ----------
-  app.get('/app', (req, res) => res.sendFile(path.join(__dirname, 'aqar-algeria.html')));
+// ------------------------- بناء الـ core وتسجيل الوحدتين -------------------------
+const core = {
+  bot, app, supabase, Markup,
+  WEBHOOK_DOMAIN, getWebsiteUrl, MAX_PROPERTY_IMAGES, BACK_TO_ADMIN,
+  userState, userLang, browsingSession, supportUserSession, previewMode, resetSessions,
+  trackBotMessage, untrackBotMessage, clearTrackedBotMessages, replyTracked, safeDeleteUserMessage,
+  getSetting, getAdminIds, isAdmin, getUserRecord, isUserVerified,
+  chunkButtons, sanitizeNumericPrice, formatMoney, formatDateTime, escapeHtml, fitTelegramText,
+  normalizeMediaRef, parseMediaListFromField, parseImagesFromImageUrl, buildOrderedBrowsingMedia,
+  getWebsiteButton, getMainMenuKeyboard, getAuthKeyboard,
+  modules: {}
 };
+
+core.enterPreview = async (ctx) => {
+  const id = ctx.from.id;
+  previewMode[id] = true;
+  resetSessions(id);
+  await core.modules.user.openUserHome(
+    ctx,
+    `👁 <b>وضع معاينة المنصة</b> — تتصفح الآن بصلاحية مستخدم عادي.\nللعودة إلى الإدارة اضغط <b>${BACK_TO_ADMIN}</b>\n\n`
+  );
+};
+
+core.exitPreview = async (ctx) => {
+  const id = ctx.from.id;
+  delete previewMode[id];
+  resetSessions(id);
+  await core.modules.admin.openAdminHome(ctx);
+};
+
+const userComposer = new Composer();
+const adminComposer = new Composer();
+core.modules.admin = require('./admin')(adminComposer, core);
+core.modules.user = require('./users')(userComposer, core);
+
+function injectBackButton(ctx) {
+  const addBack = (extra) => {
+    const kb = extra && extra.reply_markup && extra.reply_markup.keyboard;
+    if (!Array.isArray(kb)) return extra;
+    const hasBack = kb.some(row => Array.isArray(row) && row.includes(BACK_TO_ADMIN));
+    if (hasBack) return extra;
+    return { ...extra, reply_markup: { ...extra.reply_markup, keyboard: [...kb, [BACK_TO_ADMIN]] } };
+  };
+  for (const m of ['reply', 'replyWithPhoto', 'replyWithVideo']) {
+    const orig = ctx[m].bind(ctx);
+    ctx[m] = (first, extra, ...rest) => orig(first, addBack(extra), ...rest);
+  }
+}
+
+const userMw = userComposer.middleware();
+const adminMw = adminComposer.middleware();
+
+// ------------------------- ميدلوير الاستجابة السلسة -------------------------
+bot.use(async (ctx, next) => {
+  let waitMsgId = null;
+  let isResponded = false;
+  let shouldAbortWaitMsg = false;
+
+  const chatId = ctx.chat?.id || ctx.from?.id;
+  const userId = ctx.from?.id;
+
+  if (chatId && ctx.message) {
+    ctx.sendChatAction('typing').catch(() => {});
+  }
+
+  const timer = setTimeout(async () => {
+    if (isResponded || shouldAbortWaitMsg || !chatId || !ctx.message?.text) return;
+    try {
+      const waitMsg = await ctx.telegram.sendMessage(
+        chatId,
+        '⏳ <i>جاري تحميل البيانات، لحظات من فضلك...</i>',
+        { parse_mode: 'HTML' }
+      );
+      if (isResponded || shouldAbortWaitMsg) {
+        await ctx.telegram.deleteMessage(chatId, waitMsg.message_id).catch(() => {});
+        return;
+      }
+      waitMsgId = waitMsg.message_id;
+      if (userId) trackBotMessage(userId, chatId, waitMsgId);
+    } catch (e) {}
+  }, 2200);
+
+  try {
+    await next();
+  } finally {
+    isResponded = true;
+    shouldAbortWaitMsg = true;
+    clearTimeout(timer);
+    if (waitMsgId && chatId) {
+      if (userId) untrackBotMessage(userId, waitMsgId);
+      await ctx.telegram.deleteMessage(chatId, waitMsgId).catch(() => {});
+    }
+  }
+});
+
+// ------------------------- 🧭 كشف تلقائي لتبدّل الوضع (بدون /start) -------------------------
+bot.use(async (ctx, next) => {
+  if (!ctx.from) return next();
+  const userId = ctx.from.id;
+  const text = ctx.message?.text?.trim() || '';
+  const cbData = ctx.callbackQuery?.data || '';
+
+  await refreshWebsiteUrl();
+
+  const userIsAdmin = await isAdmin(userId);
+  const newRole = userIsAdmin ? 'admin' : 'user';
+  const prevRole = lastKnownRole[userId];
+  const roleChanged = prevRole && prevRole !== newRole;
+
+  lastKnownRole[userId] = newRole;
+
+  if (roleChanged) {
+    delete previewMode[userId];
+    resetSessions(userId);
+    await safeDeleteUserMessage(ctx);
+    await clearTrackedBotMessages(ctx, userId, []);
+
+    if (ctx.callbackQuery) {
+      await ctx.answerCbQuery('🔄 تم تحديث صلاحيتك').catch(() => {});
+    }
+
+    if (newRole === 'admin') {
+      return core.modules.admin.openAdminHome(ctx);
+    } else {
+      const verified = await isUserVerified(userId);
+      if (verified) {
+        return core.modules.user.openUserHome(ctx);
+      }
+      const userName = ctx.from.first_name || 'مستخدمنا الكريم';
+      const authText = await getSetting(
+        'auth_prompt_template',
+        `أهلاً بك يا <b>${escapeHtml(userName)}</b> في <b>منصة عقار الجزائر (Aqar)</b> 🏠\n\n⚠️ <b>تنبيه أمني:</b>\nللاستفادة من خدمات المنصة وتصفح العقارات، يرجى <b>تأكيد رقم هاتفك</b> أولاً بضغطة زر واحدة:`
+      );
+      return replyTracked(ctx, userId, authText.replace(/\\n/g, '\n'), {
+        parse_mode: 'HTML',
+        ...getAuthKeyboard()
+      }, true);
+    }
+  }
+
+  if (!userIsAdmin) {
+    delete previewMode[userId];
+    return userMw(ctx, next);
+  }
+
+  if (text === BACK_TO_ADMIN || text === '/admin') {
+    await safeDeleteUserMessage(ctx);
+    return core.exitPreview(ctx);
+  }
+
+  const forceAdmin =
+    /^(approve_|reject_|requeue_|del_pub_|support_reply_|inq_reply_|inq_status_)/.test(cbData) ||
+    ['replying_to_support_user', 'replying_to_inquiry', 'searching_admin_ads'].includes(userState[userId]?.step);
+
+  if (previewMode[userId]) injectBackButton(ctx);
+  try {
+    if (forceAdmin || !previewMode[userId]) return await adminMw(ctx, next);
+    return await userMw(ctx, next);
+  } catch (err) {
+    console.error('Admin routing error:', err);
+    await ctx.reply(`⚠️ تعذر إتمام العملية: ${escapeHtml(String(err.message || err).slice(0, 200))}`, { parse_mode: 'HTML' }).catch(() => {});
+  }
+});
+
+bot.catch((err, ctx) => {
+  console.error(`Bot error (${ctx?.updateType}):`, err);
+});
+
+// ------------------------- 🚀 تشغيل السيرفر -------------------------
+const PORT = process.env.PORT || 3000;
+if (WEBHOOK_DOMAIN) {
+  app.post(`/bot${BOT_TOKEN}`, async (req, res) => {
+    res.sendStatus(200);
+    if (req.body && req.body.update_id) bot.handleUpdate(req.body);
+  });
+  bot.telegram.setWebhook(`${WEBHOOK_DOMAIN}/bot${BOT_TOKEN}`);
+  app.get('/', (req, res) => res.send('Aqar Algeria Production System is online 🚀'));
+  app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
+} else {
+  bot.launch();
+}
