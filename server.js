@@ -105,7 +105,6 @@ async function refreshWebsiteUrl() {
 }
 function getWebsiteUrl() { return websiteUrl; }
 
-// قراءة مباشرة من قاعدة البيانات في كل استعلام لضمان التبديل الفوري بدون /start
 async function getAdminIds() {
   try {
     const { data, error } = await supabase
@@ -189,6 +188,12 @@ function escapeHtml(str) {
   return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+function fitTelegramText(text, isMediaCaption = false) {
+  const limit = isMediaCaption ? 1015 : 3950;
+  const clean = String(text || '');
+  return clean.length > limit ? clean.slice(0, limit - 3) + '…' : clean;
+}
+
 function normalizeMediaRef(v) {
   if (typeof v !== 'string') return null;
   const clean = v.trim();
@@ -251,7 +256,7 @@ const core = {
   userState, userLang, browsingSession, supportUserSession, previewMode, resetSessions,
   trackBotMessage, untrackBotMessage, clearTrackedBotMessages, replyTracked, safeDeleteUserMessage,
   getSetting, getAdminIds, isAdmin, getUserRecord, isUserVerified,
-  chunkButtons, sanitizeNumericPrice, formatMoney, formatDateTime, escapeHtml,
+  chunkButtons, sanitizeNumericPrice, formatMoney, formatDateTime, escapeHtml, fitTelegramText,
   normalizeMediaRef, parseMediaListFromField, parseImagesFromImageUrl, buildOrderedBrowsingMedia,
   getWebsiteButton, getMainMenuKeyboard, getAuthKeyboard,
   modules: {}
@@ -355,7 +360,6 @@ bot.use(async (ctx, next) => {
 
   lastKnownRole[userId] = newRole;
 
-  // إذا تغيّر وضعه من أدمن إلى يوزر أو من يوزر إلى أدمن بأي استعلام/رسالة بدون /start:
   if (roleChanged) {
     delete previewMode[userId];
     resetSessions(userId);
@@ -426,4 +430,3 @@ if (WEBHOOK_DOMAIN) {
 } else {
   bot.launch();
 }
-
