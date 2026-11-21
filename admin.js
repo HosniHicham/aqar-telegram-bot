@@ -3,6 +3,7 @@
 // 🛡️ SERVER ADMIN — لوحة تحكم الإدارة
 // - تصفح صور وفيديوهات الإعلانات بنفس أسلوب التصفح السلس
 // - التنقل بين الإعلانات (المعلقة / المنشورة / المرفوضة / البحث)
+// - إدارة ومعاينة استعلامات المستخدمين (user_inquiries) وسجل الردود (inquiry_replies)
 // - مراسلة ناشر الإعلان بخصوص الإعلان (#ID) في كل الحالات (بما فيها المنشورة)
 // =========================================================================
 
@@ -18,11 +19,29 @@ module.exports = function registerAdmin(bot, core) {
   // حالة تصفح الإعلانات للأدمن: adminId -> { filter, index, mediaIndex, items, query }
   const adminBrowseState = {};
 
+  // حالة تصفح الاستعلامات للأدمن: adminId -> { statusFilter, index, items }
+  const adminInquiryState = {};
+
+  const ROLE_LABELS = {
+    ads_reviewer: '🏠 مراجعة الإعلانات',
+    payments_admin: '💳 مسؤول الدفع',
+    points_admin: '🪙 مسؤول النقاط',
+    general_support: '💬 الدعم العام',
+    super_admin: '👑 الإدارة العامة'
+  };
+
+  const INQUIRY_STATUS_LABELS = {
+    open: '🆕 مفتوح',
+    in_progress: '⏳ قيد المعالجة',
+    resolved: '✅ تم الحل',
+    closed: '🔒 مغلق'
+  };
+
   // ------------------------- لوحات التحكم السفلية -------------------------
   function getAdminMenuKeyboard() {
     const rows = [
       ['⏳ المعلقة', '✅ المنشورة', '❌ المرفوضة'],
-      ['🔎 بحث سريع', '📊 الإحصائيات'],
+      ['📩 الاستعلامات', '🔎 بحث سريع', '📊 الإحصائيات'],
       ['👁 معاينة المنصة كمستخدم']
     ];
     const webBtn = getWebsiteButton();
@@ -47,16 +66,34 @@ module.exports = function registerAdmin(bot, core) {
     if (idx < total - 1) navRow.push('التالي ➡️');
     if (navRow.length > 0) rows.push(navRow);
 
-    // زر المراسلة بخصوص الإعلان مع الهاشتاج متاح للمعلق والمرفوض والمنشور
     if (currentItem && currentItem.id && (currentItem.user_id || currentItem._resolvedUserId)) {
       rows.push([`✉️ مراسلة بخصوص #${currentItem.id}`]);
     }
 
-    rows.push(['🔎 بحث سريع', '🎛 لوحة الإدارة']);
+    rows.push(['📩 الاستعلامات', '🔎 بحث سريع', '🎛 لوحة الإدارة']);
     rows.push(['👁 معاينة المنصة كمستخدم']);
 
     const webBtn = getWebsiteButton();
     if (webBtn && filterType) rows.push([webBtn]);
+
+    return Markup.keyboard(rows).resize();
+  }
+
+  function getAdminInquiriesKeyboard(idx, total, currentInquiry = null) {
+    const rows = [];
+
+    const navRow = [];
+    if (idx > 0) navRow.push('⬅️ الاستعلام السابق');
+    navRow.push(`📋 ${idx + 1} / ${total}`);
+    if (idx < total - 1) navRow.push('الاستعلام التالي ➡️');
+    if (navRow.length > 0) rows.push(navRow);
+
+    if (currentInquiry && currentInquiry.id) {
+      rows.push([`💬 الرد على الاستعلام #${currentInquiry.id}`]);
+    }
+
+    rows.push(['🆕 المفتوحة', '⏳ قيد المعالجة', '✅ المحلولة', '📂 كل الاستعلامات']);
+    rows.push(['🎛 لوحة الإدارة', '👁 معاينة المنصة كمستخدم']);
 
     return Markup.keyboard(rows).resize();
   }
@@ -82,13 +119,23 @@ module.exports = function registerAdmin(bot, core) {
   }
 
   async function getFullAdminStats() {
-    const [pending, published, rejected, usersCount] = await Promise.all([
+    const [pending, published, rejected, usersCount, openInquiries, inProgressInquiries] = await Promise.all([
       countRows('pending_properties', ['status', 'pending']),
       countRows('test_messages'),
       countRows('pending_properties', ['status', 'rejected']),
-      countRows('users')
+      countRows('users'),
+      countRows('user_inquiries', ['status', 'open']),
+      countRows('user_inquiries', ['status', 'in_progress'])
     ]);
-    return { pending, published, rejected, usersCount };
+    return {
+      pending,
+      published,
+      rejected,
+      usersCount,
+      activeInquiries: openInquiries + inProgressInquiries,
+      openInquiries,
+      inProgressInquiries
+    };
   }
 
   // استرجاع user_id للناشر حتى لو كان الإعلان منشوراً ولا يحمل user_id مباشرة
@@ -126,21 +173,260 @@ module.exports = function registerAdmin(bot, core) {
     const adminId = ctx.from.id;
     delete userState[adminId];
     delete adminBrowseState[adminId];
+    delete adminInquiryState[adminId];
     core.resetSessions(adminId);
 
-    const { pending, published, rejected, usersCount } = await getFullAdminStats();
+    const stats = await getFullAdminStats();
     const name = escapeHtml(ctx.from.first_name || 'المدير');
 
     const text =
       `🛡 <b>لوحة تحكم الإدارة</b>${showStatsNotice ? ' • <b>تقرير الإحصائيات</b>' : ''}\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
       `مرحباً <b>${name}</b>، إليك ملخص المنصة:\n\n` +
-      `⏳ <b>إعلانات قيد المراجعة:</b> <b>${pending}</b>\n` +
-      `✅ <b>إعلانات منشورة:</b> <b>${published}</b>\n` +
-      `❌ <b>إعلانات مرفوضة:</b> <b>${rejected}</b>\n` +
-      `👥 <b>الأعضاء المسجلون:</b> <b>${usersCount}</b>`;
+      `⏳ <b>إعلانات قيد المراجعة:</b> <b>${stats.pending}</b>\n` +
+      `✅ <b>إعلانات منشورة:</b> <b>${stats.published}</b>\n` +
+      `❌ <b>إعلانات مرفوضة:</b> <b>${stats.rejected}</b>\n` +
+      `📩 <b>استعلامات نشطة:</b> <b>${stats.activeInquiries}</b> (🆕 ${stats.openInquiries} | ⏳ ${stats.inProgressInquiries})\n` +
+      `👥 <b>الأعضاء المسجلون:</b> <b>${stats.usersCount}</b>`;
 
     await replyTracked(ctx, adminId, text, { parse_mode: 'HTML', ...getAdminMenuKeyboard() }, true);
+  }
+
+  // =========================================================================
+  // 📩 إدارة ومعاينة الاستعلامات (user_inquiries + inquiry_replies)
+  // =========================================================================
+  async function fetchAdminInquiries(statusFilter = 'all') {
+    try {
+      let q = supabase
+        .from('user_inquiries')
+        .select('*')
+        .order('id', { ascending: false })
+        .limit(100);
+
+      if (statusFilter === 'open') {
+        q = q.eq('status', 'open');
+      } else if (statusFilter === 'in_progress') {
+        q = q.eq('status', 'in_progress');
+      } else if (statusFilter === 'done') {
+        q = q.in('status', ['resolved', 'closed']);
+      }
+
+      const { data, error } = await q;
+      if (error || !data) return [];
+      return data;
+    } catch (e) {
+      console.error('fetchAdminInquiries error:', e);
+      return [];
+    }
+  }
+
+  async function fetchInquiryReplies(inquiryId) {
+    try {
+      const { data, error } = await supabase
+        .from('inquiry_replies')
+        .select('*')
+        .eq('inquiry_id', inquiryId)
+        .order('id', { ascending: true });
+      if (error || !data) return [];
+      return data;
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function buildInquiryInlineButtons(inquiry) {
+    const id = inquiry.id;
+    const rows = [
+      [Markup.button.callback(`💬 الرد على الاستعلام (#${id})`, `inq_reply_${id}`)]
+    ];
+
+    const statusRow = [];
+    if (inquiry.status !== 'resolved') {
+      statusRow.push(Markup.button.callback('✅ تم الحل', `inq_status_resolved_${id}`));
+    }
+    if (inquiry.status !== 'closed') {
+      statusRow.push(Markup.button.callback('🔒 إغلاق', `inq_status_closed_${id}`));
+    }
+    if (inquiry.status === 'resolved' || inquiry.status === 'closed') {
+      statusRow.push(Markup.button.callback('♻️ إعادة فتح', `inq_status_open_${id}`));
+    }
+    if (statusRow.length > 0) rows.push(statusRow);
+
+    return Markup.inlineKeyboard(rows);
+  }
+
+  function formatInquiryCardText(inquiry, replies, idx, total, statusFilter) {
+    const filterTitles = {
+      all: '📂 كل الاستعلامات',
+      open: '🆕 الاستعلامات المفتوحة',
+      in_progress: '⏳ قيد المعالجة',
+      done: '✅ المحلولة والمغلقة'
+    };
+
+    const roleLabel = ROLE_LABELS[inquiry.target_role] || escapeHtml(inquiry.target_role || 'غير محدد');
+    const statusLabel = INQUIRY_STATUS_LABELS[inquiry.status] || escapeHtml(inquiry.status || 'open');
+    const propLine = inquiry.property_id
+      ? `🏠 <b>الإعلان المرتبط:</b> <code>#${inquiry.property_id}</code> (${escapeHtml(inquiry.property_source || '')})\n`
+      : '';
+    const subjectLine = inquiry.subject ? `📌 <b>الموضوع:</b> ${escapeHtml(inquiry.subject)}\n` : '';
+
+    let repliesBlock = `\n💬 <b>سجل ردود الإدارة (${replies.length}):</b>\n`;
+    if (!replies || replies.length === 0) {
+      repliesBlock += `<i>— لا توجد ردود مسجلة على هذا الاستعلام بعد —</i>`;
+    } else {
+      const formattedReplies = replies.map((r, rIdx) => {
+        const rRole = ROLE_LABELS[r.admin_role] || r.admin_role || 'مسؤول';
+        const rTime = formatDateTime(r.created_at);
+        const rMsg = escapeHtml(
+          r.reply_message ||
+          (r.media_type === 'photo' ? '🖼 صورة مرفقة' : r.media_type === 'video' ? '🎥 فيديو مرفق' : '')
+        );
+        return `${rIdx + 1}. <b>[${rRole} | #${r.admin_id}]</b> (<code>${escapeHtml(rTime)}</code>):\n   ↳ ${rMsg}`;
+      });
+      repliesBlock += formattedReplies.join('\n');
+    }
+
+    const fullText =
+      `${filterTitles[statusFilter] || '📩 الاستعلامات'} • <code>#${inquiry.id}</code> (${idx + 1} من ${total})\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `📊 <b>الحالة:</b> ${statusLabel}\n` +
+      `🎯 <b>التخصص:</b> ${roleLabel}\n` +
+      `👤 <b>العميل (ID):</b> <code>${inquiry.user_id}</code>\n` +
+      propLine +
+      `🕒 <b>تاريخ الاستعلام:</b> <code>${escapeHtml(formatDateTime(inquiry.created_at))}</code>\n` +
+      subjectLine +
+      `📝 <b>نص الاستعلام:</b>\n${escapeHtml(inquiry.message || '')}\n` +
+      `━━━━━━━━━━━━━━━━━━━━` +
+      repliesBlock;
+
+    return fullText.length > 3950 ? fullText.slice(0, 3940) + '\n…' : fullText;
+  }
+
+  async function renderAdminInquiryAt(ctx, adminId, statusFilter = 'all', index = 0, refreshList = false) {
+    delete adminBrowseState[adminId];
+    let st = adminInquiryState[adminId];
+
+    if (!st || st.statusFilter !== statusFilter || refreshList) {
+      const items = await fetchAdminInquiries(statusFilter);
+      st = { statusFilter, items, index: 0 };
+      adminInquiryState[adminId] = st;
+    }
+
+    if (!st.items || st.items.length === 0) {
+      delete adminInquiryState[adminId];
+      return replyTracked(
+        ctx, adminId,
+        `📭 <b>لا توجد استعلامات في هذه الفئة حالياً.</b>`,
+        {
+          parse_mode: 'HTML',
+          ...Markup.keyboard([
+            ['🆕 المفتوحة', '⏳ قيد المعالجة', '✅ المحلولة', '📂 كل الاستعلامات'],
+            ['🎛 لوحة الإدارة']
+          ]).resize()
+        },
+        true
+      );
+    }
+
+    let safeIdx = Number(index) || 0;
+    if (safeIdx < 0) safeIdx = 0;
+    if (safeIdx >= st.items.length) safeIdx = st.items.length - 1;
+    st.index = safeIdx;
+
+    const inquiry = st.items[safeIdx];
+    const replies = await fetchInquiryReplies(inquiry.id);
+
+    const cardText = formatInquiryCardText(inquiry, replies, safeIdx, st.items.length, statusFilter);
+    const inlineKb = buildInquiryInlineButtons(inquiry);
+    const bottomKb = getAdminInquiriesKeyboard(safeIdx, st.items.length, inquiry);
+
+    const sentCard = await ctx.reply(cardText, { parse_mode: 'HTML', ...inlineKb }).catch(() => null);
+    const ctrlMsg = await ctx.reply(`🧭 <b>استعلام ${safeIdx + 1} / ${st.items.length}</b>`, {
+      parse_mode: 'HTML',
+      ...bottomKb
+    }).catch(() => null);
+
+    const keepIds = [];
+    if (sentCard?.message_id) {
+      keepIds.push(sentCard.message_id);
+      trackBotMessage(adminId, ctx.chat.id, sentCard.message_id);
+    }
+    if (ctrlMsg?.message_id) {
+      keepIds.push(ctrlMsg.message_id);
+      trackBotMessage(adminId, ctx.chat.id, ctrlMsg.message_id);
+    }
+
+    await clearTrackedBotMessages(ctx, adminId, keepIds);
+  }
+
+  async function saveInquiryReplyAndNotifyUser(ctx, adminId, inquiryId, payloadType, content) {
+    const { data: inquiry, error: fetchErr } = await supabase
+      .from('user_inquiries')
+      .select('*')
+      .eq('id', inquiryId)
+      .single();
+
+    if (fetchErr || !inquiry) {
+      delete userState[adminId];
+      return replyTracked(ctx, adminId, `⚠️ الاستعلام <code>#${inquiryId}</code> غير موجود.`, {
+        parse_mode: 'HTML', ...getAdminMenuKeyboard()
+      }, true);
+    }
+
+    const replyText = payloadType === 'text' ? content.text : (content.caption || '');
+    const attachmentUrl = payloadType === 'text' ? null : `tg:${content.fileId}`;
+
+    const { error: insertReplyErr } = await supabase.from('inquiry_replies').insert([{
+      inquiry_id: inquiryId,
+      admin_id: adminId,
+      admin_role: inquiry.target_role || 'general_support',
+      reply_message: replyText || null,
+      media_type: payloadType,
+      attachment_url: attachmentUrl
+    }]);
+
+    if (insertReplyErr) {
+      console.error('insert inquiry_replies error:', insertReplyErr);
+      delete userState[adminId];
+      return replyTracked(ctx, adminId,
+        `⚠️ تعذر حفظ الرد في قاعدة البيانات: <code>${escapeHtml(insertReplyErr.message)}</code>`,
+        { parse_mode: 'HTML', ...getAdminMenuKeyboard() }, true);
+    }
+
+    if (inquiry.status === 'open') {
+      await supabase.from('user_inquiries').update({ status: 'in_progress' }).eq('id', inquiryId);
+    }
+
+    const propLine = inquiry.property_id ? `🏠 <b>بخصوص الإعلان:</b> <code>#${inquiry.property_id}</code>\n` : '';
+    const userHeader =
+      `📩 <b>رد من إدارة عقار الجزائر على استعلامك #${inquiryId}</b>\n` +
+      propLine +
+      `━━━━━━━━━━━━━━━━━━━━\n`;
+
+    let delivered = true;
+    try {
+      if (payloadType === 'photo') {
+        const cap = userHeader + (replyText ? escapeHtml(replyText) : '🖼 <i>مرفق صورة</i>');
+        await ctx.telegram.sendPhoto(inquiry.user_id, content.fileId, { caption: cap, parse_mode: 'HTML' });
+      } else if (payloadType === 'video') {
+        const cap = userHeader + (replyText ? escapeHtml(replyText) : '🎥 <i>مرفق فيديو</i>');
+        await ctx.telegram.sendVideo(inquiry.user_id, content.fileId, { caption: cap, parse_mode: 'HTML' });
+      } else {
+        await ctx.telegram.sendMessage(inquiry.user_id, userHeader + escapeHtml(replyText), { parse_mode: 'HTML' });
+      }
+    } catch (e) {
+      delivered = false;
+    }
+
+    delete userState[adminId];
+    const deliveryNote = delivered
+      ? `✅ <b>تم حفظ الرد في سجل الاستعلام #${inquiryId} وإرساله للعميل بنجاح.</b>`
+      : `✅ <b>تم حفظ الرد في سجل الاستعلام #${inquiryId}</b> (⚠️ تعذر الإرسال المباشر للعميل عبر تيليجرام).`;
+
+    await ctx.reply(deliveryNote, { parse_mode: 'HTML' }).catch(() => {});
+
+    const st = adminInquiryState[adminId];
+    return renderAdminInquiryAt(ctx, adminId, st?.statusFilter || 'all', st?.index || 0, true);
   }
 
   // ------------------------- جلب الإعلانات حسب الفئة -------------------------
@@ -307,6 +593,7 @@ module.exports = function registerAdmin(bot, core) {
   }
 
   async function renderAdminAdAt(ctx, adminId, filterType, index = 0, refreshList = false, mediaIndex = 0) {
+    delete adminInquiryState[adminId];
     const stats = await getFullAdminStats();
     let st = adminBrowseState[adminId];
 
@@ -436,6 +723,114 @@ module.exports = function registerAdmin(bot, core) {
     await openAdminHome(ctx, true);
   });
 
+  // ------------------------- أزرار قسم الاستعلامات -------------------------
+  bot.hears(['📩 الاستعلامات', '📂 كل الاستعلامات'], async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    await renderAdminInquiryAt(ctx, ctx.from.id, 'all', 0, true);
+  });
+
+  bot.hears('🆕 المفتوحة', async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    await renderAdminInquiryAt(ctx, ctx.from.id, 'open', 0, true);
+  });
+
+  bot.hears('⏳ قيد المعالجة', async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    await renderAdminInquiryAt(ctx, ctx.from.id, 'in_progress', 0, true);
+  });
+
+  bot.hears('✅ المحلولة', async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    await renderAdminInquiryAt(ctx, ctx.from.id, 'done', 0, true);
+  });
+
+  bot.hears('⬅️ الاستعلام السابق', async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    const adminId = ctx.from.id;
+    const st = adminInquiryState[adminId];
+    if (!st) return renderAdminInquiryAt(ctx, adminId, 'all', 0, true);
+    await renderAdminInquiryAt(ctx, adminId, st.statusFilter, Math.max((st.index || 0) - 1, 0), false);
+  });
+
+  bot.hears('الاستعلام التالي ➡️', async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    const adminId = ctx.from.id;
+    const st = adminInquiryState[adminId];
+    if (!st) return renderAdminInquiryAt(ctx, adminId, 'all', 0, true);
+    await renderAdminInquiryAt(ctx, adminId, st.statusFilter, (st.index || 0) + 1, false);
+  });
+
+  bot.hears(/^📋 \d+ \/ \d+$/, async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    const adminId = ctx.from.id;
+    const st = adminInquiryState[adminId];
+    if (!st) return renderAdminInquiryAt(ctx, adminId, 'all', 0, true);
+    await renderAdminInquiryAt(ctx, adminId, st.statusFilter, st.index || 0, true);
+  });
+
+  bot.hears(/^💬 الرد على الاستعلام #(\d+)$/, async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    const adminId = ctx.from.id;
+    const inquiryId = Number(ctx.match[1]);
+
+    userState[adminId] = {
+      step: 'replying_to_inquiry',
+      data: { inquiryId },
+      chatId: ctx.chat.id,
+      wizardMsgId: null
+    };
+
+    await replyTracked(
+      ctx, adminId,
+      `💬 <b>الرد على الاستعلام</b> <code>#${inquiryId}</code>\n\nاكتب ردك أو أرفق صورة/فيديو لحفظه في سجل الردود وإرساله للعميل:`,
+      { parse_mode: 'HTML', ...Markup.keyboard([['📩 الاستعلامات', '🎛 لوحة الإدارة']]).resize() },
+      true
+    );
+  });
+
+  bot.action(/^inq_reply_(\d+)$/, async (ctx) => {
+    const adminId = ctx.from.id;
+    const inquiryId = Number(ctx.match[1]);
+
+    const adminIds = await getAdminIds();
+    if (!adminIds.includes(adminId)) {
+      return ctx.answerCbQuery('⛔ هذا الإجراء مخصص للإدارة فقط.', { show_alert: true });
+    }
+    await ctx.answerCbQuery();
+
+    userState[adminId] = {
+      step: 'replying_to_inquiry',
+      data: { inquiryId },
+      chatId: ctx.chat.id,
+      wizardMsgId: null
+    };
+
+    await replyTracked(
+      ctx, adminId,
+      `💬 <b>الرد على الاستعلام</b> <code>#${inquiryId}</code>\n\nاكتب ردك أو أرفق صورة/فيديو لحفظه في سجل الردود وإرساله للعميل:`,
+      { parse_mode: 'HTML', ...Markup.keyboard([['📩 الاستعلامات', '🎛 لوحة الإدارة']]).resize() },
+      true
+    );
+  });
+
+  bot.action(/^inq_status_(open|resolved|closed)_(\d+)$/, async (ctx) => {
+    const adminId = ctx.from.id;
+    const newStatus = ctx.match[1];
+    const inquiryId = Number(ctx.match[2]);
+
+    const adminIds = await getAdminIds();
+    if (!adminIds.includes(adminId)) {
+      return ctx.answerCbQuery('⛔ هذا الإجراء مخصص للإدارة فقط.', { show_alert: true });
+    }
+
+    await supabase.from('user_inquiries').update({ status: newStatus }).eq('id', inquiryId);
+    await ctx.answerCbQuery(`تم تحديث الحالة: ${INQUIRY_STATUS_LABELS[newStatus] || newStatus}`);
+
+    const st = adminInquiryState[adminId];
+    await renderAdminInquiryAt(ctx, adminId, st?.statusFilter || 'all', st?.index || 0, true);
+  });
+
+  // ------------------------- بحث سريع وتصفح الإعلانات -------------------------
   bot.hears('🔎 بحث سريع', async (ctx) => {
     await safeDeleteUserMessage(ctx);
     const adminId = ctx.from.id;
@@ -631,6 +1026,15 @@ module.exports = function registerAdmin(bot, core) {
       return renderAdminAdAt(ctx, adminId, 'search', 0, false, 0);
     }
 
+    if (state && state.step === 'replying_to_inquiry') {
+      const inquiryId = state.data?.inquiryId;
+      if (!inquiryId) {
+        delete userState[adminId];
+        return openAdminHome(ctx);
+      }
+      return saveInquiryReplyAndNotifyUser(ctx, adminId, inquiryId, 'text', { text });
+    }
+
     if (state && state.step === 'replying_to_support_user') {
       const targetUserId = state.data?.targetUserId;
       const adId = state.data?.adId || null;
@@ -647,6 +1051,13 @@ module.exports = function registerAdmin(bot, core) {
   bot.on('photo', async (ctx, next) => {
     const adminId = ctx.from.id;
     const state = userState[adminId];
+    if (state && state.step === 'replying_to_inquiry') {
+      await safeDeleteUserMessage(ctx);
+      const photo = ctx.message.photo[ctx.message.photo.length - 1];
+      return saveInquiryReplyAndNotifyUser(ctx, adminId, state.data.inquiryId, 'photo', {
+        fileId: photo.file_id, caption: ctx.message.caption || ''
+      });
+    }
     if (state && state.step === 'replying_to_support_user') {
       await safeDeleteUserMessage(ctx);
       const photo = ctx.message.photo[ctx.message.photo.length - 1];
@@ -661,6 +1072,12 @@ module.exports = function registerAdmin(bot, core) {
   bot.on('video', async (ctx, next) => {
     const adminId = ctx.from.id;
     const state = userState[adminId];
+    if (state && state.step === 'replying_to_inquiry') {
+      await safeDeleteUserMessage(ctx);
+      return saveInquiryReplyAndNotifyUser(ctx, adminId, state.data.inquiryId, 'video', {
+        fileId: ctx.message.video.file_id, caption: ctx.message.caption || ''
+      });
+    }
     if (state && state.step === 'replying_to_support_user') {
       await safeDeleteUserMessage(ctx);
       return deliverAdminReplyToUser(ctx, adminId, state.data.targetUserId, 'video', {
