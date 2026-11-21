@@ -223,14 +223,15 @@ function createMessengerModule(core) {
     const unreadCount = await getUnreadCount(userId);
     messengerSession[userId] = { mode: 'list' };
 
+    await clearTrackedBotMessages(ctx, userId, []);
+
     if (!threads.length) {
-      return replyTracked(
-        ctx,
-        userId,
+      const emptyMsg = await ctx.reply(
         '📭 <b>لا توجد رسائل واردة أو محادثات حالياً.</b>',
-        { parse_mode: 'HTML', ...core.getMainMenuKeyboard(userId, unreadCount) },
-        true
-      );
+        { parse_mode: 'HTML', ...core.getMainMenuKeyboard(userId, unreadCount) }
+      ).catch(() => null);
+      if (emptyMsg?.message_id) trackBotMessage(userId, ctx.chat.id, emptyMsg.message_id);
+      return;
     }
 
     const inlineRows = threads.map((t) => ([
@@ -238,20 +239,25 @@ function createMessengerModule(core) {
     ]));
     inlineRows.push([Markup.button.callback('🔄 تحديث القائمة', 'msg_list')]);
 
-    const sent = await replyTracked(
-      ctx,
-      userId,
+    const sent = await ctx.reply(
       '💬 <b>المراسلات — اختر اسم المرسل لفتح المحادثة:</b>',
       {
         parse_mode: 'HTML',
-        ...Markup.inlineKeyboard(inlineRows),
-        ...core.getMainMenuKeyboard(userId, unreadCount)
-      },
-      true
-    );
+        reply_markup: Markup.inlineKeyboard(inlineRows).reply_markup
+      }
+    ).catch(() => null);
 
     if (sent?.message_id) {
+      trackBotMessage(userId, ctx.chat.id, sent.message_id);
       messengerSession[userId].listMessageId = sent.message_id;
+    }
+
+    const kbMsg = await ctx.reply('👇', {
+      ...core.getMainMenuKeyboard(userId, unreadCount)
+    }).catch(() => null);
+
+    if (kbMsg?.message_id) {
+      trackBotMessage(userId, ctx.chat.id, kbMsg.message_id);
     }
   }
 
@@ -286,7 +292,7 @@ function createMessengerModule(core) {
       try {
         await ctx.telegram.editMessageText(ctx.chat.id, targetMsgId, undefined, cardText, {
           parse_mode: 'HTML',
-          ...inlineKb
+          reply_markup: inlineKb.reply_markup
         });
         messengerSession[userId] = {
           mode: 'thread',
@@ -303,19 +309,26 @@ function createMessengerModule(core) {
       }
     }
 
-    const sent = await replyTracked(
-      ctx,
-      userId,
-      cardText,
-      {
-        parse_mode: 'HTML',
-        ...inlineKb,
-        ...core.getMainMenuKeyboard(userId, unreadCount)
-      },
-      true
-    );
+    await clearTrackedBotMessages(ctx, userId, []);
+
+    const sent = await ctx.reply(cardText, {
+      parse_mode: 'HTML',
+      reply_markup: inlineKb.reply_markup
+    }).catch(() => null);
 
     const newMsgId = sent?.message_id || null;
+    if (newMsgId) {
+      trackBotMessage(userId, ctx.chat.id, newMsgId);
+    }
+
+    const kbMsg = await ctx.reply('👇', {
+      ...core.getMainMenuKeyboard(userId, unreadCount)
+    }).catch(() => null);
+
+    if (kbMsg?.message_id) {
+      trackBotMessage(userId, ctx.chat.id, kbMsg.message_id);
+    }
+
     messengerSession[userId] = {
       mode: 'thread',
       threadId,
