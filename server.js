@@ -32,7 +32,6 @@ const browsingSession = {};
 const supportUserSession = {};
 const botMessagesHistory = {};
 const previewMode = {};
-const lastKnownRole = {}; // لتتبع آخر دور معروف ('admin' | 'user') وتنظيف تلقائي عند التبديل
 
 function resetSessions(userId) {
   delete userState[userId];
@@ -83,19 +82,11 @@ async function safeDeleteUserMessage(ctx) {
   } catch (e) {}
 }
 
-// تنظيف شامل عند تبدّل الدور (من أدمن إلى يوزر أو العكس)
-async function performCleanRoleSwitch(ctx, userId, newRole) {
-  delete previewMode[userId];
-  resetSessions(userId);
-  await clearTrackedBotMessages(ctx, userId, []);
-  lastKnownRole[userId] = newRole;
-}
-
 // ------------------------- Supabase مشترك -------------------------
 async function getSetting(key, defaultValue = '') {
   try {
     const { data } = await supabase.from('app_settings').select('value').eq('key', key).single();
-    return data ? data.value : defaultValue;
+    return data && data.value !== undefined && data.value !== null ? String(data.value) : defaultValue;
   } catch (e) {
     return defaultValue;
   }
@@ -104,7 +95,7 @@ async function getSetting(key, defaultValue = '') {
 let websiteUrl = '';
 let websiteUrlAt = 0;
 async function refreshWebsiteUrl() {
-  if (Date.now() - websiteUrlAt < 30000) return websiteUrl;
+  if (Date.now() - websiteUrlAt < 15000) return websiteUrl;
   websiteUrlAt = Date.now();
   const v = await getSetting('website_url', '');
   websiteUrl = v && /^https:\/\//i.test(String(v).trim()) ? String(v).trim() : '';
@@ -298,7 +289,7 @@ function injectBackButton(ctx) {
 const userMw = userComposer.middleware();
 const adminMw = adminComposer.middleware();
 
-// ------------------------- ميدلوير الاستجابة السلسة (مُصحّح) -------------------------
+// ------------------------- ميدلوير الاستجابة السلسة (بدون تعليق) -------------------------
 bot.use(async (ctx, next) => {
   let waitMsgId = null;
   let isResponded = false;
@@ -341,7 +332,7 @@ bot.use(async (ctx, next) => {
   }
 });
 
-// ------------------------- 🧭 توزيع الأدوار السلس حسب الـ ID -------------------------
+// ------------------------- 🧭 توزيع الأدوار حسب الـ ID -------------------------
 bot.use(async (ctx, next) => {
   if (!ctx.from) return next();
   const userId = ctx.from.id;
@@ -350,22 +341,16 @@ bot.use(async (ctx, next) => {
   const isStartCmd = text === '/start' || text.startsWith('/start ');
 
   await refreshWebsiteUrl();
-  const userIsAdmin = await isAdmin(userId, isStartCmd);
-  const currentRole = userIsAdmin ? 'admin' : 'user';
 
-  // إذا تغيّر الدور أو ضغط /start: نمسح كل شيء ونعيد الضبط تلقائياً وبسلاسة
-  if (lastKnownRole[userId] && lastKnownRole[userId] !== currentRole) {
-    await performCleanRoleSwitch(ctx, userId, currentRole);
-  } else if (isStartCmd) {
+  if (isStartCmd) {
     delete previewMode[userId];
     resetSessions(userId);
-    await clearTrackedBotMessages(ctx, userId, []);
-    lastKnownRole[userId] = currentRole;
-  } else {
-    lastKnownRole[userId] = currentRole;
   }
 
+  const userIsAdmin = await isAdmin(userId, isStartCmd);
+
   if (!userIsAdmin) {
+    delete previewMode[userId];
     return userMw(ctx, next);
   }
 
