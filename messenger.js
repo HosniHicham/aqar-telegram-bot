@@ -315,4 +315,249 @@ function createMessengerModule(core) {
     const cardText = formatSingleThreadCard(userId, messages, {
       ...meta,
       propertyId,
-      owner
+      ownerId,
+      receiverId,
+      otherName
+    });
+
+    const threadKb = Markup.keyboard([
+      ['⬅️ قائمة المراسلين'],
+      ['🏠 القائمة الرئيسية']
+    ]).resize();
+
+    const prevSession = messengerSession[userId] || {};
+    let targetMsgId = editMessageId || prevSession.cardMessageId || null;
+
+    if (targetMsgId && ctx.chat?.id) {
+      try {
+        await ctx.telegram.editMessageText(ctx.chat.id, targetMsgId, undefined, cardText, {
+          parse_mode: 'HTML'
+        });
+        messengerSession[userId] = {
+          ...prevSession,
+          mode: 'thread',
+          threadId,
+          propertyId,
+          ownerId,
+          receiverId,
+          otherName,
+          cardMessageId: targetMsgId,
+          unreadCount
+        };
+        return targetMsgId;
+      } catch (_) {
+        await ctx.telegram.deleteMessage(ctx.chat.id, targetMsgId).catch(() => {});
+      }
+    }
+
+    const sent = await replyTracked(
+      ctx,
+      userId,
+      cardText,
+      {
+        parse_mode: 'HTML',
+        ...threadKb
+      },
+      true
+    );
+
+    const newMsgId = sent?.message_id || null;
+    messengerSession[userId] = {
+      ...prevSession,
+      mode: 'thread',
+      threadId,
+      propertyId,
+      ownerId,
+      receiverId,
+      otherName,
+      cardMessageId: newMsgId,
+      unreadCount
+    };
+    return newMsgId;
+  }
+
+  // بدء مراسلة جديدة من بطاقة عقار معيّن
+  async function startPropertyMessage(ctx, propertyItem) {
+    const userId = ctx.from.id;
+    const ownerId = Number(propertyItem?.user_id);
+    const propertyId = Number(propertyItem?.id);
+    const unreadCount = await getUnreadCount(userId);
+
+    if (!propertyId || !ownerId) {
+      return ctx.answerCbQuery('⚠️ بيانات المالك غير متوفرة لهذا العقار.', { show_alert: true }).catch(() => {});
+    }
+    if (ownerId === Number(userId)) {
+      return ctx.answerCbQuery('ℹ️ هذا العقار منشور بحسابك.', { show_alert: true }).catch(() => {});
+    }
+
+    const ownerName = await resolveCleanSenderName(ownerId, 'صاحب العقار');
+    const threadId = buildThreadId(propertyId, ownerId, userId);
+
+    userState[userId] = {
+      step: 'composing_property_message',
+      data: {
+        threadId,
+        propertyId,
+        ownerId,
+        receiverId: ownerId,
+        otherName: ownerName
+      },
+      chatId: ctx.chat.id,
+      wizardMsgId: null
+    };
+
+    const existing = await supabase
+      .from('messanger')
+      .select('id')
+      .eq('thread_id', threadId)
+      .limit(1);
+
+    if (Array.isArray(existing.data) && existing.data.length > 0) {
+      return renderActiveThread(ctx, userId, threadId, {
+        propertyId,
+        ownerId,
+        receiverId: ownerId,
+        otherName: ownerName
+      });
+    }
+
+    const promptText =
+      `💬 <b>مراسلة ${escapeHtml(ownerName)}</b>\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `اكتب رسالتك الآن ليتم إرسالها وحفظها في المراسلات:`;
+
+    const sent = await replyTracked(
+      ctx,
+      userId,
+      promptText,
+      {
+        parse_mode: 'HTML',
+        ...Markup.keyboard([['🏠 القائمة الرئيسية']]).resize()
+      },
+      true
+    );
+    if (sent?.message_id) {
+      userState[userId].wizardMsgId = sent.message_id;
+    }
+  }
+
+  // معالجة نص يكتبه المستخدم (اختيار زر اسم المرسل، أو العودة للقائمة، أو إرسال رسالة في المحادثة)
+  async function handleMessengerText(ctx) {
+    const userId = ctx.from.id;
+    const rawText = ctx.message?.text ? ctx.message.text.trim() : '';
+    if (!rawText || rawText.startsWith('/')) return false;
+
+    const st = userState[userId];
+    const sess = messengerSession[userId];
+
+    // العودة إلى قائمة أسماء المرسلين
+    if (rawText === '⬅️ قائمة المراسلين') {
+      await safeDeleteUserMessage(ctx);
+      await showInboxList(ctx);
+      return true;
+    }
+
+    // اختيار زر اسم المرسل من لوحة المفاتيح السفلية
+    if (sess && sess.mode === 'list' && sess.senderMap && sess.senderMap[rawText]) {
+      await safeDeleteUserMessage(ctx);
+      const target = sess.senderMap[rawText];
+      await renderActiveThread(ctx, userId, target.threadId, {
+        propertyId: target.propertyId,
+        ownerId: target.ownerId,
+        receiverId: target.otherId,
+        otherName: target.cleanName
+      });
+      return true;
+    }
+
+    // إرسال أول رسالة على عقار
+    if (st && st.step === 'composing_property_message') {
+      await safeDeleteUserMessage(ctx);
+      const { threadId, propertyId, ownerId, receiverId, otherName, wizardMsgId } = st.data || {};
+      delete userState[userId];
+
+      if (wizardMsgId && ctx.chat?.id) {
+        await ctx.telegram.deleteMessage(ctx.chat.id, wizardMsgId).catch(() => {});
+      }
+
+      await insertMessage({
+        propertyId,
+        ownerId,
+        senderId: userId,
+        receiverId,
+        senderName: getUserDisplayName(ctx.from),
+        messageType: 'text',
+        message: rawText
+      });
+
+      await renderActiveThread(ctx, userId, threadId, { propertyId, ownerId, receiverId, otherName });
+      return true;
+    }
+
+    // إرسال رسالة داخل محادثة مفتوحة وتحديث البطاقة نفسها
+    if (sess && sess.mode === 'thread' && sess.threadId) {
+      await safeDeleteUserMessage(ctx);
+
+      await insertMessage({
+        propertyId: sess.propertyId,
+        ownerId: sess.ownerId,
+        senderId: userId,
+        receiverId: sess.receiverId,
+        senderName: getUserDisplayName(ctx.from),
+        messageType: 'text',
+        message: rawText
+      });
+
+      await renderActiveThread(ctx, userId, sess.threadId, {
+        propertyId: sess.propertyId,
+        ownerId: sess.ownerId,
+        receiverId: sess.receiverId,
+        otherName: sess.otherName
+      }, sess.cardMessageId);
+      return true;
+    }
+
+    return false;
+  }
+
+  core.bot.hears(/^💬 المراسلات(?: \(\d+\))?$/, async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    await showInboxList(ctx);
+  });
+
+  core.bot.action('msg_list', async (ctx) => {
+    await ctx.answerCbQuery().catch(() => {});
+    await showInboxList(ctx);
+  });
+
+  core.bot.action(/^msg_open:(.+)$/, async (ctx) => {
+    const threadId = ctx.match[1];
+    const msgId = ctx.callbackQuery?.message?.message_id || null;
+    await ctx.answerCbQuery('✅ تم فتح المحادثة').catch(() => {});
+    await renderActiveThread(ctx, ctx.from.id, threadId, {}, msgId);
+  });
+
+  core.bot.action(/^msg_prop:(\d+):(\d+)$/, async (ctx) => {
+    const propertyId = Number(ctx.match[1]);
+    const ownerId = Number(ctx.match[2]);
+    await ctx.answerCbQuery().catch(() => {});
+    await startPropertyMessage(ctx, { id: propertyId, user_id: ownerId });
+  });
+
+  return {
+    messengerSession,
+    buildThreadId,
+    getUnreadCount,
+    getMessengerButtonLabel,
+    insertMessage,
+    fetchSenderThreads,
+    openThreadMessages,
+    formatSingleThreadCard,
+    showInboxList,
+    renderActiveThread,
+    startPropertyMessage,
+    handleMessengerText
+  };
+}
+
+module.exports = { createMessengerModule };
