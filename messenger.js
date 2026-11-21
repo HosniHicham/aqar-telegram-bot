@@ -4,6 +4,26 @@ function buildThreadId(propertyId, ownerId, otherUserId) {
   return `p_${Number(propertyId)}_o_${Number(ownerId)}_u_${Number(otherUserId)}`;
 }
 
+const LRM = '\u200E'; // يجعل السطر يبدأ من اليسار (الطرف الآخر)
+const RLM = '\u200F'; // يجعل السطر يبدأ من اليمين (أنا)
+const SUP = { 0: '⁰', 1: '¹', 2: '²', 3: '³', 4: '⁴', 5: '⁵', 6: '⁶', 7: '⁷', 8: '⁸', 9: '⁹' };
+const MAX_CARD_MESSAGES = 15;
+
+// وقت صغير: HH:MM بأرقام مرتفعة
+function formatSmallTime(iso) {
+  if (!iso) return '';
+  try {
+    const t = new Date(iso).toLocaleTimeString('en-GB', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    });
+    return t.replace(/\d/g, (d) => SUP[d]);
+  } catch (_) {
+    return '';
+  }
+}
+
 function createMessengerModule(core) {
   const {
     Markup,
@@ -11,18 +31,13 @@ function createMessengerModule(core) {
     userState,
     browsingSession,
     supportUserSession,
-    trackBotMessage,
-    clearTrackedBotMessages,
     replyTracked,
     safeDeleteUserMessage,
     escapeHtml,
-    fitTelegramText,
-    formatDateTime,
-    chunkButtons
+    fitTelegramText
   } = core;
 
-  // جلسة المراسلات لكل مستخدم:
-  // { mode: 'list' | 'thread', threadId, propertyId, ownerId, receiverId, otherName, cardMessageId, senderMap }
+  // { mode: 'list' | 'thread', threadId, propertyId, ownerId, receiverId, otherName, cardMessageId }
   const messengerSession = {};
 
   function getUserDisplayName(from) {
@@ -31,7 +46,7 @@ function createMessengerModule(core) {
     return full || from.username || 'مراسل';
   }
 
-  // جلب الاسم الحقيقي من جدول users إذا كان متوفراً، وإلا من sender_name في messanger بدون إظهار ID
+  // اسم نظيف بدون أي ID
   async function resolveCleanSenderName(otherUserId, fallbackSenderName = '') {
     const cleanFallback = String(fallbackSenderName || '').trim();
     if (cleanFallback && !/^مستخدم\s*\d*$/i.test(cleanFallback)) {
@@ -53,37 +68,34 @@ function createMessengerModule(core) {
       }
     } catch (e) {}
 
-    return cleanFallback || 'مراسل';
+    return 'مراسل';
   }
 
-  // حساب عدد الرسائل الواردة غير المقروءة للمستخدم (إلى = userId والمرسل ليس userId)
   async function getUnreadCount(userId) {
     const uid = Number(userId);
     if (!uid) return 0;
 
     try {
-      const { data, error } = await supabase
+      const { count, error } = await supabase
         .from('messanger')
-        .select('id')
+        .select('id', { count: 'exact', head: true })
         .eq('receiver_id', uid)
         .neq('sender_id', uid)
         .eq('is_read', false)
         .eq('is_closed', false);
 
-      if (error || !Array.isArray(data)) return 0;
-      return data.length;
+      if (error) return 0;
+      return count || 0;
     } catch (e) {
       return 0;
     }
   }
 
-  // نص الزر الرئيسي: يظهر الرقم بين قوسين فقط إذا وُجدت رسائل واردة غير مقروءة
   async function getMessengerButtonLabel(userId) {
     const count = await getUnreadCount(userId);
     return count > 0 ? `💬 المراسلات (${count})` : '💬 المراسلات';
   }
 
-  // حفظ رسالة جديدة في جدول messanger
   async function insertMessage({
     propertyId,
     ownerId,
@@ -129,7 +141,6 @@ function createMessengerModule(core) {
     return data;
   }
 
-  // جلب قائمة المراسلين للمستخدم الحالي (اسم فقط بدون ID)
   async function fetchSenderThreads(userId) {
     const uid = Number(userId);
 
@@ -158,7 +169,7 @@ function createMessengerModule(core) {
             propertyId: row.property_id,
             ownerId: row.owner_id,
             otherId,
-            rawSenderName: Number(row.sender_id) === otherId ? (row.sender_name || '') : '',
+            rawSenderName: '',
             unreadCount: 0
           });
         }
@@ -172,16 +183,13 @@ function createMessengerModule(core) {
         }
       }
 
-      const list = [];
-      for (const t of threadsMap.values()) {
-        const cleanName = await resolveCleanSenderName(t.otherId, t.rawSenderName);
-        const buttonText = t.unreadCount > 0 ? `🟢 ${cleanName} (${t.unreadCount})` : cleanName;
-        list.push({
-          ...t,
-          cleanName,
-          buttonText
-        });
-      }
+      const list = await Promise.all(
+        [...threadsMap.values()].map(async (t) => {
+          const cleanName = await resolveCleanSenderName(t.otherId, t.rawSenderName);
+          const buttonText = t.unreadCount > 0 ? `🟢 ${cleanName} (${t.unreadCount})` : cleanName;
+          return { ...t, cleanName, buttonText };
+        })
+      );
 
       return list;
     } catch (e) {
@@ -190,14 +198,12 @@ function createMessengerModule(core) {
     }
   }
 
-  // فتح محادثة: تسجيل الرسائل الواردة كمقروءة + حفظ تاريخ الفتح read_at
   async function openThreadMessages(userId, threadId) {
     const uid = Number(userId);
-    const nowIso = new Date().toISOString();
 
     await supabase
       .from('messanger')
-      .update({ is_read: true, read_at: nowIso })
+      .update({ is_read: true, read_at: new Date().toISOString() })
       .eq('thread_id', threadId)
       .eq('receiver_id', uid)
       .neq('sender_id', uid)
@@ -213,49 +219,89 @@ function createMessengerModule(core) {
     return data;
   }
 
-  // تنسيق البطاقة الواحدة التي تجمع رسائل المحادثة وتُحدّث باستمرار (بدون إظهار ID)
+  // بطاقة المحادثة: رسائلي يمين، رسائل الطرف الآخر يسار، بدون "أنت" ولا ID، ووقت صغير
   function formatSingleThreadCard(userId, messages, meta = {}) {
     const uid = Number(userId);
     const otherRow = messages.find((m) => Number(m.sender_id) !== uid);
-    const otherName = otherRow?.sender_name || meta.otherName || 'مراسل';
-    const propId = messages[0]?.property_id || meta.propertyId;
+    const otherName = meta.otherName || otherRow?.sender_name || 'مراسل';
 
-    const lines = messages.map((m) => {
+    const visible = messages.slice(-MAX_CARD_MESSAGES);
+    const out = [];
+    let lastSender = null;
+
+    for (const m of visible) {
       const mine = Number(m.sender_id) === uid;
-      const who = mine ? 'أنت' : escapeHtml(m.sender_name || otherName);
-      const timeStr = m.created_at ? ` <code>[${escapeHtml(formatDateTime(m.created_at))}]</code>` : '';
+      const mark = mine ? RLM : LRM;
       const icon = mine ? '🟦' : '🟩';
-      return `${icon} <b>${who}:</b> ${escapeHtml(m.message)}${timeStr}`;
-    });
+      const time = formatSmallTime(m.created_at);
+
+      // اسم الطرف الآخر مرة واحدة عند بداية كل تسلسل رسائله
+      if (!mine && lastSender !== m.sender_id) {
+        out.push(`${LRM}<b>${escapeHtml(m.sender_name || otherName)}</b>`);
+      }
+      lastSender = m.sender_id;
+
+      const msgLines = String(m.message).split('\n').map(escapeHtml);
+      msgLines[0] = `${icon} ${msgLines[0]}`;
+      msgLines[msgLines.length - 1] += time ? `  <i>${time}</i>` : '';
+      out.push(msgLines.map((l) => mark + l).join('\n'));
+    }
 
     const header =
-      `💬 <b>محادثة مع ${escapeHtml(otherName)}</b>` +
-      (propId ? ` • عقار <code>#${propId}</code>` : '') +
-      `\n━━━━━━━━━━━━━━━━━━━━\n`;
+      `${LRM}💬 <b>${escapeHtml(otherName)}</b>\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n`;
 
-    const body = lines.length > 0
-      ? lines.join('\n')
+    const body = out.length > 0
+      ? out.join('\n')
       : `<i>لا توجد رسائل بعد. اكتب رسالتك الأولى الآن.</i>`;
 
-    const footer =
-      `\n━━━━━━━━━━━━━━━━━━━━\n` +
-      `✍️ <i>اكتب رسالتك وسيتم إرسالها وتحديث هذه الرسالة مباشرة.</i>`;
+    const footer = `\n━━━━━━━━━━━━━━━━━━━━\n✍️ <i>اكتب رسالتك للإرسال</i>`;
 
     return fitTelegramText(header + body + footer, false);
   }
 
-  // عرض قائمة المراسلين كأزرار في لوحة المفاتيح السفلية (بدون عرض أي رسائل أو ID)
-  async function showInboxList(ctx) {
+  // تعديل رسالة موجودة أو إرسال جديدة إن فشل التعديل. الأزرار inline فلا تنتج أي رسائل إضافية
+  async function upsertCard(ctx, userId, text, inlineKb, targetMsgId) {
+    if (targetMsgId && ctx.chat?.id) {
+      try {
+        await ctx.telegram.editMessageText(ctx.chat.id, targetMsgId, undefined, text, {
+          parse_mode: 'HTML',
+          ...inlineKb
+        });
+        return targetMsgId;
+      } catch (e) {
+        const desc = String(e?.description || e?.message || '');
+        if (desc.includes('message is not modified')) return targetMsgId;
+        await ctx.telegram.deleteMessage(ctx.chat.id, targetMsgId).catch(() => {});
+      }
+    }
+
+    const sent = await replyTracked(
+      ctx,
+      userId,
+      text,
+      { parse_mode: 'HTML', ...inlineKb },
+      true
+    );
+    return sent?.message_id || null;
+  }
+
+  async function showInboxList(ctx, editMessageId = null) {
     const userId = ctx.from.id;
     delete userState[userId];
     delete browsingSession[userId];
     delete supportUserSession[userId];
 
     const threads = await fetchSenderThreads(userId);
-    const unreadCount = await getUnreadCount(userId);
+    const prev = messengerSession[userId] || {};
+    const targetMsgId = editMessageId || prev.cardMessageId || null;
 
     if (!threads.length) {
       delete messengerSession[userId];
+      if (targetMsgId && ctx.chat?.id) {
+        await ctx.telegram.deleteMessage(ctx.chat.id, targetMsgId).catch(() => {});
+      }
+      const unreadCount = await getUnreadCount(userId);
       return replyTracked(
         ctx,
         userId,
@@ -265,42 +311,24 @@ function createMessengerModule(core) {
       );
     }
 
-    const senderMap = {};
-    const buttonLabels = [];
-    for (const t of threads) {
-      senderMap[t.buttonText] = t;
-      buttonLabels.push(t.buttonText);
-    }
+    const buttons = threads.map((t) => Markup.button.callback(t.buttonText, `msg_open:${t.threadId}`));
+    const rows = [];
+    for (let i = 0; i < buttons.length; i += 2) rows.push(buttons.slice(i, i + 2));
+    rows.push([Markup.button.callback('🏠 القائمة الرئيسية', 'msg_home')]);
 
-    messengerSession[userId] = {
-      mode: 'list',
-      senderMap
-    };
-
-    const rows = chunkButtons ? chunkButtons(buttonLabels, 2) : [];
-    if (!rows.length) {
-      for (let i = 0; i < buttonLabels.length; i += 2) {
-        rows.push(buttonLabels.slice(i, i + 2));
-      }
-    }
-    rows.push(['🏠 القائمة الرئيسية']);
-
-    await replyTracked(
+    const msgId = await upsertCard(
       ctx,
       userId,
       '💬 <b>المراسلات</b>',
-      {
-        parse_mode: 'HTML',
-        ...Markup.keyboard(rows).resize()
-      },
-      true
+      Markup.inlineKeyboard(rows),
+      targetMsgId
     );
+
+    messengerSession[userId] = { mode: 'list', cardMessageId: msgId };
   }
 
-  // عرض / تحديث البطاقة الواحدة للمحادثة النشطة
   async function renderActiveThread(ctx, userId, threadId, meta = {}, editMessageId = null) {
     const messages = await openThreadMessages(userId, threadId);
-    const unreadCount = await getUnreadCount(userId);
 
     const first = messages[0] || {};
     const ownerId = Number(first.owner_id || meta.ownerId);
@@ -310,78 +338,40 @@ function createMessengerModule(core) {
       (Number(first.sender_id) === Number(userId) ? first.receiver_id : first.sender_id) ||
       ownerId
     );
-    const otherName = meta.otherName || first.sender_name || 'مراسل';
 
-    const cardText = formatSingleThreadCard(userId, messages, {
-      ...meta,
-      propertyId,
-      ownerId,
-      receiverId,
-      otherName
-    });
-
-    const threadKb = Markup.keyboard([
-      ['⬅️ قائمة المراسلين'],
-      ['🏠 القائمة الرئيسية']
-    ]).resize();
-
-    const prevSession = messengerSession[userId] || {};
-    let targetMsgId = editMessageId || prevSession.cardMessageId || null;
-
-    if (targetMsgId && ctx.chat?.id) {
-      try {
-        await ctx.telegram.editMessageText(ctx.chat.id, targetMsgId, undefined, cardText, {
-          parse_mode: 'HTML'
-        });
-        messengerSession[userId] = {
-          ...prevSession,
-          mode: 'thread',
-          threadId,
-          propertyId,
-          ownerId,
-          receiverId,
-          otherName,
-          cardMessageId: targetMsgId,
-          unreadCount
-        };
-        return targetMsgId;
-      } catch (_) {
-        await ctx.telegram.deleteMessage(ctx.chat.id, targetMsgId).catch(() => {});
-      }
+    let otherName = meta.otherName;
+    if (!otherName) {
+      const otherRow = messages.find((m) => Number(m.sender_id) !== Number(userId));
+      otherName = await resolveCleanSenderName(receiverId, otherRow?.sender_name || '');
     }
 
-    const sent = await replyTracked(
-      ctx,
-      userId,
-      cardText,
-      {
-        parse_mode: 'HTML',
-        ...threadKb
-      },
-      true
-    );
+    const cardText = formatSingleThreadCard(userId, messages, { otherName });
 
-    const newMsgId = sent?.message_id || null;
+    const kb = Markup.inlineKeyboard([
+      [Markup.button.callback('⬅️ قائمة المراسلين', 'msg_list')],
+      [Markup.button.callback('🏠 القائمة الرئيسية', 'msg_home')]
+    ]);
+
+    const prevSession = messengerSession[userId] || {};
+    const targetMsgId = editMessageId || prevSession.cardMessageId || null;
+    const msgId = await upsertCard(ctx, userId, cardText, kb, targetMsgId);
+
     messengerSession[userId] = {
-      ...prevSession,
       mode: 'thread',
       threadId,
       propertyId,
       ownerId,
       receiverId,
       otherName,
-      cardMessageId: newMsgId,
-      unreadCount
+      cardMessageId: msgId
     };
-    return newMsgId;
+    return msgId;
   }
 
-  // بدء مراسلة جديدة من بطاقة عقار معيّن
   async function startPropertyMessage(ctx, propertyItem) {
     const userId = ctx.from.id;
     const ownerId = Number(propertyItem?.user_id);
     const propertyId = Number(propertyItem?.id);
-    const unreadCount = await getUnreadCount(userId);
 
     if (!propertyId || !ownerId) {
       return ctx.answerCbQuery('⚠️ بيانات المالك غير متوفرة لهذا العقار.', { show_alert: true }).catch(() => {});
@@ -392,56 +382,40 @@ function createMessengerModule(core) {
 
     const ownerName = await resolveCleanSenderName(ownerId, 'صاحب العقار');
     const threadId = buildThreadId(propertyId, ownerId, userId);
+    const meta = { propertyId, ownerId, receiverId: ownerId, otherName: ownerName };
 
-    userState[userId] = {
-      step: 'composing_property_message',
-      data: {
-        threadId,
-        propertyId,
-        ownerId,
-        receiverId: ownerId,
-        otherName: ownerName
-      },
-      chatId: ctx.chat.id,
-      wizardMsgId: null
-    };
-
-    const existing = await supabase
+    const { data: existing } = await supabase
       .from('messanger')
       .select('id')
       .eq('thread_id', threadId)
       .limit(1);
 
-    if (Array.isArray(existing.data) && existing.data.length > 0) {
-      return renderActiveThread(ctx, userId, threadId, {
-        propertyId,
-        ownerId,
-        receiverId: ownerId,
-        otherName: ownerName
-      });
+    // محادثة موجودة: نفتحها مباشرة، وأي نص يكتبه المستخدم يُرسل داخلها
+    if (Array.isArray(existing) && existing.length > 0) {
+      delete userState[userId];
+      return renderActiveThread(ctx, userId, threadId, meta);
     }
 
-    const promptText =
-      `💬 <b>مراسلة ${escapeHtml(ownerName)}</b>\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n` +
-      `اكتب رسالتك الآن ليتم إرسالها وحفظها في المراسلات:`;
+    userState[userId] = {
+      step: 'composing_property_message',
+      data: { threadId, ...meta },
+      chatId: ctx.chat.id,
+      wizardMsgId: null
+    };
 
     const sent = await replyTracked(
       ctx,
       userId,
-      promptText,
+      `💬 <b>${escapeHtml(ownerName)}</b>\n━━━━━━━━━━━━━━━━━━━━\nاكتب رسالتك الآن:`,
       {
         parse_mode: 'HTML',
         ...Markup.keyboard([['🏠 القائمة الرئيسية']]).resize()
       },
       true
     );
-    if (sent?.message_id) {
-      userState[userId].wizardMsgId = sent.message_id;
-    }
+    if (sent?.message_id) userState[userId].wizardMsgId = sent.message_id;
   }
 
-  // معالجة نص يكتبه المستخدم (اختيار زر اسم المرسل، أو العودة للقائمة، أو إرسال رسالة في المحادثة)
   async function handleMessengerText(ctx) {
     const userId = ctx.from.id;
     const rawText = ctx.message?.text ? ctx.message.text.trim() : '';
@@ -450,27 +424,7 @@ function createMessengerModule(core) {
     const st = userState[userId];
     const sess = messengerSession[userId];
 
-    // العودة إلى قائمة أسماء المرسلين
-    if (rawText === '⬅️ قائمة المراسلين') {
-      await safeDeleteUserMessage(ctx);
-      await showInboxList(ctx);
-      return true;
-    }
-
-    // اختيار زر اسم المرسل من لوحة المفاتيح السفلية
-    if (sess && sess.mode === 'list' && sess.senderMap && sess.senderMap[rawText]) {
-      await safeDeleteUserMessage(ctx);
-      const target = sess.senderMap[rawText];
-      await renderActiveThread(ctx, userId, target.threadId, {
-        propertyId: target.propertyId,
-        ownerId: target.ownerId,
-        receiverId: target.otherId,
-        otherName: target.cleanName
-      });
-      return true;
-    }
-
-    // إرسال أول رسالة على عقار
+    // أول رسالة على عقار
     if (st && st.step === 'composing_property_message') {
       await safeDeleteUserMessage(ctx);
       const { threadId, propertyId, ownerId, receiverId, otherName, wizardMsgId } = st.data || {};
@@ -486,7 +440,6 @@ function createMessengerModule(core) {
         senderId: userId,
         receiverId,
         senderName: getUserDisplayName(ctx.from),
-        messageType: 'text',
         message: rawText
       });
 
@@ -494,7 +447,7 @@ function createMessengerModule(core) {
       return true;
     }
 
-    // إرسال رسالة داخل محادثة مفتوحة وتحديث البطاقة نفسها
+    // رسالة داخل محادثة مفتوحة: نحذف رسالة المستخدم ونحدّث نفس البطاقة
     if (sess && sess.mode === 'thread' && sess.threadId) {
       await safeDeleteUserMessage(ctx);
 
@@ -504,7 +457,6 @@ function createMessengerModule(core) {
         senderId: userId,
         receiverId: sess.receiverId,
         senderName: getUserDisplayName(ctx.from),
-        messageType: 'text',
         message: rawText
       });
 
@@ -520,28 +472,47 @@ function createMessengerModule(core) {
     return false;
   }
 
+  // زر القائمة السفلي: رسالة واحدة تُحذف ثم تُعرض القائمة
   core.bot.hears(/^💬 المراسلات(?: \(\d+\))?$/, async (ctx) => {
     await safeDeleteUserMessage(ctx);
     await showInboxList(ctx);
   });
 
+  // أزرار inline: تعديل نفس الرسالة بصمت بدون أي رسالة جديدة أو إشعار
   core.bot.action('msg_list', async (ctx) => {
     await ctx.answerCbQuery().catch(() => {});
-    await showInboxList(ctx);
+    const msgId = ctx.callbackQuery?.message?.message_id || null;
+    await showInboxList(ctx, msgId);
   });
 
   core.bot.action(/^msg_open:(.+)$/, async (ctx) => {
-    const threadId = ctx.match[1];
+    await ctx.answerCbQuery().catch(() => {});
     const msgId = ctx.callbackQuery?.message?.message_id || null;
-    await ctx.answerCbQuery('✅ تم فتح المحادثة').catch(() => {});
-    await renderActiveThread(ctx, ctx.from.id, threadId, {}, msgId);
+    await renderActiveThread(ctx, ctx.from.id, ctx.match[1], {}, msgId);
   });
 
   core.bot.action(/^msg_prop:(\d+):(\d+)$/, async (ctx) => {
-    const propertyId = Number(ctx.match[1]);
-    const ownerId = Number(ctx.match[2]);
     await ctx.answerCbQuery().catch(() => {});
-    await startPropertyMessage(ctx, { id: propertyId, user_id: ownerId });
+    await startPropertyMessage(ctx, { id: Number(ctx.match[1]), user_id: Number(ctx.match[2]) });
+  });
+
+  core.bot.action('msg_home', async (ctx) => {
+    await ctx.answerCbQuery().catch(() => {});
+    const userId = ctx.from.id;
+    const msgId = ctx.callbackQuery?.message?.message_id;
+    if (msgId && ctx.chat?.id) {
+      await ctx.telegram.deleteMessage(ctx.chat.id, msgId).catch(() => {});
+    }
+    delete messengerSession[userId];
+    delete userState[userId];
+    const unreadCount = await getUnreadCount(userId);
+    await replyTracked(
+      ctx,
+      userId,
+      '🏠 <b>القائمة الرئيسية</b>',
+      { parse_mode: 'HTML', ...core.getMainMenuKeyboard(userId, unreadCount) },
+      true
+    );
   });
 
   return {
