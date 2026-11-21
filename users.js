@@ -2,6 +2,7 @@
 // =========================================================================
 // 👤 SERVER USERS — كل ما يخص المستخدم
 // يستدعيه server.js (الأب) للمستخدمين العاديين، وللأدمن في وضع المعاينة.
+// المرفق في استعلام العميل مدمج داخل نفس رسالة البطاقة بدون رسائل منفصلة.
 // =========================================================================
 
 module.exports = function registerUsers(bot, core) {
@@ -10,7 +11,7 @@ module.exports = function registerUsers(bot, core) {
     userState, userLang, browsingSession, supportUserSession,
     trackBotMessage, clearTrackedBotMessages, replyTracked, safeDeleteUserMessage,
     getSetting, getAdminIds, getUserRecord, isUserVerified,
-    chunkButtons, sanitizeNumericPrice, formatMoney, formatDateTime, escapeHtml,
+    chunkButtons, sanitizeNumericPrice, formatMoney, formatDateTime, escapeHtml, fitTelegramText,
     normalizeMediaRef, parseMediaListFromField, parseImagesFromImageUrl, buildOrderedBrowsingMedia,
     getMainMenuKeyboard, getAuthKeyboard, getWebsiteUrl
   } = core;
@@ -144,10 +145,10 @@ module.exports = function registerUsers(bot, core) {
     return Markup.keyboard(rows).resize();
   }
 
-  function formatClientInquiryCard(inquiry, replies, idx, total) {
+  function formatClientInquiryCard(inquiry, replies, idx, total, isMediaCaption = false) {
     const statusText = CLIENT_INQUIRY_STATUS[inquiry.status] || escapeHtml(inquiry.status || 'open');
     const roleText = CLIENT_ROLE_NAMES[inquiry.target_role] || escapeHtml(inquiry.target_role || 'الدعم العام');
-    const propLine = inquiry.property_id ? `🏠 <b>الإعلان المرتبط:</b> <code>#${inquiry.property_id}</code>\n` : '';
+    const propLine = inquiry.property_id ? `🏠 <b>الإعلان:</b> <code>#${inquiry.property_id}</code>\n` : '';
     const subjectLine = inquiry.subject ? `📌 <b>الموضوع:</b> ${escapeHtml(inquiry.subject)}\n` : '';
 
     const combinedReplies = Array.isArray(replies) ? [...replies] : [];
@@ -161,12 +162,12 @@ module.exports = function registerUsers(bot, core) {
 
     const hasReplies = combinedReplies.length > 0;
     const replyBanner = hasReplies
-      ? `✅ <b>حالة الرد:</b> تم الرد (${combinedReplies.length} ${combinedReplies.length === 1 ? 'رد' : 'ردود'})\n`
-      : `⏳ <b>حالة الرد:</b> لم يتم الرد بعد — بانتظار الإدارة\n`;
+      ? `✅ <b>الردود:</b> تم الرد (${combinedReplies.length})\n`
+      : `⏳ <b>الردود:</b> بانتظار الإدارة\n`;
 
-    let repliesSection = `\n💬 <b>سجل ردود الإدارة:</b>\n`;
+    let repliesSection = `\n💬 <b>ردود الإدارة:</b>\n`;
     if (!hasReplies) {
-      repliesSection += `<i>— لا توجد ردود مسجلة بعد، وسيصلك إشعار فور رد الإدارة —</i>`;
+      repliesSection += `<i>— لا توجد ردود بعد —</i>`;
     } else {
       repliesSection += combinedReplies.map((rep, rIdx) => {
         const repTime = formatDateTime(rep.created_at);
@@ -175,24 +176,21 @@ module.exports = function registerUsers(bot, core) {
           rep.reply_message ||
           (rep.media_type === 'photo' ? '🖼 صورة مرفقة' : rep.media_type === 'video' ? '🎥 فيديو مرفق' : '')
         );
-        return `${rIdx + 1}. <b>[${repRole}]</b> • <code>${escapeHtml(repTime)}</code>:\n   ↳ ${repBody}`;
+        return `${rIdx + 1}. <b>[${repRole}]</b> <code>${escapeHtml(repTime)}</code>: ${repBody}`;
       }).join('\n');
     }
 
     const text =
-      `📨 <b>استعلاماتي (ID: <code>${inquiry.user_id}</code>)</b> • <code>#${inquiry.id}</code> (${idx + 1} من ${total})\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n` +
-      `📊 <b>الحالة:</b> ${statusText}\n` +
+      `📨 <b>استعلاماتي</b> • <code>#${inquiry.id}</code> (${idx + 1}/${total})\n` +
+      `📊 ${statusText} | 🎯 ${roleText}\n` +
       replyBanner +
-      `🎯 <b>القسم المختص:</b> ${roleText}\n` +
       propLine +
-      `🕒 <b>التاريخ:</b> <code>${escapeHtml(formatDateTime(inquiry.created_at))}</code>\n` +
+      `🕒 <code>${escapeHtml(formatDateTime(inquiry.created_at))}</code>\n` +
       subjectLine +
-      `📝 <b>نص استفسارك:</b>\n${escapeHtml(inquiry.message || '')}\n` +
-      `━━━━━━━━━━━━━━━━━━━━` +
+      `📝 <b>استفسارك:</b> ${escapeHtml(inquiry.message || '')}` +
       repliesSection;
 
-    return text.length > 3950 ? text.slice(0, 3940) + '\n…' : text;
+    return fitTelegramText(text, isMediaCaption);
   }
 
   async function renderClientInquiryAt(ctx, userId, index = 0, refresh = false) {
@@ -228,39 +226,36 @@ module.exports = function registerUsers(bot, core) {
 
     const currentInquiry = st.items[safeIdx];
     const replies = await fetchClientRepliesForInquiry(currentInquiry.id);
-
-    const cardText = formatClientInquiryCard(currentInquiry, replies, safeIdx, st.items.length);
     const kb = getClientInquiriesKeyboard(safeIdx, st.items.length, currentInquiry);
 
-    const keepIds = [];
+    // المرفق يكون داخل نفس رسالة البطاقة (caption) بدون إرسال صورة منفصلة
     const latestMediaReply = [...replies].reverse().find(r => r.attachment_url && (r.media_type === 'photo' || r.media_type === 'video'));
-    let sentMedia = null;
+    const replyAttach = latestMediaReply ? normalizeMediaRef(latestMediaReply.attachment_url) : null;
+    const inqAttach = normalizeMediaRef(currentInquiry.attachment_url);
 
-    if (latestMediaReply && latestMediaReply.attachment_url) {
-      const cleanRef = normalizeMediaRef(latestMediaReply.attachment_url);
-      if (cleanRef) {
-        const mediaCap = `🖼 <b>مرفق رد الإدارة على الاستعلام #${currentInquiry.id}</b>` +
-          (latestMediaReply.reply_message ? `\n${escapeHtml(latestMediaReply.reply_message)}` : '');
-        try {
-          sentMedia = latestMediaReply.media_type === 'video'
-            ? await ctx.replyWithVideo(cleanRef, { caption: mediaCap, parse_mode: 'HTML' })
-            : await ctx.replyWithPhoto(cleanRef, { caption: mediaCap, parse_mode: 'HTML' });
-        } catch (e) {
-          console.error('renderClientInquiryAt media send error:', e.message);
-        }
+    const attachedMedia = replyAttach
+      ? { type: latestMediaReply.media_type === 'video' ? 'video' : 'photo', ref: replyAttach }
+      : (inqAttach ? { type: 'photo', ref: inqAttach } : null);
+
+    let sent = null;
+    if (attachedMedia) {
+      const mediaCaption = formatClientInquiryCard(currentInquiry, replies, safeIdx, st.items.length, true);
+      try {
+        sent = attachedMedia.type === 'video'
+          ? await ctx.replyWithVideo(attachedMedia.ref, { caption: mediaCaption, parse_mode: 'HTML', ...kb })
+          : await ctx.replyWithPhoto(attachedMedia.ref, { caption: mediaCaption, parse_mode: 'HTML', ...kb });
+      } catch (e) {
+        console.error('renderClientInquiryAt media card error:', e.message);
       }
     }
 
-    if (sentMedia?.message_id) {
-      keepIds.push(sentMedia.message_id);
-      trackBotMessage(userId, ctx.chat.id, sentMedia.message_id);
+    if (!sent) {
+      const cardText = formatClientInquiryCard(currentInquiry, replies, safeIdx, st.items.length, false);
+      sent = await ctx.reply(cardText, { parse_mode: 'HTML', ...kb }).catch(() => null);
     }
 
-    const sent = await ctx.reply(cardText, { parse_mode: 'HTML', ...kb }).catch(() => null);
-    if (sent?.message_id) {
-      keepIds.push(sent.message_id);
-      trackBotMessage(userId, ctx.chat.id, sent.message_id);
-    }
+    const keepIds = sent?.message_id ? [sent.message_id] : [];
+    if (sent?.message_id) trackBotMessage(userId, ctx.chat.id, sent.message_id);
     await clearTrackedBotMessages(ctx, userId, keepIds);
   }
 
@@ -962,7 +957,7 @@ module.exports = function registerUsers(bot, core) {
       const mediaLine = totalMedia > 0 ? `\n${mediaTypeLabel}: <b>${safeMediaIndex + 1} / ${totalMedia}</b>` : '';
       const publishedAtText = item.created_at ? formatDateTime(item.created_at) : 'غير مسجل';
 
-      const caption =
+      const rawCaption =
         `🏛 <b>الولاية:</b> ${escapeHtml(item.state_name || '')} (${pageIndex + 1}/${data.length})\n\n` +
         `🏠 <b>العقار:</b> ${escapeHtml(item.property_type || '')}\n` +
         `💰 <b>السعر:</b> ${formatMoney(item.price)}\n` +
@@ -970,6 +965,7 @@ module.exports = function registerUsers(bot, core) {
         `🕒 <b>تاريخ ووقت النشر:</b> <code>${escapeHtml(publishedAtText)}</code>${mediaLine}\n` +
         `📝 <b>الوصف:</b> ${escapeHtml(item.description || item.message || '')}`;
 
+      const caption = fitTelegramText(rawCaption, !!currentMedia);
       const replyKb = getBrowsingKeyboard(pageIndex, data.length, safeMediaIndex, totalMedia);
 
       let sentMsg = null;
@@ -1213,16 +1209,25 @@ module.exports = function registerUsers(bot, core) {
         try {
           if (firstPhotoRef) {
             await ctx.telegram.sendPhoto(currentAdminId, firstPhotoRef, {
-              caption: adminCaption + `\n\n👇 <b>تنبيه للإدارة: هذا إعلان مجاني — يرجى مراجعته واتخاذ القرار:</b>`,
+              caption: fitTelegramText(
+                adminCaption + `\n\n👇 <b>تنبيه للإدارة: هذا إعلان مجاني — يرجى مراجعته واتخاذ القرار:</b>`,
+                true
+              ),
               parse_mode: 'HTML',
               ...adminButtons
             });
           } else {
-            await ctx.telegram.sendMessage(currentAdminId, adminCaption, { parse_mode: 'HTML', ...adminButtons });
+            await ctx.telegram.sendMessage(currentAdminId, fitTelegramText(adminCaption, false), {
+              parse_mode: 'HTML',
+              ...adminButtons
+            });
           }
         } catch (sendErr) {
           console.error(`Failed to send free ad admin notification to ${currentAdminId}:`, sendErr.message);
-          await ctx.telegram.sendMessage(currentAdminId, adminCaption, { parse_mode: 'HTML', ...adminButtons }).catch(() => {});
+          await ctx.telegram.sendMessage(currentAdminId, fitTelegramText(adminCaption, false), {
+            parse_mode: 'HTML',
+            ...adminButtons
+          }).catch(() => {});
         }
       }
 
@@ -1507,7 +1512,7 @@ module.exports = function registerUsers(bot, core) {
     const adDateLine = ad.created_at
       ? `\n🕒 <b>التاريخ والوقت:</b> <code>${escapeHtml(formatDateTime(ad.created_at))}</code>` : '';
 
-    const caption =
+    const rawCaption =
       `🗂 <b>إعلاناتك الخاصة (${safeIdx + 1}/${allAds.length})</b> — الحالة: <b>${ad.status_label}</b>\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
       `🏠 <b>العقار:</b> ${escapeHtml(ad.property_type || '')}\n` +
@@ -1516,6 +1521,7 @@ module.exports = function registerUsers(bot, core) {
       `📞 <b>الهاتف:</b> <code>${escapeHtml(ad.phone || '')}</code>${adDateLine}${mediaLine}\n` +
       `📝 <b>الوصف:</b> ${escapeHtml(ad.description || ad.message || '')}`;
 
+    const caption = fitTelegramText(rawCaption, !!currentMedia);
     const kb = getUserOwnBrowsingKeyboard(safeIdx, allAds.length, safeMediaIdx, totalMedia);
 
     let sentMsg = null;
@@ -1648,26 +1654,38 @@ module.exports = function registerUsers(bot, core) {
 
     const replyMarkup = Markup.inlineKeyboard(inlineRows);
     const bodyText = detailText ? `\n💬 <b>الطلب:</b>\n${escapeHtml(detailText)}` : '';
+    const fullAdminText = header + bodyText;
 
     for (const adminId of adminIds) {
       try {
         if (payloadType === 'photo') {
-          const cap = header + (mediaContent.caption ? `\n💬 <b>الطلب:</b> ${escapeHtml(mediaContent.caption)}` : '\n🖼 <b>مرفق صورة من العميل</b>');
+          const cap = fitTelegramText(
+            header + (mediaContent.caption ? `\n💬 <b>الطلب:</b> ${escapeHtml(mediaContent.caption)}` : '\n🖼 <b>مرفق صورة من العميل</b>'),
+            true
+          );
           await ctx.telegram.sendPhoto(adminId, mediaContent.fileId, { caption: cap, parse_mode: 'HTML', ...replyMarkup });
         } else if (payloadType === 'video') {
-          const cap = header + (mediaContent.caption ? `\n💬 <b>الطلب:</b> ${escapeHtml(mediaContent.caption)}` : '\n🎥 <b>مرفق فيديو من العميل</b>');
+          const cap = fitTelegramText(
+            header + (mediaContent.caption ? `\n💬 <b>الطلب:</b> ${escapeHtml(mediaContent.caption)}` : '\n🎥 <b>مرفق فيديو من العميل</b>'),
+            true
+          );
           await ctx.telegram.sendVideo(adminId, mediaContent.fileId, { caption: cap, parse_mode: 'HTML', ...replyMarkup });
         } else if (receiptRef) {
-          const receiptCaption = header + bodyText + `\n\n🧾 <b>وصل الدفع (الفيرسمون) المرفق للمراجعة أعلاه 👆</b>`;
+          const receiptCaption = fitTelegramText(
+            fullAdminText + `\n\n🧾 <b>وصل الدفع (الفيرسمون) المرفق داخل الرسالة أعلاه 👆</b>`,
+            true
+          );
           try {
             await ctx.telegram.sendPhoto(adminId, receiptRef, { caption: receiptCaption, parse_mode: 'HTML', ...replyMarkup });
           } catch (receiptSendErr) {
-            await ctx.telegram.sendMessage(adminId, header + bodyText + `\n🧾 <b>رابط الوصل:</b> ${escapeHtml(receiptRef)}`, {
+            await ctx.telegram.sendMessage(adminId, fitTelegramText(fullAdminText, false), {
               parse_mode: 'HTML', ...replyMarkup
             });
           }
         } else {
-          await ctx.telegram.sendMessage(adminId, header + bodyText, { parse_mode: 'HTML', ...replyMarkup });
+          await ctx.telegram.sendMessage(adminId, fitTelegramText(fullAdminText, false), {
+            parse_mode: 'HTML', ...replyMarkup
+          });
         }
       } catch (err) {
         console.error(`Support ticket forward error to ${adminId}:`, err.message);
@@ -2262,13 +2280,19 @@ module.exports = function registerUsers(bot, core) {
         for (const currentAdminId of adminIds) {
           try {
             await ctx.telegram.sendPhoto(currentAdminId, photoSource, {
-              caption: adminCaption + `\n\n👇 <b>يرجى مراجعة وصل الدفع أعلاه واتخاذ قرار:</b>`,
+              caption: fitTelegramText(
+                adminCaption + `\n\n👇 <b>يرجى مراجعة وصل الدفع أعلاه واتخاذ قرار:</b>`,
+                true
+              ),
               parse_mode: 'HTML',
               ...adminButtons
             });
           } catch (sendErr) {
             console.error(`Failed to send admin notification to ${currentAdminId}:`, sendErr.message);
-            await ctx.telegram.sendMessage(currentAdminId, adminCaption, { parse_mode: 'HTML', ...adminButtons }).catch(() => {});
+            await ctx.telegram.sendMessage(currentAdminId, fitTelegramText(adminCaption, false), {
+              parse_mode: 'HTML',
+              ...adminButtons
+            }).catch(() => {});
           }
         }
 
