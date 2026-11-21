@@ -32,6 +32,7 @@ const browsingSession = {};
 const supportUserSession = {};
 const botMessagesHistory = {};
 const previewMode = {};
+const lastKnownRole = {}; // 'admin' | 'user'
 
 function resetSessions(userId) {
   delete userState[userId];
@@ -85,8 +86,9 @@ async function safeDeleteUserMessage(ctx) {
 // ------------------------- Supabase مشترك -------------------------
 async function getSetting(key, defaultValue = '') {
   try {
-    const { data } = await supabase.from('app_settings').select('value').eq('key', key).single();
-    return data && data.value !== undefined && data.value !== null ? String(data.value) : defaultValue;
+    const { data } = await supabase.from('app_settings').select('value').eq('key', key).limit(1);
+    const row = Array.isArray(data) ? data[0] : data;
+    return row && row.value !== undefined && row.value !== null ? String(row.value) : defaultValue;
   } catch (e) {
     return defaultValue;
   }
@@ -103,20 +105,21 @@ async function refreshWebsiteUrl() {
 }
 function getWebsiteUrl() { return websiteUrl; }
 
-// قراءة مباشرة من قاعدة البيانات لضمان التبديل الفوري في الاتجاهين
+// قراءة مباشرة من قاعدة البيانات في كل استعلام لضمان التبديل الفوري بدون /start
 async function getAdminIds() {
   try {
     const { data, error } = await supabase
       .from('app_settings')
       .select('value')
       .eq('key', 'admin_id')
-      .single();
+      .limit(1);
 
-    if (error || !data || !data.value) {
+    const row = Array.isArray(data) ? data[0] : data;
+    if (error || !row || row.value === undefined || row.value === null) {
       return [];
     }
 
-    return String(data.value)
+    return String(row.value)
       .split(/[,،\s]+/)
       .map(id => Number(String(id).replace(/\D/g, '').trim()))
       .filter(id => Number.isSafeInteger(id) && id > 0);
@@ -336,22 +339,51 @@ bot.use(async (ctx, next) => {
   }
 });
 
-// ------------------------- 🧭 توزيع الأدوار المباشر حسب الـ ID -------------------------
+// ------------------------- 🧭 كشف تلقائي لتبدّل الوضع (بدون /start) -------------------------
 bot.use(async (ctx, next) => {
   if (!ctx.from) return next();
   const userId = ctx.from.id;
   const text = ctx.message?.text?.trim() || '';
   const cbData = ctx.callbackQuery?.data || '';
-  const isStartCmd = text === '/start' || text.startsWith('/start ');
 
   await refreshWebsiteUrl();
 
-  if (isStartCmd) {
+  const userIsAdmin = await isAdmin(userId);
+  const newRole = userIsAdmin ? 'admin' : 'user';
+  const prevRole = lastKnownRole[userId];
+  const roleChanged = prevRole && prevRole !== newRole;
+
+  lastKnownRole[userId] = newRole;
+
+  // إذا تغيّر وضعه من أدمن إلى يوزر أو من يوزر إلى أدمن بأي استعلام/رسالة بدون /start:
+  if (roleChanged) {
     delete previewMode[userId];
     resetSessions(userId);
-  }
+    await safeDeleteUserMessage(ctx);
+    await clearTrackedBotMessages(ctx, userId, []);
 
-  const userIsAdmin = await isAdmin(userId);
+    if (ctx.callbackQuery) {
+      await ctx.answerCbQuery('🔄 تم تحديث صلاحيتك').catch(() => {});
+    }
+
+    if (newRole === 'admin') {
+      return core.modules.admin.openAdminHome(ctx);
+    } else {
+      const verified = await isUserVerified(userId);
+      if (verified) {
+        return core.modules.user.openUserHome(ctx);
+      }
+      const userName = ctx.from.first_name || 'مستخدمنا الكريم';
+      const authText = await getSetting(
+        'auth_prompt_template',
+        `أهلاً بك يا <b>${escapeHtml(userName)}</b> في <b>منصة عقار الجزائر (Aqar)</b> 🏠\n\n⚠️ <b>تنبيه أمني:</b>\nللاستفادة من خدمات المنصة وتصفح العقارات، يرجى <b>تأكيد رقم هاتفك</b> أولاً بضغطة زر واحدة:`
+      );
+      return replyTracked(ctx, userId, authText.replace(/\\n/g, '\n'), {
+        parse_mode: 'HTML',
+        ...getAuthKeyboard()
+      }, true);
+    }
+  }
 
   if (!userIsAdmin) {
     delete previewMode[userId];
