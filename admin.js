@@ -4,6 +4,7 @@
 // - تصفح صور وفيديوهات الإعلانات بنفس أسلوب التصفح السلس
 // - التنقل بين الإعلانات (المعلقة / المنشورة / المرفوضة / البحث)
 // - إدارة ومعاينة استعلامات المستخدمين (user_inquiries) وسجل الردود (inquiry_replies)
+// - المرفق في الاستعلام والرد مدمج داخل نفس الرسالة (caption) بدون رسائل مرفق منفصلة
 // - مراسلة ناشر الإعلان بخصوص الإعلان (#ID) في كل الحالات (بما فيها المنشورة)
 // =========================================================================
 
@@ -11,7 +12,7 @@ module.exports = function registerAdmin(bot, core) {
   const {
     Markup, supabase, userState,
     trackBotMessage, clearTrackedBotMessages, replyTracked, safeDeleteUserMessage,
-    getAdminIds, sanitizeNumericPrice, formatMoney, formatDateTime, escapeHtml,
+    getAdminIds, sanitizeNumericPrice, formatMoney, formatDateTime, escapeHtml, fitTelegramText,
     normalizeMediaRef, parseImagesFromImageUrl, parseMediaListFromField, buildOrderedBrowsingMedia,
     getWebsiteButton
   } = core;
@@ -247,7 +248,7 @@ module.exports = function registerAdmin(bot, core) {
     return Markup.inlineKeyboard(rows);
   }
 
-  function formatInquiryCardText(inquiry, replies, idx, total, statusFilter) {
+  function formatInquiryCardText(inquiry, replies, idx, total, statusFilter, isMediaCaption = false) {
     const filterTitles = {
       all: '📂 كل الاستعلامات',
       open: '🆕 الاستعلامات المفتوحة',
@@ -258,13 +259,13 @@ module.exports = function registerAdmin(bot, core) {
     const roleLabel = ROLE_LABELS[inquiry.target_role] || escapeHtml(inquiry.target_role || 'غير محدد');
     const statusLabel = INQUIRY_STATUS_LABELS[inquiry.status] || escapeHtml(inquiry.status || 'open');
     const propLine = inquiry.property_id
-      ? `🏠 <b>الإعلان المرتبط:</b> <code>#${inquiry.property_id}</code> (${escapeHtml(inquiry.property_source || '')})\n`
+      ? `🏠 <b>الإعلان:</b> <code>#${inquiry.property_id}</code>\n`
       : '';
     const subjectLine = inquiry.subject ? `📌 <b>الموضوع:</b> ${escapeHtml(inquiry.subject)}\n` : '';
 
-    let repliesBlock = `\n💬 <b>سجل ردود الإدارة (${replies.length}):</b>\n`;
+    let repliesBlock = `\n💬 <b>الردود (${replies.length}):</b>\n`;
     if (!replies || replies.length === 0) {
-      repliesBlock += `<i>— لا توجد ردود مسجلة على هذا الاستعلام بعد —</i>`;
+      repliesBlock += `<i>— لا توجد ردود بعد —</i>`;
     } else {
       const formattedReplies = replies.map((r, rIdx) => {
         const rRole = ROLE_LABELS[r.admin_role] || r.admin_role || 'مسؤول';
@@ -273,25 +274,21 @@ module.exports = function registerAdmin(bot, core) {
           r.reply_message ||
           (r.media_type === 'photo' ? '🖼 صورة مرفقة' : r.media_type === 'video' ? '🎥 فيديو مرفق' : '')
         );
-        return `${rIdx + 1}. <b>[${rRole} | #${r.admin_id}]</b> (<code>${escapeHtml(rTime)}</code>):\n   ↳ ${rMsg}`;
+        return `${rIdx + 1}. <b>[${rRole}]</b> (<code>${escapeHtml(rTime)}</code>): ${rMsg}`;
       });
       repliesBlock += formattedReplies.join('\n');
     }
 
     const fullText =
-      `${filterTitles[statusFilter] || '📩 الاستعلامات'} • <code>#${inquiry.id}</code> (${idx + 1} من ${total})\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n` +
-      `📊 <b>الحالة:</b> ${statusLabel}\n` +
-      `🎯 <b>التخصص:</b> ${roleLabel}\n` +
-      `👤 <b>العميل (ID):</b> <code>${inquiry.user_id}</code>\n` +
+      `${filterTitles[statusFilter] || '📩 الاستعلامات'} • <code>#${inquiry.id}</code> (${idx + 1}/${total})\n` +
+      `📊 <b>الحالة:</b> ${statusLabel} | 🎯 ${roleLabel}\n` +
+      `👤 <b>العميل:</b> <code>${inquiry.user_id}</code> • 🕒 <code>${escapeHtml(formatDateTime(inquiry.created_at))}</code>\n` +
       propLine +
-      `🕒 <b>تاريخ الاستعلام:</b> <code>${escapeHtml(formatDateTime(inquiry.created_at))}</code>\n` +
       subjectLine +
-      `📝 <b>نص الاستعلام:</b>\n${escapeHtml(inquiry.message || '')}\n` +
-      `━━━━━━━━━━━━━━━━━━━━` +
+      `📝 <b>الاستعلام:</b> ${escapeHtml(inquiry.message || '')}` +
       repliesBlock;
 
-    return fullText.length > 3950 ? fullText.slice(0, 3940) + '\n…' : fullText;
+    return fitTelegramText(fullText, isMediaCaption);
   }
 
   async function renderAdminInquiryAt(ctx, adminId, statusFilter = 'all', index = 0, refreshList = false) {
@@ -328,44 +325,41 @@ module.exports = function registerAdmin(bot, core) {
     const inquiry = st.items[safeIdx];
     const replies = await fetchInquiryReplies(inquiry.id);
 
-    const cardText = formatInquiryCardText(inquiry, replies, safeIdx, st.items.length, statusFilter);
     const inlineKb = buildInquiryInlineButtons(inquiry);
     const bottomKb = getAdminInquiriesKeyboard(safeIdx, st.items.length, inquiry);
 
-    const keepIds = [];
-
-    // عرض مرفق العميل أو أحدث مرفق من الردود إن وُجد
-    const inqAttach = normalizeMediaRef(inquiry.attachment_url);
+    // تحديد المرفق المرتبط بالاستعلام أو بأحدث رد لدمجه داخل نفس الرسالة
     const latestMediaReply = [...replies].reverse().find(r => r.attachment_url && (r.media_type === 'photo' || r.media_type === 'video'));
     const replyAttach = latestMediaReply ? normalizeMediaRef(latestMediaReply.attachment_url) : null;
+    const inqAttach = normalizeMediaRef(inquiry.attachment_url);
 
-    let sentMedia = null;
-    if (replyAttach && latestMediaReply) {
-      const rCap = `🖼 <b>مرفق رد الإدارة على الاستعلام #${inquiry.id}</b>` +
-        (latestMediaReply.reply_message ? `\n${escapeHtml(latestMediaReply.reply_message)}` : '');
+    const attachedMedia = replyAttach
+      ? { type: latestMediaReply.media_type === 'video' ? 'video' : 'photo', ref: replyAttach }
+      : (inqAttach ? { type: 'photo', ref: inqAttach } : null);
+
+    let sentCard = null;
+    if (attachedMedia) {
+      const mediaCaption = formatInquiryCardText(inquiry, replies, safeIdx, st.items.length, statusFilter, true);
       try {
-        sentMedia = latestMediaReply.media_type === 'video'
-          ? await ctx.replyWithVideo(replyAttach, { caption: rCap, parse_mode: 'HTML' })
-          : await ctx.replyWithPhoto(replyAttach, { caption: rCap, parse_mode: 'HTML' });
-      } catch (e) {}
-    } else if (inqAttach) {
-      const iCap = `📎 <b>مرفق العميل في الاستعلام #${inquiry.id}</b>`;
-      try {
-        sentMedia = await ctx.replyWithPhoto(inqAttach, { caption: iCap, parse_mode: 'HTML' });
-      } catch (e) {}
+        sentCard = attachedMedia.type === 'video'
+          ? await ctx.replyWithVideo(attachedMedia.ref, { caption: mediaCaption, parse_mode: 'HTML', ...inlineKb })
+          : await ctx.replyWithPhoto(attachedMedia.ref, { caption: mediaCaption, parse_mode: 'HTML', ...inlineKb });
+      } catch (e) {
+        console.error('renderAdminInquiryAt media card error:', e.message);
+      }
     }
 
-    if (sentMedia?.message_id) {
-      keepIds.push(sentMedia.message_id);
-      trackBotMessage(adminId, ctx.chat.id, sentMedia.message_id);
+    if (!sentCard) {
+      const textCard = formatInquiryCardText(inquiry, replies, safeIdx, st.items.length, statusFilter, false);
+      sentCard = await ctx.reply(textCard, { parse_mode: 'HTML', ...inlineKb }).catch(() => null);
     }
 
-    const sentCard = await ctx.reply(cardText, { parse_mode: 'HTML', ...inlineKb }).catch(() => null);
     const ctrlMsg = await ctx.reply(`🧭 <b>استعلام ${safeIdx + 1} / ${st.items.length}</b>`, {
       parse_mode: 'HTML',
       ...bottomKb
     }).catch(() => null);
 
+    const keepIds = [];
     if (sentCard?.message_id) {
       keepIds.push(sentCard.message_id);
       trackBotMessage(adminId, ctx.chat.id, sentCard.message_id);
@@ -427,13 +421,23 @@ module.exports = function registerAdmin(bot, core) {
     let deliverErrorReason = '';
     try {
       if (payloadType === 'photo') {
-        const cap = userHeader + (rawCaption ? escapeHtml(rawCaption) : '🖼 <i>صورة مرفقة من الإدارة</i>');
+        const cap = fitTelegramText(
+          userHeader + (rawCaption ? escapeHtml(rawCaption) : '🖼 <i>صورة مرفقة من الإدارة</i>'),
+          true
+        );
         await ctx.telegram.sendPhoto(inquiry.user_id, content.fileId, { caption: cap, parse_mode: 'HTML' });
       } else if (payloadType === 'video') {
-        const cap = userHeader + (rawCaption ? escapeHtml(rawCaption) : '🎥 <i>فيديو مرفق من الإدارة</i>');
+        const cap = fitTelegramText(
+          userHeader + (rawCaption ? escapeHtml(rawCaption) : '🎥 <i>فيديو مرفق من الإدارة</i>'),
+          true
+        );
         await ctx.telegram.sendVideo(inquiry.user_id, content.fileId, { caption: cap, parse_mode: 'HTML' });
       } else {
-        await ctx.telegram.sendMessage(inquiry.user_id, userHeader + escapeHtml(replyText), { parse_mode: 'HTML' });
+        await ctx.telegram.sendMessage(
+          inquiry.user_id,
+          fitTelegramText(userHeader + escapeHtml(replyText), false),
+          { parse_mode: 'HTML' }
+        );
       }
     } catch (e) {
       delivered = false;
@@ -598,7 +602,7 @@ module.exports = function registerAdmin(bot, core) {
       ? `\n${currentMedia?.type === 'video' ? '🎥 فيديو' : '🖼 صورة'}: <b>${mediaIdx + 1} / ${totalMedia}</b>`
       : '';
 
-    return (
+    const rawCap =
       `${searchLine}${titleMap[effectiveFilter] || '📌 <b>إعلان</b>'} • <code>#${item.id}</code> (${idx + 1} من ${total})\n` +
       `📊 معلق: <b>${stats.pending}</b> | منشور: <b>${stats.published}</b> | مرفوض: <b>${stats.rejected}</b>\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
@@ -608,8 +612,9 @@ module.exports = function registerAdmin(bot, core) {
       `🏠 <b>العقار:</b> ${escapeHtml(item.property_type || '')} — 📍 <b>${escapeHtml(item.state_name || '')}</b>\n` +
       `💰 <b>السعر:</b> ${formatMoney(item.price)} — 📞 <code>${escapeHtml(item.phone || '')}</code>\n` +
       `🖼 <b>الصور:</b> ${photosCount} | 🎥 <b>الفيديو:</b> ${videosCount}${mediaLine}\n` +
-      `📝 <b>التفاصيل:</b> ${escapeHtml(desc.length > 320 ? desc.slice(0, 320) + '…' : desc)}`
-    );
+      `📝 <b>التفاصيل:</b> ${escapeHtml(desc.length > 260 ? desc.slice(0, 260) + '…' : desc)}`;
+
+    return fitTelegramText(rawCap, !!currentMedia);
   }
 
   async function renderAdminAdAt(ctx, adminId, filterType, index = 0, refreshList = false, mediaIndex = 0) {
@@ -991,13 +996,23 @@ module.exports = function registerAdmin(bot, core) {
 
     try {
       if (payloadType === 'photo') {
-        const cap = header + (content.caption ? escapeHtml(content.caption) : '🖼 <i>مرفق صورة</i>');
+        const cap = fitTelegramText(
+          header + (content.caption ? escapeHtml(content.caption) : '🖼 <i>مرفق صورة</i>'),
+          true
+        );
         await ctx.telegram.sendPhoto(targetUserId, content.fileId, { caption: cap, parse_mode: 'HTML' });
       } else if (payloadType === 'video') {
-        const cap = header + (content.caption ? escapeHtml(content.caption) : '🎥 <i>مرفق فيديو</i>');
+        const cap = fitTelegramText(
+          header + (content.caption ? escapeHtml(content.caption) : '🎥 <i>مرفق فيديو</i>'),
+          true
+        );
         await ctx.telegram.sendVideo(targetUserId, content.fileId, { caption: cap, parse_mode: 'HTML' });
       } else {
-        await ctx.telegram.sendMessage(targetUserId, header + escapeHtml(content.text), { parse_mode: 'HTML' });
+        await ctx.telegram.sendMessage(
+          targetUserId,
+          fitTelegramText(header + escapeHtml(content.text), false),
+          { parse_mode: 'HTML' }
+        );
       }
     } catch (e) {
       delete userState[adminId];
