@@ -10,7 +10,7 @@ const RLM = '\u200F'; // أنا: يمين
 const TIMEZONE = 'Africa/Algiers';
 const PAGE_SIZE = 30;
 const NAME_CACHE_TTL = 60 * 60 * 1000;
-const LINE = '▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬';
+const LINE = '▬▬▬▬▬▬▬▬▬▬▬▬';
 const ALBUM_FLUSH_MS = 650;
 const SUP = { 0: '⁰', 1: '¹', 2: '²', 3: '³', 4: '⁴', 5: '⁵', 6: '⁶', 7: '⁷', 8: '⁸', 9: '⁹' };
 
@@ -67,6 +67,14 @@ function isSafeHttpUrl(url) {
 function looksLikeRawTelegramFileId(val) {
   const s = String(val || '').trim();
   return /^A[A-Za-z0-9_-]{25,}$/.test(s) && !/\s/.test(s);
+}
+
+function toDownloadUrl(url) {
+  const clean = String(url || '').trim();
+  if (!isSafeHttpUrl(clean)) return clean;
+  if (/([?&])download=/.test(clean)) return clean;
+  const sep = clean.includes('?') ? '&' : '?';
+  return `${clean}${sep}download=`;
 }
 
 function createMessengerModule(core) {
@@ -214,14 +222,14 @@ function createMessengerModule(core) {
 
       await supabase.storage.from('test_media').upload(fileName, buf, { contentType: mime, upsert: true });
       const { data: pubUrl } = supabase.storage.from('test_media').getPublicUrl(fileName);
-      if (pubUrl && pubUrl.publicUrl) return pubUrl.publicUrl;
+      if (pubUrl && pubUrl.publicUrl) return toDownloadUrl(pubUrl.publicUrl);
     } catch (e) {
       console.error('uploadMediaToTestMedia error:', e?.message || e);
     }
 
     try {
       const fallbackLink = await ctx.telegram.getFileLink(String(fileId).trim());
-      return fallbackLink ? String(fallbackLink.href || fallbackLink).trim() : '';
+      return fallbackLink ? toDownloadUrl(String(fallbackLink.href || fallbackLink).trim()) : '';
     } catch (_) {
       return '';
     }
@@ -425,7 +433,7 @@ function createMessengerModule(core) {
 
     for (const part of parts) {
       if (isSafeHttpUrl(part)) {
-        urls.push(part);
+        urls.push(toDownloadUrl(part));
       } else if (!looksLikeRawTelegramFileId(part)) {
         captionParts.push(part);
       }
@@ -451,7 +459,6 @@ function createMessengerModule(core) {
     const out = [];
     let lastSender = null;
     let lastDay = null;
-    let previewUrl = '';
 
     for (const m of messages) {
       const mine = Number(m.sender_id) === uid;
@@ -480,7 +487,6 @@ function createMessengerModule(core) {
 
       const mediaInfo = extractMediaUrlsFromMessage(m);
       if ((mediaInfo.isPhoto || mediaInfo.isVideo) && mediaInfo.urls.length > 0) {
-        previewUrl = mediaInfo.urls[mediaInfo.urls.length - 1];
         const kindLabel = mediaInfo.isVideo
           ? (mediaInfo.urls.length > 1 ? `فيديوهات (${mediaInfo.urls.length})` : 'فيديو')
           : (mediaInfo.urls.length > 1 ? `صور (${mediaInfo.urls.length})` : 'صورة');
@@ -488,9 +494,9 @@ function createMessengerModule(core) {
 
         const linkLines = mediaInfo.urls.map((u, idx) => {
           const itemTitle = mediaInfo.urls.length > 1
-            ? `${kindLabel} ${idx + 1}`
-            : `رابط ال${kindLabel}`;
-          return `${mark}🔗 <a href="${escapeHtml(u)}">${escapeHtml(itemTitle)}</a>`;
+            ? `⬇️ تحميل ${kindLabel} ${idx + 1}`
+            : `⬇️ تحميل ال${kindLabel}`;
+          return `${mark}<a href="${escapeHtml(u)}">${escapeHtml(itemTitle)}</a>`;
         });
 
         let block = `${mark}${color} ${kindIcon} <b>${escapeHtml(kindLabel)}</b>${stamp}\n` + linkLines.join('\n');
@@ -536,8 +542,7 @@ function createMessengerModule(core) {
 
     return {
       text: fitTelegramText(header + body + footer, false),
-      inlineMarkup,
-      previewUrl
+      inlineMarkup
     };
   }
 
@@ -572,19 +577,13 @@ function createMessengerModule(core) {
   async function upsertCard(ctx, userId, cardObj, keyboardExtra, targetMsgId, forceNew = false) {
     const text = typeof cardObj === 'string' ? cardObj : cardObj.text;
     const inlineMarkup = typeof cardObj === 'string' ? null : cardObj.inlineMarkup;
-    const previewUrl = typeof cardObj === 'string' ? '' : (cardObj.previewUrl || '');
-
-    // معاينة صغيرة أسفل النص (show_above_text: false) حتى لا تكبر الصورة فوق الرسالة أو تخلط التنسيق
-    const linkPreviewOpts = previewUrl
-      ? { is_disabled: false, url: previewUrl, prefer_small_media: true, show_above_text: false }
-      : { is_disabled: true };
 
     if (targetMsgId && ctx.chat?.id) {
       if (!forceNew) {
         try {
           await ctx.telegram.editMessageText(ctx.chat.id, targetMsgId, undefined, text, {
             parse_mode: 'HTML',
-            link_preview_options: linkPreviewOpts,
+            link_preview_options: { is_disabled: true },
             reply_markup: inlineMarkup ? inlineMarkup.reply_markup : { inline_keyboard: [] }
           });
           return targetMsgId;
@@ -598,7 +597,7 @@ function createMessengerModule(core) {
 
     const extraOpts = {
       parse_mode: 'HTML',
-      link_preview_options: linkPreviewOpts,
+      link_preview_options: { is_disabled: true },
       ...keyboardExtra
     };
 
