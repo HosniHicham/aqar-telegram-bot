@@ -428,10 +428,7 @@ function createMessengerModule(core) {
 
     const totalUnread = threads.reduce((s, t) => s + t.unreadCount, 0);
     const text =
-      `💬 <b>المراسلات</b>\n${LINE}\n` +
-      `📂 المحادثات: <b>${threads.length}</b>\n` +
-      (totalUnread > 0 ? `🟢 غير مقروءة: <b>${totalUnread}</b>\n` : `✅ كل الرسائل مقروءة\n`) +
-      `${LINE}\n👇 <i>اختر محادثة من الأزرار بالأسفل</i>`;
+      `👇 <i>اختر محادثة من الأزرار بالأسفل</i>`;
 
     const sent = await replyTracked(
       ctx,
