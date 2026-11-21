@@ -32,6 +32,7 @@ const browsingSession = {};
 const supportUserSession = {};
 const botMessagesHistory = {};
 const previewMode = {};
+const lastKnownRole = {}; // لتتبع آخر دور معروف ('admin' | 'user') وتنظيف تلقائي عند التبديل
 
 function resetSessions(userId) {
   delete userState[userId];
@@ -82,6 +83,14 @@ async function safeDeleteUserMessage(ctx) {
   } catch (e) {}
 }
 
+// تنظيف شامل عند تبدّل الدور (من أدمن إلى يوزر أو العكس)
+async function performCleanRoleSwitch(ctx, userId, newRole) {
+  delete previewMode[userId];
+  resetSessions(userId);
+  await clearTrackedBotMessages(ctx, userId, []);
+  lastKnownRole[userId] = newRole;
+}
+
 // ------------------------- Supabase مشترك -------------------------
 async function getSetting(key, defaultValue = '') {
   try {
@@ -104,13 +113,16 @@ async function refreshWebsiteUrl() {
 function getWebsiteUrl() { return websiteUrl; }
 
 let adminCache = { ids: null, at: 0 };
-async function getAdminIds() {
-  if (adminCache.ids && Date.now() - adminCache.at < 30000) return adminCache.ids;
+async function getAdminIds(forceRefresh = false) {
+  if (!forceRefresh && adminCache.ids && Date.now() - adminCache.at < 2000) return adminCache.ids;
   let ids = [5883330772];
   try {
     const { data } = await supabase.from('app_settings').select('value').eq('key', 'admin_id').single();
     if (data && data.value) {
-      const parsed = data.value.split(/[,،\s]+/).map(id => Number(id.trim())).filter(Boolean);
+      const parsed = String(data.value)
+        .split(/[,،\s]+/)
+        .map(id => Number(String(id).replace(/\D/g, '').trim()))
+        .filter(Boolean);
       if (parsed.length) ids = parsed;
     }
   } catch (e) {}
@@ -118,8 +130,8 @@ async function getAdminIds() {
   return ids;
 }
 
-async function isAdmin(userId) {
-  const ids = await getAdminIds();
+async function isAdmin(userId, forceRefresh = false) {
+  const ids = await getAdminIds(forceRefresh);
   return ids.includes(Number(userId));
 }
 
@@ -329,16 +341,33 @@ bot.use(async (ctx, next) => {
   }
 });
 
-// ------------------------- 🧭 توزيع الأدوار حسب الـ ID -------------------------
+// ------------------------- 🧭 توزيع الأدوار السلس حسب الـ ID -------------------------
 bot.use(async (ctx, next) => {
   if (!ctx.from) return next();
   const userId = ctx.from.id;
-  await refreshWebsiteUrl();
-
-  if (!(await isAdmin(userId))) return userMw(ctx, next);
-
-  const text = ctx.message?.text;
+  const text = ctx.message?.text?.trim() || '';
   const cbData = ctx.callbackQuery?.data || '';
+  const isStartCmd = text === '/start' || text.startsWith('/start ');
+
+  await refreshWebsiteUrl();
+  const userIsAdmin = await isAdmin(userId, isStartCmd);
+  const currentRole = userIsAdmin ? 'admin' : 'user';
+
+  // إذا تغيّر الدور أو ضغط /start: نمسح كل شيء ونعيد الضبط تلقائياً وبسلاسة
+  if (lastKnownRole[userId] && lastKnownRole[userId] !== currentRole) {
+    await performCleanRoleSwitch(ctx, userId, currentRole);
+  } else if (isStartCmd) {
+    delete previewMode[userId];
+    resetSessions(userId);
+    await clearTrackedBotMessages(ctx, userId, []);
+    lastKnownRole[userId] = currentRole;
+  } else {
+    lastKnownRole[userId] = currentRole;
+  }
+
+  if (!userIsAdmin) {
+    return userMw(ctx, next);
+  }
 
   if (text === BACK_TO_ADMIN || text === '/admin') {
     await safeDeleteUserMessage(ctx);
@@ -346,8 +375,8 @@ bot.use(async (ctx, next) => {
   }
 
   const forceAdmin =
-    /^(approve_|reject_|requeue_|del_pub_|support_reply_)\d+/.test(cbData) ||
-    userState[userId]?.step === 'replying_to_support_user';
+    /^(approve_|reject_|requeue_|del_pub_|support_reply_|inq_reply_|inq_status_)/.test(cbData) ||
+    ['replying_to_support_user', 'replying_to_inquiry', 'searching_admin_ads'].includes(userState[userId]?.step);
 
   if (previewMode[userId]) injectBackButton(ctx);
   try {
