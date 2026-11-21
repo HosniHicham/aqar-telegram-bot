@@ -103,26 +103,30 @@ async function refreshWebsiteUrl() {
 }
 function getWebsiteUrl() { return websiteUrl; }
 
-let adminCache = { ids: null, at: 0 };
-async function getAdminIds(forceRefresh = false) {
-  if (!forceRefresh && adminCache.ids && Date.now() - adminCache.at < 2000) return adminCache.ids;
-  let ids = [5883330772];
+// قراءة مباشرة من قاعدة البيانات لضمان التبديل الفوري في الاتجاهين
+async function getAdminIds() {
   try {
-    const { data } = await supabase.from('app_settings').select('value').eq('key', 'admin_id').single();
-    if (data && data.value) {
-      const parsed = String(data.value)
-        .split(/[,،\s]+/)
-        .map(id => Number(String(id).replace(/\D/g, '').trim()))
-        .filter(Boolean);
-      if (parsed.length) ids = parsed;
+    const { data, error } = await supabase
+      .from('app_settings')
+      .select('value')
+      .eq('key', 'admin_id')
+      .single();
+
+    if (error || !data || !data.value) {
+      return [];
     }
-  } catch (e) {}
-  adminCache = { ids, at: Date.now() };
-  return ids;
+
+    return String(data.value)
+      .split(/[,،\s]+/)
+      .map(id => Number(String(id).replace(/\D/g, '').trim()))
+      .filter(id => Number.isSafeInteger(id) && id > 0);
+  } catch (e) {
+    return [];
+  }
 }
 
-async function isAdmin(userId, forceRefresh = false) {
-  const ids = await getAdminIds(forceRefresh);
+async function isAdmin(userId) {
+  const ids = await getAdminIds();
   return ids.includes(Number(userId));
 }
 
@@ -289,7 +293,7 @@ function injectBackButton(ctx) {
 const userMw = userComposer.middleware();
 const adminMw = adminComposer.middleware();
 
-// ------------------------- ميدلوير الاستجابة السلسة (بدون تعليق) -------------------------
+// ------------------------- ميدلوير الاستجابة السلسة -------------------------
 bot.use(async (ctx, next) => {
   let waitMsgId = null;
   let isResponded = false;
@@ -332,7 +336,7 @@ bot.use(async (ctx, next) => {
   }
 });
 
-// ------------------------- 🧭 توزيع الأدوار حسب الـ ID -------------------------
+// ------------------------- 🧭 توزيع الأدوار المباشر حسب الـ ID -------------------------
 bot.use(async (ctx, next) => {
   if (!ctx.from) return next();
   const userId = ctx.from.id;
@@ -347,7 +351,7 @@ bot.use(async (ctx, next) => {
     resetSessions(userId);
   }
 
-  const userIsAdmin = await isAdmin(userId, isStartCmd);
+  const userIsAdmin = await isAdmin(userId);
 
   if (!userIsAdmin) {
     delete previewMode[userId];
