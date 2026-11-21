@@ -11,6 +11,7 @@ const TIMEZONE = 'Africa/Algiers';
 const PAGE_SIZE = 30;
 const NAME_CACHE_TTL = 60 * 60 * 1000;
 const LINE = '▬▬▬▬▬▬▬▬▬▬▬▬';
+const ALBUM_FLUSH_MS = 650; // مهلة تجميع عدة صور أو عدة فيديوهات مرسلة كألبوم واحد
 const SUP = { 0: '⁰', 1: '¹', 2: '²', 3: '³', 4: '⁴', 5: '⁵', 6: '⁶', 7: '⁷', 8: '⁸', 9: '⁹' };
 
 const BTN_PREV = '◀️ السابق';
@@ -57,6 +58,11 @@ function dayLabel(iso) {
   return key;
 }
 
+function isSafeHttpUrl(url) {
+  const s = String(url || '').trim();
+  return /^https?:\/\//i.test(s);
+}
+
 function createMessengerModule(core) {
   const {
     Markup,
@@ -71,11 +77,14 @@ function createMessengerModule(core) {
   } = core;
 
   // { mode: 'list' | 'thread', senderMap, threadId, propertyId, ownerId,
-  //   receiverId, otherName, cardMessageId, page, photosMap }
+  //   receiverId, otherName, cardMessageId, page, mediaMap }
   const messengerSession = {};
 
   // كاش الأسماء: id → { name, at }
   const nameCache = new Map();
+
+  // مخزن مؤقت لتجميع الألبومات (عدة صور أو عدة فيديوهات بنفس media_group_id)
+  const pendingAlbums = new Map();
 
   function nameFromTelegramObj(obj) {
     if (!obj) return '';
@@ -150,6 +159,18 @@ function createMessengerModule(core) {
     return count > 0 ? `💬 المراسلات (${count})` : '💬 المراسلات';
   }
 
+  // تحويل file_id إلى رابط مباشر من تيليغرام
+  async function fileIdToUrl(fileId) {
+    if (!fileId) return '';
+    try {
+      const link = await core.bot.telegram.getFileLink(String(fileId).trim());
+      return link ? String(link.href || link).trim() : '';
+    } catch (e) {
+      console.error('getFileLink error:', e?.message || e);
+      return '';
+    }
+  }
+
   async function insertMessage({
     propertyId,
     ownerId,
@@ -157,10 +178,19 @@ function createMessengerModule(core) {
     receiverId,
     senderName,
     messageType = 'text',
-    message
+    message,
+    mediaType = null,
+    mediaUrls = null,
+    mediaGroupId = null
   }) {
     const cleanMsg = String(message || '').trim();
-    if (!cleanMsg) return null;
+    const urlsArray = Array.isArray(mediaUrls)
+      ? mediaUrls.map((u) => String(u || '').trim()).filter(Boolean)
+      : (typeof mediaUrls === 'string' && mediaUrls.trim()
+          ? mediaUrls.split(/\s*\|\|\s*|\s*,\s*|\n+/).map((u) => u.trim()).filter(Boolean)
+          : []);
+
+    if (!cleanMsg && !urlsArray.length) return null;
 
     const pId = Number(propertyId);
     const oId = Number(ownerId);
@@ -169,24 +199,55 @@ function createMessengerModule(core) {
     const otherId = sId === oId ? rId : sId;
     const threadId = buildThreadId(pId, oId, otherId);
 
-    const { data, error } = await supabase
+    const finalMessage = cleanMsg || urlsArray.join('\n');
+    const payload = {
+      thread_id: threadId,
+      property_id: pId,
+      owner_id: oId,
+      sender_id: sId,
+      receiver_id: rId,
+      sender_name: String(senderName || 'مراسل').trim() || 'مراسل',
+      message_type: messageType,
+      message: finalMessage,
+      media_type: mediaType || (urlsArray.length ? messageType : null),
+      media_urls: urlsArray.length ? urlsArray.join(' || ') : null,
+      media_group_id: mediaGroupId || null,
+      is_read: false,
+      is_closed: false,
+      created_at: new Date().toISOString(),
+      read_at: null
+    };
+
+    let { data, error } = await supabase
       .from('messanger')
-      .insert([{
-        thread_id: threadId,
-        property_id: pId,
-        owner_id: oId,
-        sender_id: sId,
-        receiver_id: rId,
-        sender_name: String(senderName || 'مراسل').trim() || 'مراسل',
-        message_type: messageType,
-        message: cleanMsg,
-        is_read: false,
-        is_closed: false,
-        created_at: new Date().toISOString(),
-        read_at: null
-      }])
+      .insert([payload])
       .select()
       .single();
+
+    // fallback إذا لم تكن الأعمدة الإضافية موجودة في جدول قديم
+    if (error) {
+      const fallbackPayload = {
+        thread_id: payload.thread_id,
+        property_id: payload.property_id,
+        owner_id: payload.owner_id,
+        sender_id: payload.sender_id,
+        receiver_id: payload.receiver_id,
+        sender_name: payload.sender_name,
+        message_type: payload.message_type,
+        message: payload.message,
+        is_read: false,
+        is_closed: false,
+        created_at: payload.created_at,
+        read_at: null
+      };
+      const retry = await supabase
+        .from('messanger')
+        .insert([fallbackPayload])
+        .select()
+        .single();
+      data = retry.data;
+      error = retry.error;
+    }
 
     if (error) {
       console.error('messanger insert error:', error);
@@ -291,45 +352,51 @@ function createMessengerModule(core) {
     return { messages, total, totalPages, page: safePage };
   }
 
-  // استخراج file_id والتعليق إن وُجد لرسالة صورة
-  function parsePhotoPayload(rawMessage) {
-    const str = String(rawMessage || '').trim();
-    if (!str) return { fileId: '', caption: '' };
-    if (str.startsWith('{')) {
-      try {
-        const parsed = JSON.parse(str);
-        return {
-          fileId: String(parsed.file_id || parsed.fileId || '').trim(),
-          caption: String(parsed.caption || '').trim()
-        };
-      } catch (_) {}
+  // استخراج روابط الصور أو الفيديوهات والتعليق من رسالة الوسائط
+  function extractMediaInfo(m) {
+    const mType = String(m.media_type || m.message_type || '').toLowerCase();
+    const isVideo = mType === 'video' || mType === 'videos';
+    const isPhoto = mType === 'image' || mType === 'photo' || mType === 'images' || mType === 'photos';
+
+    const rawUrls = String(m.media_urls || m.message || '').trim();
+    const lines = rawUrls
+      .split(/\s*\|\|\s*|\n+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    const urls = [];
+    const captionParts = [];
+
+    for (const part of lines) {
+      if (isSafeHttpUrl(part)) {
+        urls.push(part);
+      } else {
+        captionParts.push(part);
+      }
     }
-    const parts = str.split('||');
+
     return {
-      fileId: String(parts[0] || '').trim(),
-      caption: String(parts.slice(1).join('||') || '').trim()
+      isVideo,
+      isPhoto: isPhoto || (!isVideo && urls.length > 0),
+      urls,
+      caption: captionParts.join(' ').trim()
     };
   }
 
-  function serializePhotoPayload(fileId, caption = '') {
-    const cleanCap = String(caption || '').trim();
-    return cleanCap ? `${String(fileId).trim()}||${cleanCap}` : String(fileId).trim();
-  }
-
-  // ───────── تصميم بطاقة المحادثة بأسلوب المسنجر + الصور متوسطة العرض والتفاعلية ─────────
+  // ───────── تصميم بطاقة المحادثة + عرض روابط الصور والفيديوهات التفاعلية ─────────
   function formatSingleThreadCard(userId, view, meta = {}) {
     const uid = Number(userId);
     const { messages, totalPages, page } = view;
     const otherName = meta.otherName || 'مراسل';
     const myName = meta.myName || 'أنا';
     const propertyId = meta.propertyId || messages[0]?.property_id;
-    const photosMap = meta.photosMap || {};
+    const mediaMap = meta.mediaMap || {};
 
     const out = [];
-    const zoomButtons = [];
+    const previewButtons = [];
     let lastSender = null;
     let lastDay = null;
-    let photoIdx = 0;
+    let mediaCounter = 0;
 
     for (const m of messages) {
       const mine = Number(m.sender_id) === uid;
@@ -356,23 +423,41 @@ function createMessengerModule(core) {
       }
       lastSender = who;
 
-      if (m.message_type === 'image' || m.message_type === 'photo') {
-        photoIdx += 1;
-        const { fileId, caption } = parsePhotoPayload(m.message);
-        const pKey = `p${m.id || photoIdx}`;
-        if (fileId) {
-          photosMap[pKey] = { fileId, caption, senderName: mine ? myName : otherName };
-          zoomButtons.push(
-            Markup.button.callback(`🔍 تكبير الصورة (${photoIdx})`, `msg_zoom:${pKey}`)
-          );
-        }
+      const mediaInfo = extractMediaInfo(m);
+      if ((mediaInfo.isPhoto || mediaInfo.isVideo) && mediaInfo.urls.length > 0) {
+        mediaCounter += 1;
+        const kindLabel = mediaInfo.isVideo
+          ? (mediaInfo.urls.length > 1 ? `فيديوهات (${mediaInfo.urls.length})` : 'فيديو')
+          : (mediaInfo.urls.length > 1 ? `صور (${mediaInfo.urls.length})` : 'صورة');
+        const kindIcon = mediaInfo.isVideo ? '🎬' : '🖼️';
 
-        // عرض الصورة متوسطة العرض بصرياً داخل البطاقة
-        const centeredFrame =
-          `\n      🖼️ <code>[ صورة #${photoIdx} — عرض متوسط ]</code>` +
-          (caption ? `\n${mark}${color} ${escapeHtml(caption)}` : '');
-        const body = `${mark}${color} <b>مرفق صورة</b>${stamp}${centeredFrame}`;
-        out.push(`<blockquote>${body}</blockquote>`);
+        const key = `m_${m.id || mediaCounter}`;
+        mediaMap[key] = {
+          isVideo: mediaInfo.isVideo,
+          urls: mediaInfo.urls,
+          caption: mediaInfo.caption,
+          senderName: mine ? myName : otherName
+        };
+
+        const linkLines = mediaInfo.urls.map((u, idx) => {
+          const itemTitle = mediaInfo.urls.length > 1
+            ? `${kindLabel} ${idx + 1}`
+            : `فتح ال${kindLabel}`;
+          return `${mark}🔗 <a href="${escapeHtml(u)}">${escapeHtml(itemTitle)}</a>`;
+        });
+
+        let block = `${mark}${color} ${kindIcon} <b>${escapeHtml(kindLabel)}</b>${stamp}\n` + linkLines.join('\n');
+        if (mediaInfo.caption) {
+          block += `\n${mark}${color} ${escapeHtml(mediaInfo.caption)}`;
+        }
+        out.push(`<blockquote>${block}</blockquote>`);
+
+        previewButtons.push(
+          Markup.button.callback(
+            `${kindIcon} عرض #${mediaCounter}`,
+            `msg_media:${key}`
+          )
+        );
       } else {
         const lines = String(m.message).split('\n').map(escapeHtml);
         lines[lines.length - 1] += stamp;
@@ -391,13 +476,13 @@ function createMessengerModule(core) {
 
     const body = out.length
       ? out.join('\n')
-      : `<i>لا توجد رسائل بعد، اكتب رسالتك أو أرسل صورة 👇</i>`;
+      : `<i>لا توجد رسائل بعد، اكتب رسالتك أو أرسل صورة أو فيديو 👇</i>`;
 
-    const footer = `\n${LINE}\n✍️ <i>اكتب رسالتك أو أرسل صورة</i>`;
+    const footer = `\n${LINE}\n✍️ <i>اكتب رسالتك أو أرسل صورة / فيديو</i>`;
 
     const inlineRows = [];
-    for (let i = 0; i < zoomButtons.length; i += 2) {
-      inlineRows.push(zoomButtons.slice(i, i + 2));
+    for (let i = 0; i < previewButtons.length; i += 2) {
+      inlineRows.push(previewButtons.slice(i, i + 2));
     }
 
     return {
@@ -429,7 +514,8 @@ function createMessengerModule(core) {
         try {
           await ctx.telegram.editMessageText(ctx.chat.id, targetMsgId, undefined, text, {
             parse_mode: 'HTML',
-            ...(inlineMarkup ? { reply_markup: inlineMarkup.reply_markup } : { reply_markup: { inline_keyboard: [] } })
+            link_preview_options: { is_disabled: true },
+            reply_markup: inlineMarkup ? inlineMarkup.reply_markup : { inline_keyboard: [] }
           });
           return targetMsgId;
         } catch (e) {
@@ -440,17 +526,20 @@ function createMessengerModule(core) {
       await ctx.telegram.deleteMessage(ctx.chat.id, targetMsgId).catch(() => {});
     }
 
-    const sent = await replyTracked(
-      ctx,
-      userId,
-      text,
-      {
-        parse_mode: 'HTML',
-        ...keyboardExtra,
-        ...(inlineMarkup ? { reply_markup: { ...keyboardExtra.reply_markup, ...inlineMarkup.reply_markup } } : {})
-      },
-      true
-    );
+    const extraOpts = {
+      parse_mode: 'HTML',
+      link_preview_options: { is_disabled: true },
+      ...keyboardExtra
+    };
+
+    if (inlineMarkup?.reply_markup?.inline_keyboard?.length) {
+      extraOpts.reply_markup = {
+        ...keyboardExtra.reply_markup,
+        inline_keyboard: inlineMarkup.reply_markup.inline_keyboard
+      };
+    }
+
+    const sent = await replyTracked(ctx, userId, text, extraOpts, true);
     return sent?.message_id || null;
   }
 
@@ -519,8 +608,8 @@ function createMessengerModule(core) {
     if (myName === 'مراسل') myName = await resolveCleanSenderName(userId, '');
     if (myName === 'مراسل') myName = 'أنا';
 
-    const photosMap = {};
-    const cardObj = formatSingleThreadCard(userId, view, { otherName, myName, propertyId, photosMap });
+    const mediaMap = {};
+    const cardObj = formatSingleThreadCard(userId, view, { otherName, myName, propertyId, mediaMap });
 
     const prevSession = messengerSession[userId] || {};
     const targetMsgId = editMessageId || prevSession.cardMessageId || null;
@@ -536,7 +625,7 @@ function createMessengerModule(core) {
       cardMessageId: msgId,
       page: view.page,
       totalPages: view.totalPages,
-      photosMap
+      mediaMap
     };
     return msgId;
   }
@@ -578,7 +667,7 @@ function createMessengerModule(core) {
     const sent = await replyTracked(
       ctx,
       userId,
-      `💬 <b>${escapeHtml(ownerName)}</b> • 🏠 <i>#${propertyId}</i>\n${LINE}\n✍️ اكتب رسالتك الأولى أو أرسل صورة:`,
+      `💬 <b>${escapeHtml(ownerName)}</b> • 🏠 <i>#${propertyId}</i>\n${LINE}\n✍️ اكتب رسالتك الأولى أو أرسل صورة / فيديو:`,
       {
         parse_mode: 'HTML',
         ...Markup.keyboard([[BTN_HOME]]).resize()
@@ -588,69 +677,129 @@ function createMessengerModule(core) {
     if (sent?.message_id) userState[userId].wizardMsgId = sent.message_id;
   }
 
-  // ───────── معالجة الصور المرسلة داخل المحادثة ─────────
-  async function handleMessengerPhoto(ctx) {
-    const userId = ctx.from.id;
-    const photoArr = ctx.message?.photo;
-    if (!Array.isArray(photoArr) || !photoArr.length) return false;
-
-    const bestPhoto = photoArr[photoArr.length - 1];
-    const fileId = bestPhoto?.file_id;
-    if (!fileId) return false;
-
-    const caption = ctx.message?.caption ? ctx.message.caption.trim() : '';
+  // حفظ دفعة وسائط (صورة واحدة أو عدة صور، فيديو واحد أو عدة فيديوهات) وتحويلها إلى روابط
+  async function commitMediaBatch(ctx, userId, items, mediaType, mediaGroupId) {
     const st = userState[userId];
     const sess = messengerSession[userId];
-    const payload = serializePhotoPayload(fileId, caption);
+
+    let targetCtx = null;
+    let isFirstWizard = false;
 
     if (st && st.step === 'composing_property_message') {
-      await safeDeleteUserMessage(ctx);
-      const { threadId, propertyId, ownerId, receiverId, otherName, wizardMsgId } = st.data || {};
+      isFirstWizard = true;
+      targetCtx = { ...(st.data || {}), wizardMsgId: st.wizardMsgId };
       delete userState[userId];
-
-      if (wizardMsgId && ctx.chat?.id) {
-        await ctx.telegram.deleteMessage(ctx.chat.id, wizardMsgId).catch(() => {});
-      }
-
-      await insertMessage({
-        propertyId,
-        ownerId,
-        senderId: userId,
-        receiverId,
-        senderName: getUserDisplayName(ctx.from),
-        messageType: 'image',
-        message: payload
-      });
-
-      await renderActiveThread(
-        ctx, userId, threadId,
-        { propertyId, ownerId, receiverId, otherName },
-        { forceNew: true, page: 0 }
-      );
-      return true;
-    }
-
-    if (sess?.mode === 'thread' && sess.threadId) {
-      await safeDeleteUserMessage(ctx);
-
-      await insertMessage({
+    } else if (sess?.mode === 'thread' && sess.threadId) {
+      targetCtx = {
+        threadId: sess.threadId,
         propertyId: sess.propertyId,
         ownerId: sess.ownerId,
-        senderId: userId,
         receiverId: sess.receiverId,
-        senderName: getUserDisplayName(ctx.from),
-        messageType: 'image',
-        message: payload
-      });
+        otherName: sess.otherName,
+        cardMessageId: sess.cardMessageId
+      };
+    } else {
+      return false;
+    }
 
-      await renderActiveThread(ctx, userId, sess.threadId, sess, {
-        editMessageId: sess.cardMessageId,
-        page: 0
-      });
+    const urls = [];
+    let caption = '';
+
+    for (const item of items) {
+      const url = await fileIdToUrl(item.fileId);
+      if (url) urls.push(url);
+      if (!caption && item.caption) caption = item.caption;
+    }
+
+    if (!urls.length) return false;
+
+    if (isFirstWizard && targetCtx.wizardMsgId && ctx.chat?.id) {
+      await ctx.telegram.deleteMessage(ctx.chat.id, targetCtx.wizardMsgId).catch(() => {});
+    }
+
+    await insertMessage({
+      propertyId: targetCtx.propertyId,
+      ownerId: targetCtx.ownerId,
+      senderId: userId,
+      receiverId: targetCtx.receiverId,
+      senderName: getUserDisplayName(ctx.from),
+      messageType: mediaType,
+      message: caption || urls.join('\n'),
+      mediaType,
+      mediaUrls: urls,
+      mediaGroupId: mediaGroupId || null
+    });
+
+    await renderActiveThread(
+      ctx,
+      userId,
+      targetCtx.threadId,
+      targetCtx,
+      isFirstWizard
+        ? { forceNew: true, page: 0 }
+        : { editMessageId: targetCtx.cardMessageId, page: 0 }
+    );
+
+    return true;
+  }
+
+  // ───────── معالجة الصور والفيديوهات (فردية أو متعددة) ─────────
+  async function handleMessengerMedia(ctx) {
+    const userId = ctx.from?.id;
+    if (!userId) return false;
+
+    const st = userState[userId];
+    const sess = messengerSession[userId];
+    const activeForMessenger =
+      (st && st.step === 'composing_property_message') ||
+      (sess?.mode === 'thread' && sess.threadId);
+
+    if (!activeForMessenger) return false;
+
+    let mediaType = null;
+    let fileId = '';
+
+    if (Array.isArray(ctx.message?.photo) && ctx.message.photo.length > 0) {
+      mediaType = 'image';
+      fileId = ctx.message.photo[ctx.message.photo.length - 1]?.file_id || '';
+    } else if (ctx.message?.video?.file_id) {
+      mediaType = 'video';
+      fileId = ctx.message.video.file_id;
+    }
+
+    if (!mediaType || !fileId) return false;
+
+    await safeDeleteUserMessage(ctx);
+
+    const caption = ctx.message?.caption ? ctx.message.caption.trim() : '';
+    const groupId = ctx.message?.media_group_id ? String(ctx.message.media_group_id) : '';
+
+    // إذا كان ضمن ألبوم (عدة صور أو عدة فيديوهات)، نجمّعها ثم نرسلها كرسالة واحدة متكاملة الروابط
+    if (groupId) {
+      const bucketKey = `${userId}:${groupId}`;
+      let bucket = pendingAlbums.get(bucketKey);
+
+      if (!bucket) {
+        bucket = {
+          items: [],
+          mediaType,
+          timer: null
+        };
+        pendingAlbums.set(bucketKey, bucket);
+      }
+
+      bucket.items.push({ fileId, caption });
+
+      if (bucket.timer) clearTimeout(bucket.timer);
+      bucket.timer = setTimeout(async () => {
+        pendingAlbums.delete(bucketKey);
+        await commitMediaBatch(ctx, userId, bucket.items, bucket.mediaType, groupId);
+      }, ALBUM_FLUSH_MS);
+
       return true;
     }
 
-    return false;
+    return commitMediaBatch(ctx, userId, [{ fileId, caption }], mediaType, null);
   }
 
   // ───────── معالجة النصوص ─────────
@@ -756,8 +905,8 @@ function createMessengerModule(core) {
   }
 
   // ───────── الأوامر والأحداث ─────────
-  core.bot.on('photo', async (ctx, next) => {
-    const handled = await handleMessengerPhoto(ctx);
+  core.bot.on(['photo', 'video'], async (ctx, next) => {
+    const handled = await handleMessengerMedia(ctx);
     if (!handled && typeof next === 'function') return next();
   });
 
@@ -766,27 +915,52 @@ function createMessengerModule(core) {
     await showInboxList(ctx);
   });
 
-  // تكبير الصورة التفاعلية بالحجم الكامل عند الضغط عليها
-  core.bot.action(/^msg_zoom:(.+)$/, async (ctx) => {
+  // عرض الوسائط مباشرة داخل المحادثة عند الضغط على زر "عرض #..."
+  core.bot.action(/^msg_media:(.+)$/, async (ctx) => {
     await ctx.answerCbQuery().catch(() => {});
     const userId = ctx.from.id;
-    const pKey = ctx.match[1];
-    const photoInfo = messengerSession[userId]?.photosMap?.[pKey];
+    const key = ctx.match[1];
+    const info = messengerSession[userId]?.mediaMap?.[key];
+    if (!info || !Array.isArray(info.urls) || !info.urls.length) return;
 
-    if (!photoInfo?.fileId) return;
+    const closeKb = Markup.inlineKeyboard([
+      [Markup.button.callback('✖️ إغلاق العرض', 'msg_media_close')]
+    ]);
 
-    const capText =
-      `🔍 <b>${escapeHtml(photoInfo.senderName || 'صورة')}</b>` +
-      (photoInfo.caption ? `\n${escapeHtml(photoInfo.caption)}` : '');
+    for (let i = 0; i < info.urls.length; i += 1) {
+      const url = info.urls[i];
+      const cap =
+        `<b>${escapeHtml(info.senderName || 'مراسل')}</b>` +
+        (info.urls.length > 1 ? ` • (${i + 1}/${info.urls.length})` : '') +
+        (info.caption ? `\n${escapeHtml(info.caption)}` : '');
 
-    await ctx.replyWithPhoto(photoInfo.fileId, {
-      caption: capText,
-      parse_mode: 'HTML',
-      ...Markup.inlineKeyboard([[Markup.button.callback('✖️ إغلاق المعاينة', 'msg_zoom_close')]])
-    }).catch(() => {});
+      if (info.isVideo) {
+        await ctx.replyWithVideo(url, {
+          caption: cap,
+          parse_mode: 'HTML',
+          ...closeKb
+        }).catch(async () => {
+          await ctx.reply(`🎬 <a href="${escapeHtml(url)}">فتح الفيديو</a>`, {
+            parse_mode: 'HTML',
+            ...closeKb
+          }).catch(() => {});
+        });
+      } else {
+        await ctx.replyWithPhoto(url, {
+          caption: cap,
+          parse_mode: 'HTML',
+          ...closeKb
+        }).catch(async () => {
+          await ctx.reply(`🖼️ <a href="${escapeHtml(url)}">فتح الصورة</a>`, {
+            parse_mode: 'HTML',
+            ...closeKb
+          }).catch(() => {});
+        });
+      }
+    }
   });
 
-  core.bot.action('msg_zoom_close', async (ctx) => {
+  core.bot.action('msg_media_close', async (ctx) => {
     await ctx.answerCbQuery().catch(() => {});
     if (ctx.chat?.id && ctx.callbackQuery?.message?.message_id) {
       await ctx.telegram.deleteMessage(ctx.chat.id, ctx.callbackQuery.message.message_id).catch(() => {});
@@ -822,7 +996,7 @@ function createMessengerModule(core) {
     renderActiveThread,
     startPropertyMessage,
     handleMessengerText,
-    handleMessengerPhoto
+    handleMessengerMedia
   };
 }
 
