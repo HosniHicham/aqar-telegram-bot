@@ -47,6 +47,12 @@ function trackBotMessage(userId, chatId, messageId) {
   if (!botMessagesHistory[userId].ids.includes(messageId)) botMessagesHistory[userId].ids.push(messageId);
 }
 
+function untrackBotMessage(userId, messageId) {
+  const history = botMessagesHistory[userId];
+  if (!history || !messageId) return;
+  history.ids = history.ids.filter(id => id !== messageId);
+}
+
 async function clearTrackedBotMessages(ctx, userId, keepMessageIds = []) {
   const history = botMessagesHistory[userId];
   const keepSet = new Set(Array.isArray(keepMessageIds) ? keepMessageIds : [keepMessageIds].filter(Boolean));
@@ -233,7 +239,7 @@ const core = {
   bot, app, supabase, Markup,
   WEBHOOK_DOMAIN, getWebsiteUrl, MAX_PROPERTY_IMAGES, BACK_TO_ADMIN,
   userState, userLang, browsingSession, supportUserSession, previewMode, resetSessions,
-  trackBotMessage, clearTrackedBotMessages, replyTracked, safeDeleteUserMessage,
+  trackBotMessage, untrackBotMessage, clearTrackedBotMessages, replyTracked, safeDeleteUserMessage,
   getSetting, getAdminIds, isAdmin, getUserRecord, isUserVerified,
   chunkButtons, sanitizeNumericPrice, formatMoney, formatDateTime, escapeHtml,
   normalizeMediaRef, parseMediaListFromField, parseImagesFromImageUrl, buildOrderedBrowsingMedia,
@@ -280,30 +286,46 @@ function injectBackButton(ctx) {
 const userMw = userComposer.middleware();
 const adminMw = adminComposer.middleware();
 
-// ------------------------- ميدلوير الاستجابة السلسة -------------------------
+// ------------------------- ميدلوير الاستجابة السلسة (مُصحّح) -------------------------
 bot.use(async (ctx, next) => {
   let waitMsgId = null;
   let isResponded = false;
+  let shouldAbortWaitMsg = false;
 
-  if (ctx.chat && ctx.message) {
+  const chatId = ctx.chat?.id || ctx.from?.id;
+  const userId = ctx.from?.id;
+
+  if (chatId && ctx.message) {
     ctx.sendChatAction('typing').catch(() => {});
   }
 
   const timer = setTimeout(async () => {
-    if (!isResponded && ctx.message && ctx.message.text) {
-      try {
-        const waitMsg = await ctx.reply('⏳ <i>جاري تحميل البيانات، لحظات من فضلك...</i>', { parse_mode: 'HTML' });
-        waitMsgId = waitMsg.message_id;
-      } catch (e) {}
-    }
-  }, 1800);
+    if (isResponded || shouldAbortWaitMsg || !chatId || !ctx.message?.text) return;
+    try {
+      const waitMsg = await ctx.telegram.sendMessage(
+        chatId,
+        '⏳ <i>جاري تحميل البيانات، لحظات من فضلك...</i>',
+        { parse_mode: 'HTML' }
+      );
+      if (isResponded || shouldAbortWaitMsg) {
+        await ctx.telegram.deleteMessage(chatId, waitMsg.message_id).catch(() => {});
+        return;
+      }
+      waitMsgId = waitMsg.message_id;
+      if (userId) trackBotMessage(userId, chatId, waitMsgId);
+    } catch (e) {}
+  }, 2200);
 
   try {
     await next();
   } finally {
     isResponded = true;
+    shouldAbortWaitMsg = true;
     clearTimeout(timer);
-    if (waitMsgId) await ctx.telegram.deleteMessage(ctx.chat.id, waitMsgId).catch(() => {});
+    if (waitMsgId && chatId) {
+      if (userId) untrackBotMessage(userId, waitMsgId);
+      await ctx.telegram.deleteMessage(chatId, waitMsgId).catch(() => {});
+    }
   }
 });
 
