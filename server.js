@@ -1,6 +1,6 @@
 'use strict';
 // =========================================================================
-// 🧠 SERVER FATHER — العقل المدبّر (النسخة المحسّنة والمستقرة)
+// 🧠 SERVER FATHER — العقل المدبّر (النسخة الكاملة مع CORS و API للواجهة)
 // =========================================================================
 
 const { Telegraf, Markup, Composer } = require('telegraf');
@@ -9,7 +9,9 @@ const { createClient } = require('@supabase/supabase-js');
 
 // ------------------------- الإعدادات -------------------------
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const WEBHOOK_DOMAIN = process.env.WEBHOOK_DOMAIN ? process.env.WEBHOOK_DOMAIN.trim().replace(/\/+$/, '') : '';
+const WEBHOOK_DOMAIN = process.env.WEBHOOK_DOMAIN
+  ? process.env.WEBHOOK_DOMAIN.trim().replace(/\/+$/, '')
+  : '';
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://jjrisfyotyryanhbsvlz.supabase.co';
 const SUPABASE_KEY = process.env.SUPABASE_KEY || 'sb_publishable_t7kVxzmOtz16C95U_B52FA_AJl_WK-h';
 const MAX_PROPERTY_IMAGES = 6;
@@ -23,6 +25,18 @@ if (!BOT_TOKEN) {
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 const bot = new Telegraf(BOT_TOKEN);
 const app = express();
+
+// ------------------------- ترويسات CORS للواجهة الحية -------------------------
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(204);
+  }
+  next();
+});
+
 app.use(express.json({ limit: '10mb' }));
 
 // ------------------------- الحالات المشتركة -------------------------
@@ -381,6 +395,56 @@ function injectBackButton(ctx) {
 const userMw = userComposer.middleware();
 const adminMw = adminComposer.middleware();
 
+// ------------------------- مسارات API للواجهة الحية -------------------------
+app.get('/api/dashboard', async (req, res) => {
+  try {
+    const userId = req.query.userId ? Number(String(req.query.userId).replace(/\D/g, '')) : null;
+    const stateFilter = req.query.state ? String(req.query.state).trim() : '';
+
+    let pubQuery = supabase.from('test_messages').select('*').order('id', { ascending: false }).limit(100);
+    if (stateFilter && stateFilter !== 'ALL' && stateFilter !== 'كل الولايات') {
+      pubQuery = pubQuery.eq('state_name', stateFilter);
+    }
+
+    const [{ data: publishedAds, error: pubErr }, pendingCountRes, pubCountRes, inqCountRes] = await Promise.all([
+      pubQuery,
+      supabase.from('pending_properties').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
+      supabase.from('test_messages').select('*', { count: 'exact', head: true }),
+      userId
+        ? supabase.from('user_inquiries').select('*', { count: 'exact', head: true }).eq('user_id', userId)
+        : supabase.from('user_inquiries').select('*', { count: 'exact', head: true })
+    ]);
+
+    if (pubErr) throw pubErr;
+
+    let userPending = [];
+    let userInquiries = [];
+    if (userId) {
+      const [pRes, iRes] = await Promise.all([
+        supabase.from('pending_properties').select('*').eq('user_id', userId).order('id', { ascending: false }),
+        supabase.from('user_inquiries').select('*').eq('user_id', userId).order('id', { ascending: false })
+      ]);
+      userPending = pRes.data || [];
+      userInquiries = iRes.data || [];
+    }
+
+    res.json({
+      ok: true,
+      stats: {
+        published: pubCountRes.count ?? 0,
+        pending: pendingCountRes.count ?? 0,
+        inquiries: inqCountRes.count ?? 0
+      },
+      ads: publishedAds || [],
+      userPending,
+      userInquiries
+    });
+  } catch (err) {
+    console.error('GET /api/dashboard error:', err);
+    res.status(500).json({ ok: false, error: err.message || 'Database error' });
+  }
+});
+
 // ------------------------- ميدلوير الاستجابة السلسة -------------------------
 bot.use(async (ctx, next) => {
   let waitMsgId = null;
@@ -540,9 +604,9 @@ async function startServer() {
       }
     });
   } else {
-    bot.launch().then(() => console.log('✅ Bot started in polling mode')).catch(err => {
-      console.error('❌ Bot launch error:', err);
-    });
+    bot.launch()
+      .then(() => console.log('✅ Bot started in polling mode'))
+      .catch(err => console.error('❌ Bot launch error:', err));
   }
 }
 
