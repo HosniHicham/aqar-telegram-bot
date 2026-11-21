@@ -14,7 +14,7 @@ const SUP = { 0: '⁰', 1: '¹', 2: '²', 3: '³', 4: '⁴', 5: '⁵', 6: '⁶',
 
 const BTN_PREV = '◀️ السابق';
 const BTN_NEXT = 'التالي ▶️';
-const BTN_REFRESH = '🔄 تحديث';
+
 const BTN_BACK = '⬅️ قائمة المراسلين';
 const BTN_HOME = '🏠 القائمة الرئيسية';
 
