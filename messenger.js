@@ -130,6 +130,19 @@ function createMessengerModule(core) {
   const pendingAlbums = new Map();
   const peerNotifyCooldown = new Map();
 
+  // هل المحادثة مفتوحة الآن عند هذا المستخدم؟
+  function isThreadOpenFor(userId, threadId) {
+    const s = messengerSession[Number(userId)];
+    return !!(s && s.mode === 'thread' && s.threadId === threadId && s.cardMessageId);
+  }
+
+  // معاينة الصورة داخل البطاقة (Telegram link preview) بدل تعطيلها
+  function linkPreviewOpts(url) {
+    return url
+      ? { url, show_above_text: false } // الصورة تظهر تحت النص، قرب آخر رسالة
+      : { is_disabled: true };
+  }
+
   function getTelegramClient(ctx) {
     return core.bot?.telegram || ctx?.telegram || null;
   }
@@ -224,6 +237,8 @@ function createMessengerModule(core) {
     const rId = Number(targetId);
     if (!sId || !rId || sId === rId) return false;
 
+    if (threadId && isThreadOpenFor(rId, threadId)) return false; // المحادثة مفتوحة: لا إشعار
+
     const tg = getTelegramClient(ctx);
     if (!tg) return false;
 
@@ -302,7 +317,47 @@ function createMessengerModule(core) {
     return sentToTarget;
   }
 
-  // إشعار فوري ومضمون للطرف الآخر عند وصول أي رسالة
+  // دمج الرسالة الجديدة في بطاقة المستلم المفتوحة (تعديل صامت، بدون إشعار)
+  async function mergeIntoOpenThread(ctx, rId, sId, threadId, senderName, propertyId) {
+    const sess = messengerSession[Number(rId)];
+    const api = getTelegramClient(ctx);
+    if (!sess || !api) return false;
+
+    // إذا كان يتصفح السجل (صفحة قديمة) لا نسحبه، ونرسل إشعاراً عادياً
+    if ((sess.page || 0) > 0) return false;
+
+    try {
+      const view = await openThreadMessages(rId, threadId, 0); // يعلّم الواردة كمقروءة ← ✓✓ عند المرسل
+      const otherName = await resolveCleanSenderName(sId, senderName);
+      let myName = await resolveCleanSenderName(rId, '');
+      if (!myName || myName === 'مراسل') myName = 'أنا';
+
+      const card = formatSingleThreadCard(rId, view, {
+        otherName,
+        myName,
+        propertyId: propertyId || sess.propertyId
+      });
+
+      try {
+        await api.editMessageText(Number(rId), sess.cardMessageId, undefined, card.text, {
+          parse_mode: 'HTML',
+          link_preview_options: linkPreviewOpts(card.previewUrl),
+          reply_markup: card.inlineMarkup ? card.inlineMarkup.reply_markup : { inline_keyboard: [] }
+        });
+      } catch (e) {
+        const desc = String(e?.description || e?.message || '');
+        if (!desc.includes('message is not modified')) return false;
+      }
+
+      sess.page = view.page;
+      sess.totalPages = view.totalPages;
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // المحادثة مفتوحة ← دمج الرسالة في البطاقة فقط. مغلقة ← إشعار
   async function notifyReceiverMessenger(ctx, {
     threadId,
     propertyId,
@@ -321,6 +376,13 @@ function createMessengerModule(core) {
     if (!telegramApi) {
       console.error('notifyReceiverMessenger: Telegram client is not available');
       return false;
+    }
+
+    // المحادثة مفتوحة عند المستلم: ندمج الرسالة فقط بدون أي إشعار
+    if (isThreadOpenFor(rId, threadId)) {
+      const merged = await mergeIntoOpenThread(ctx, rId, sId, threadId, senderName, propertyId);
+      if (merged) return true;
+      // فشل الدمج أو كان في صفحة قديمة: نكمل بالإشعار العادي
     }
 
     let cleanSender = String(senderName || '').trim();
@@ -348,7 +410,7 @@ function createMessengerModule(core) {
 
     const htmlText =
       `🔔 <b>رسالة جديدة من ${escapeHtml(cleanSender)}</b>${propBadge ? ` • 🏠 <b>#${propNumber}</b>` : ''}\n` +
-      `<blockquote>💬 ${escapeHtml(rawPreview.replace(/^💬\s*/, ''))}</blockquote>` +
+      `<blockquote>${escapeHtml(rawPreview)}</blockquote>` +
       (deepLink ? `\n👉 <a href="${escapeHtml(deepLink)}">افتح المحادثة مباشرة</a>` : '');
 
     const plainText =
@@ -360,7 +422,6 @@ function createMessengerModule(core) {
       [Markup.button.callback('💬 فتح المحادثة الآن', `msg_open:${threadId}`)]
     ]);
 
-    let delivered = false;
     try {
       await telegramApi.sendMessage(rId, htmlText, {
         parse_mode: 'HTML',
@@ -368,7 +429,7 @@ function createMessengerModule(core) {
         link_preview_options: { is_disabled: true },
         ...inlineKeyboard
       });
-      delivered = true;
+      return true;
     } catch (e) {
       const errDesc = String(e?.description || e?.message || '');
       if (errDesc.includes('bot was blocked') || errDesc.includes('chat not found') || errDesc.includes('user is deactivated')) {
@@ -380,37 +441,15 @@ function createMessengerModule(core) {
           disable_notification: false,
           ...inlineKeyboard
         });
-        delivered = true;
+        return true;
       } catch (retryErr) {
         console.error('notifyReceiverMessenger fallback failed:', retryErr?.message || retryErr);
+        return false;
       }
     }
-
-    const recSess = messengerSession[rId];
-    if (recSess?.mode === 'thread' && recSess.threadId === threadId && recSess.cardMessageId) {
-      try {
-        const view = await openThreadMessages(rId, threadId, 0);
-        const recName = await resolveCleanSenderName(sId, cleanSender);
-        let myRecName = await resolveCleanSenderName(rId, '');
-        if (!myRecName || myRecName === 'مراسل') myRecName = 'أنا';
-        const cardObj = formatSingleThreadCard(rId, view, {
-          otherName: recName,
-          myName: myRecName,
-          propertyId: propNumber || recSess.propertyId,
-          botUsername
-        });
-        await telegramApi.editMessageText(rId, recSess.cardMessageId, undefined, cardObj.text, {
-          parse_mode: 'HTML',
-          link_preview_options: { is_disabled: true },
-          reply_markup: cardObj.inlineMarkup ? cardObj.inlineMarkup.reply_markup : { inline_keyboard: [] }
-        }).catch(() => {});
-      } catch (_) {}
-    }
-
-    return delivered;
   }
 
-  // رفع الوسائط إلى test_media وجلب الرابط العام (publicUrl) بنفس أسلوب Users
+  // رفع الوسائط إلى test_media وجلب الرابط العام (publicUrl)
   async function uploadMediaToTestMedia(ctx, fileId, mediaType, index = 0) {
     if (!fileId) return '';
     try {
@@ -860,7 +899,8 @@ function createMessengerModule(core) {
     };
   }
 
-  // ───────── تصميم بطاقة المحادثة مع ترقيم الصفحات في الأسفل ─────────
+  // ───────── تصميم بطاقة المحادثة ─────────
+  // previewUrl = آخر صورة في الصفحة، تظهر كمعاينة داخل البطاقة ويفتحها اللمس بحجم كامل
   function formatSingleThreadCard(userId, view, meta = {}) {
     const uid = Number(userId);
     const { messages, totalPages, page } = view;
@@ -872,6 +912,7 @@ function createMessengerModule(core) {
     const out = [];
     let lastSender = null;
     let lastDay = null;
+    let previewUrl = '';
 
     for (const m of messages) {
       const mine = Number(m.sender_id) === uid;
@@ -905,17 +946,19 @@ function createMessengerModule(core) {
           : (mediaInfo.urls.length > 1 ? `صور (${mediaInfo.urls.length})` : 'صورة');
         const kindIcon = mediaInfo.isVideo ? '🎬' : '🖼️';
 
+        if (!mediaInfo.isVideo) previewUrl = mediaInfo.urls[0];
+
         const linkLines = mediaInfo.urls.map((u, idx) => {
-          const itemTitle = mediaInfo.urls.length > 1
-            ? `عرض ${kindLabel} ${idx + 1}`
-            : `عرض ال${kindLabel}`;
+          const itemTitle = mediaInfo.isVideo
+            ? (mediaInfo.urls.length > 1 ? `▶️ تشغيل ${idx + 1}` : '▶️ تشغيل')
+            : (mediaInfo.urls.length > 1 ? `🔍 تكبير ${idx + 1}` : '🔍 اضغط للتكبير');
           const openHref = botUsername && m.id
             ? `https://t.me/${botUsername}?start=m_${m.id}_${idx}`
             : u;
-          return `${mark}🔗 <a href="${escapeHtml(openHref)}">${escapeHtml(itemTitle)}</a>`;
+          return `${mark}<a href="${escapeHtml(openHref)}">${escapeHtml(itemTitle)}</a>`;
         });
 
-        let block = `${mark}${color} ${kindIcon} <b>${escapeHtml(kindLabel)}</b>${stamp}\n` + linkLines.join('\n');
+        let block = `${mark}${color} ${kindIcon} <b>${escapeHtml(kindLabel)}</b>${stamp}\n` + linkLines.join('  •  ');
         if (mediaInfo.caption) {
           block += `\n${mark}${color} ${escapeHtml(mediaInfo.caption)}`;
         }
@@ -957,7 +1000,8 @@ function createMessengerModule(core) {
 
     return {
       text: fitTelegramText(header + body + footer, false),
-      inlineMarkup
+      inlineMarkup,
+      previewUrl
     };
   }
 
@@ -1031,16 +1075,21 @@ function createMessengerModule(core) {
     };
   }
 
+  // تعديل البطاقة أو إرسال جديدة.
+  // تيليجرام لا يقبل لوحة ردّ ولوحة inline في reply_markup واحد،
+  // فنرسل الرسالة بلوحة الردّ ثم نضيف زر الـ inline بتعديل منفصل.
   async function upsertCard(ctx, userId, cardObj, keyboardExtra, targetMsgId, forceNew = false) {
     const text = typeof cardObj === 'string' ? cardObj : cardObj.text;
     const inlineMarkup = typeof cardObj === 'string' ? null : cardObj.inlineMarkup;
+    const previewUrl = typeof cardObj === 'string' ? '' : cardObj.previewUrl;
+    const lp = linkPreviewOpts(previewUrl);
 
     if (targetMsgId && ctx.chat?.id) {
       if (!forceNew) {
         try {
           await ctx.telegram.editMessageText(ctx.chat.id, targetMsgId, undefined, text, {
             parse_mode: 'HTML',
-            link_preview_options: { is_disabled: true },
+            link_preview_options: lp,
             reply_markup: inlineMarkup ? inlineMarkup.reply_markup : { inline_keyboard: [] }
           });
           return targetMsgId;
@@ -1052,21 +1101,21 @@ function createMessengerModule(core) {
       await ctx.telegram.deleteMessage(ctx.chat.id, targetMsgId).catch(() => {});
     }
 
-    const extraOpts = {
-      parse_mode: 'HTML',
-      link_preview_options: { is_disabled: true },
-      ...keyboardExtra
-    };
+    const sent = await replyTracked(
+      ctx,
+      userId,
+      text,
+      { parse_mode: 'HTML', link_preview_options: lp, ...keyboardExtra },
+      true
+    );
+    const newId = sent?.message_id || null;
 
-    if (inlineMarkup?.reply_markup?.inline_keyboard?.length) {
-      extraOpts.reply_markup = {
-        ...keyboardExtra.reply_markup,
-        inline_keyboard: inlineMarkup.reply_markup.inline_keyboard
-      };
+    if (newId && inlineMarkup?.reply_markup?.inline_keyboard?.length && ctx.chat?.id) {
+      await ctx.telegram
+        .editMessageReplyMarkup(ctx.chat.id, newId, undefined, inlineMarkup.reply_markup)
+        .catch(() => {});
     }
-
-    const sent = await replyTracked(ctx, userId, text, extraOpts, true);
-    return sent?.message_id || null;
+    return newId;
   }
 
   function setThreadReturnContext(userId, threadSess) {
