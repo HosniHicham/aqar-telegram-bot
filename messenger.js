@@ -130,6 +130,11 @@ function createMessengerModule(core) {
   const pendingAlbums = new Map();
   const peerNotifyCooldown = new Map();
 
+  function isUserInThread(userId, threadId) {
+    const sess = messengerSession[Number(userId)];
+    return Boolean(sess && sess.mode === 'thread' && threadId && sess.threadId === threadId);
+  }
+
   function getTelegramClient(ctx) {
     return core.bot?.telegram || ctx?.telegram || null;
   }
@@ -227,50 +232,56 @@ function createMessengerModule(core) {
     const tg = getTelegramClient(ctx);
     if (!tg) return false;
 
-    const cdKey = `${sId}:${rId}:${kind}:${propertyId || ''}`;
-    const now = Date.now();
-    const lastAt = peerNotifyCooldown.get(cdKey) || 0;
-    if (now - lastAt < PEER_NOTIFY_COOLDOWN_MS) return false;
-    peerNotifyCooldown.set(cdKey, now);
+    const propNum = propertyId ? Number(propertyId) : 0;
+    const propPart = propNum ? ` • 🏠 <b>#${propNum}</b>` : '';
+    const detailLine = detail ? `\n<blockquote>${escapeHtml(detail)}</blockquote>` : '';
 
     let cleanActor = String(actorName || '').trim();
     if (isBadName(cleanActor)) {
       cleanActor = await resolveCleanSenderName(sId, 'مراسل');
     }
 
-    const propNum = propertyId ? Number(propertyId) : 0;
-    const propPart = propNum ? ` • 🏠 <b>#${propNum}</b>` : '';
-    const detailLine = detail ? `\n<blockquote>${escapeHtml(detail)}</blockquote>` : '';
-
-    const botUsername = ctx?.botInfo?.username || core.bot?.botInfo?.username || '';
-    const openCallbackData = threadId
-      ? `msg_open:${threadId}`
-      : (propNum ? `msg_prop:${propNum}:${sId}` : null);
-
-    const userInlineKb = openCallbackData
-      ? Markup.inlineKeyboard([[Markup.button.callback('💬 فتح / رد الآن', openCallbackData)]])
-      : undefined;
-
-    const userAlertText =
-      `🔔 <b>تفاعل جديد من ${escapeHtml(cleanActor)}</b>${propPart}` +
-      detailLine +
-      (botUsername && threadId
-        ? `\n👉 <a href="https://t.me/${escapeHtml(botUsername)}?start=chat_${encodeURIComponent(threadId)}">فتح المحادثة</a>`
-        : '');
-
     let sentToTarget = false;
-    try {
-      await tg.sendMessage(rId, userAlertText, {
-        parse_mode: 'HTML',
-        disable_notification: false,
-        link_preview_options: { is_disabled: true },
-        ...(userInlineKb || {})
-      });
-      sentToTarget = true;
-    } catch (e) {
-      const errDesc = String(e?.description || e?.message || '');
-      if (!errDesc.includes('bot was blocked') && !errDesc.includes('chat not found') && !errDesc.includes('user is deactivated')) {
-        console.error('notifyPeerInteraction target send error:', errDesc);
+    const targetAlreadyInThread = isUserInThread(rId, threadId);
+
+    if (!targetAlreadyInThread) {
+      const cdKey = `${sId}:${rId}:${kind}:${propertyId || ''}`;
+      const now = Date.now();
+      const lastAt = peerNotifyCooldown.get(cdKey) || 0;
+
+      if (now - lastAt >= PEER_NOTIFY_COOLDOWN_MS) {
+        peerNotifyCooldown.set(cdKey, now);
+
+        const botUsername = ctx?.botInfo?.username || core.bot?.botInfo?.username || '';
+        const openCallbackData = threadId
+          ? `msg_open:${threadId}`
+          : (propNum ? `msg_prop:${propNum}:${sId}` : null);
+
+        const userInlineKb = openCallbackData
+          ? Markup.inlineKeyboard([[Markup.button.callback('💬 فتح / رد الآن', openCallbackData)]])
+          : undefined;
+
+        const userAlertText =
+          `🔔 <b>تفاعل جديد من ${escapeHtml(cleanActor)}</b>${propPart}` +
+          detailLine +
+          (botUsername && threadId
+            ? `\n👉 <a href="https://t.me/${escapeHtml(botUsername)}?start=chat_${encodeURIComponent(threadId)}">فتح المحادثة</a>`
+            : '');
+
+        try {
+          await tg.sendMessage(rId, userAlertText, {
+            parse_mode: 'HTML',
+            disable_notification: false,
+            link_preview_options: { is_disabled: true },
+            ...(userInlineKb || {})
+          });
+          sentToTarget = true;
+        } catch (e) {
+          const errDesc = String(e?.description || e?.message || '');
+          if (!errDesc.includes('bot was blocked') && !errDesc.includes('chat not found') && !errDesc.includes('user is deactivated')) {
+            console.error('notifyPeerInteraction target send error:', errDesc);
+          }
+        }
       }
     }
 
@@ -302,7 +313,7 @@ function createMessengerModule(core) {
     return sentToTarget;
   }
 
-  // إشعار فوري ومضمون للطرف الآخر عند وصول أي رسالة
+  // إشعار فوري للطرف الآخر عند وصول أي رسالة، مع تجنّب الإشعار إذا كان فاتحاً نفس المحادثة
   async function notifyReceiverMessenger(ctx, {
     threadId,
     propertyId,
@@ -328,68 +339,74 @@ function createMessengerModule(core) {
       cleanSender = await resolveCleanSenderName(sId, 'مراسل');
     }
 
-    let rawPreview = '';
-    if (messageType === 'video') {
-      rawPreview = mediaCount > 1 ? `🎬 أرسل ${mediaCount} فيديوهات` : '🎬 أرسل فيديو';
-    } else if (messageType === 'image' || messageType === 'photo') {
-      rawPreview = mediaCount > 1 ? `🖼️ أرسل ${mediaCount} صور` : '🖼️ أرسل صورة';
-    } else {
-      const snippet = String(messageText || '').trim().replace(/\s+/g, ' ');
-      const shortSnippet = snippet.length > 100 ? `${snippet.slice(0, 100)}…` : snippet;
-      rawPreview = shortSnippet ? `💬 ${shortSnippet}` : '💬 رسالة جديدة';
-    }
-
     const propNumber = propertyId ? Number(propertyId) : 0;
-    const propBadge = propNumber ? ` • 🏠 #${propNumber}` : '';
-    const botUsername = ctx?.botInfo?.username || core.bot?.botInfo?.username || '';
-    const deepLink = botUsername
-      ? `https://t.me/${botUsername}?start=chat_${encodeURIComponent(threadId)}`
-      : '';
-
-    const htmlText =
-      `🔔 <b>رسالة جديدة من ${escapeHtml(cleanSender)}</b>${propBadge ? ` • 🏠 <b>#${propNumber}</b>` : ''}\n` +
-      `<blockquote>💬 ${escapeHtml(rawPreview.replace(/^💬\s*/, ''))}</blockquote>` +
-      (deepLink ? `\n👉 <a href="${escapeHtml(deepLink)}">افتح المحادثة مباشرة</a>` : '');
-
-    const plainText =
-      `🔔 رسالة جديدة من ${cleanSender}${propBadge}\n` +
-      `${rawPreview}` +
-      (deepLink ? `\nرابط المحادثة: ${deepLink}` : '');
-
-    const inlineKeyboard = Markup.inlineKeyboard([
-      [Markup.button.callback('💬 فتح المحادثة الآن', `msg_open:${threadId}`)]
-    ]);
+    const recSess = messengerSession[rId];
+    const alreadyViewingThisThread = isUserInThread(rId, threadId);
 
     let delivered = false;
-    try {
-      await telegramApi.sendMessage(rId, htmlText, {
-        parse_mode: 'HTML',
-        disable_notification: false,
-        link_preview_options: { is_disabled: true },
-        ...inlineKeyboard
-      });
-      delivered = true;
-    } catch (e) {
-      const errDesc = String(e?.description || e?.message || '');
-      if (errDesc.includes('bot was blocked') || errDesc.includes('chat not found') || errDesc.includes('user is deactivated')) {
-        console.warn(`notifyReceiverMessenger skipped for ${rId}: ${errDesc}`);
-        return false;
+
+    if (!alreadyViewingThisThread) {
+      let rawPreview = '';
+      if (messageType === 'video') {
+        rawPreview = mediaCount > 1 ? `🎬 أرسل ${mediaCount} فيديوهات` : '🎬 أرسل فيديو';
+      } else if (messageType === 'image' || messageType === 'photo') {
+        rawPreview = mediaCount > 1 ? `🖼️ أرسل ${mediaCount} صور` : '🖼️ أرسل صورة';
+      } else {
+        const snippet = String(messageText || '').trim().replace(/\s+/g, ' ');
+        const shortSnippet = snippet.length > 100 ? `${snippet.slice(0, 100)}…` : snippet;
+        rawPreview = shortSnippet ? `💬 ${shortSnippet}` : '💬 رسالة جديدة';
       }
+
+      const propBadge = propNumber ? ` • 🏠 #${propNumber}` : '';
+      const botUsername = ctx?.botInfo?.username || core.bot?.botInfo?.username || '';
+      const deepLink = botUsername
+        ? `https://t.me/${botUsername}?start=chat_${encodeURIComponent(threadId)}`
+        : '';
+
+      const htmlText =
+        `🔔 <b>رسالة جديدة من ${escapeHtml(cleanSender)}</b>${propBadge ? ` • 🏠 <b>#${propNumber}</b>` : ''}\n` +
+        `<blockquote>💬 ${escapeHtml(rawPreview.replace(/^💬\s*/, ''))}</blockquote>` +
+        (deepLink ? `\n👉 <a href="${escapeHtml(deepLink)}">افتح المحادثة مباشرة</a>` : '');
+
+      const plainText =
+        `🔔 رسالة جديدة من ${cleanSender}${propBadge}\n` +
+        `${rawPreview}` +
+        (deepLink ? `\nرابط المحادثة: ${deepLink}` : '');
+
+      const inlineKeyboard = Markup.inlineKeyboard([
+        [Markup.button.callback('💬 فتح المحادثة الآن', `msg_open:${threadId}`)]
+      ]);
+
       try {
-        await telegramApi.sendMessage(rId, plainText, {
+        await telegramApi.sendMessage(rId, htmlText, {
+          parse_mode: 'HTML',
           disable_notification: false,
+          link_preview_options: { is_disabled: true },
           ...inlineKeyboard
         });
         delivered = true;
-      } catch (retryErr) {
-        console.error('notifyReceiverMessenger fallback failed:', retryErr?.message || retryErr);
+      } catch (e) {
+        const errDesc = String(e?.description || e?.message || '');
+        if (errDesc.includes('bot was blocked') || errDesc.includes('chat not found') || errDesc.includes('user is deactivated')) {
+          console.warn(`notifyReceiverMessenger skipped for ${rId}: ${errDesc}`);
+          return false;
+        }
+        try {
+          await telegramApi.sendMessage(rId, plainText, {
+            disable_notification: false,
+            ...inlineKeyboard
+          });
+          delivered = true;
+        } catch (retryErr) {
+          console.error('notifyReceiverMessenger fallback failed:', retryErr?.message || retryErr);
+        }
       }
     }
 
-    const recSess = messengerSession[rId];
-    if (recSess?.mode === 'thread' && recSess.threadId === threadId && recSess.cardMessageId) {
+    if (alreadyViewingThisThread && recSess?.cardMessageId) {
       try {
-        const view = await openThreadMessages(rId, threadId, 0);
+        const botUsername = ctx?.botInfo?.username || core.bot?.botInfo?.username || '';
+        const view = await openThreadMessages(rId, threadId, recSess.page || 0);
         const recName = await resolveCleanSenderName(sId, cleanSender);
         let myRecName = await resolveCleanSenderName(rId, '');
         if (!myRecName || myRecName === 'مراسل') myRecName = 'أنا';
