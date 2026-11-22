@@ -12,6 +12,7 @@ const PAGE_SIZE = 30;
 const NAME_CACHE_TTL = 60 * 60 * 1000;
 const LINE = '▬▬▬▬▬▬▬▬▬▬▬▬';
 const ALBUM_FLUSH_MS = 650;
+const PEER_NOTIFY_COOLDOWN_MS = 45 * 1000;
 const SUP = { 0: '⁰', 1: '¹', 2: '²', 3: '³', 4: '⁴', 5: '⁵', 6: '⁶', 7: '⁷', 8: '⁸', 9: '⁹' };
 
 const BTN_PREV = '◀️ السابق';
@@ -127,6 +128,7 @@ function createMessengerModule(core) {
   const messengerSession = {};
   const nameCache = new Map();
   const pendingAlbums = new Map();
+  const peerNotifyCooldown = new Map();
 
   function getTelegramClient(ctx) {
     return core.bot?.telegram || ctx?.telegram || null;
@@ -205,6 +207,99 @@ function createMessengerModule(core) {
   async function getMessengerButtonLabel(userId) {
     const count = await getUnreadCount(userId);
     return count > 0 ? `💬 المراسلات (${count})` : '💬 المراسلات';
+  }
+
+  // إشعار مستخدم ↔ مستخدم عند التفاعل + إشعار الإدارة عند التفعيل
+  async function notifyPeerInteraction(ctx, {
+    actorId,
+    targetId,
+    actorName = '',
+    kind = 'interaction',
+    detail = '',
+    propertyId = null,
+    threadId = null,
+    notifyAdmins = false
+  }) {
+    const sId = Number(actorId);
+    const rId = Number(targetId);
+    if (!sId || !rId || sId === rId) return false;
+
+    const tg = getTelegramClient(ctx);
+    if (!tg) return false;
+
+    const cdKey = `${sId}:${rId}:${kind}:${propertyId || ''}`;
+    const now = Date.now();
+    const lastAt = peerNotifyCooldown.get(cdKey) || 0;
+    if (now - lastAt < PEER_NOTIFY_COOLDOWN_MS) return false;
+    peerNotifyCooldown.set(cdKey, now);
+
+    let cleanActor = String(actorName || '').trim();
+    if (isBadName(cleanActor)) {
+      cleanActor = await resolveCleanSenderName(sId, 'مراسل');
+    }
+
+    const propNum = propertyId ? Number(propertyId) : 0;
+    const propPart = propNum ? ` • 🏠 <b>#${propNum}</b>` : '';
+    const detailLine = detail ? `\n<blockquote>${escapeHtml(detail)}</blockquote>` : '';
+
+    const botUsername = ctx?.botInfo?.username || core.bot?.botInfo?.username || '';
+    const openCallbackData = threadId
+      ? `msg_open:${threadId}`
+      : (propNum ? `msg_prop:${propNum}:${sId}` : null);
+
+    const userInlineKb = openCallbackData
+      ? Markup.inlineKeyboard([[Markup.button.callback('💬 فتح / رد الآن', openCallbackData)]])
+      : undefined;
+
+    const userAlertText =
+      `🔔 <b>تفاعل جديد من ${escapeHtml(cleanActor)}</b>${propPart}` +
+      detailLine +
+      (botUsername && threadId
+        ? `\n👉 <a href="https://t.me/${escapeHtml(botUsername)}?start=chat_${encodeURIComponent(threadId)}">فتح المحادثة</a>`
+        : '');
+
+    let sentToTarget = false;
+    try {
+      await tg.sendMessage(rId, userAlertText, {
+        parse_mode: 'HTML',
+        disable_notification: false,
+        link_preview_options: { is_disabled: true },
+        ...(userInlineKb || {})
+      });
+      sentToTarget = true;
+    } catch (e) {
+      const errDesc = String(e?.description || e?.message || '');
+      if (!errDesc.includes('bot was blocked') && !errDesc.includes('chat not found') && !errDesc.includes('user is deactivated')) {
+        console.error('notifyPeerInteraction target send error:', errDesc);
+      }
+    }
+
+    if (notifyAdmins && typeof core.getAdminIds === 'function') {
+      try {
+        const adminIds = await core.getAdminIds();
+        const adminText =
+          `🛰 <b>تنبيه تفاعل بين مستخدمين</b>${propPart}\n` +
+          `👤 <b>المتفاعل:</b> ${escapeHtml(cleanActor)} (<code>${sId}</code>)\n` +
+          `🎯 <b>الطرف المستهدف:</b> <code>${rId}</code>` +
+          detailLine;
+
+        const adSuffix = propNum ? `_${propNum}` : '';
+        const adminKb = Markup.inlineKeyboard([
+          [Markup.button.callback(`✉️ مراسلة (${sId})`, `support_reply_${sId}${adSuffix}`)]
+        ]);
+
+        for (const adminId of adminIds) {
+          await tg.sendMessage(adminId, fitTelegramText(adminText, false), {
+            parse_mode: 'HTML',
+            ...adminKb
+          }).catch(() => {});
+        }
+      } catch (e) {
+        console.error('notifyPeerInteraction admin send error:', e?.message || e);
+      }
+    }
+
+    return sentToTarget;
   }
 
   // إشعار فوري ومضمون للطرف الآخر عند وصول أي رسالة
@@ -1147,7 +1242,7 @@ function createMessengerModule(core) {
   }
 
   async function renderActiveThread(ctx, userId, threadId, meta = {}, opts = {}) {
-    const { editMessageId = null, forceNew = false, page = 0 } = opts;
+    const { editMessageId = null, forceNew = false, page = 0, notifyPeerOnOpen = true } = opts;
     const view = await openThreadMessages(userId, threadId, page);
     const messages = view.messages;
 
@@ -1201,6 +1296,20 @@ function createMessengerModule(core) {
       page: view.page,
       totalPages: view.totalPages
     };
+
+    if (notifyPeerOnOpen && receiverId && Number(receiverId) !== Number(userId)) {
+      await notifyPeerInteraction(ctx, {
+        actorId: userId,
+        targetId: receiverId,
+        actorName: myName === 'أنا' ? '' : myName,
+        kind: 'thread_opened',
+        detail: 'فتح المحادثة معك',
+        propertyId: propertyId || null,
+        threadId,
+        notifyAdmins: false
+      });
+    }
+
     return msgId;
   }
 
@@ -1220,6 +1329,20 @@ function createMessengerModule(core) {
     const threadId = buildThreadId(propertyId, ownerId, userId);
     const meta = { propertyId, ownerId, receiverId: ownerId, otherName: ownerName };
 
+    let actorName = getUserDisplayName(ctx.from);
+    if (actorName === 'مراسل') actorName = await resolveCleanSenderName(userId, '');
+
+    await notifyPeerInteraction(ctx, {
+      actorId: userId,
+      targetId: ownerId,
+      actorName: actorName === 'مراسل' ? '' : actorName,
+      kind: 'ad_interest',
+      detail: `بدأ تفاعلاً ومراسلة بخصوص الإعلان #${propertyId}`,
+      propertyId,
+      threadId,
+      notifyAdmins: true
+    });
+
     const { data: existing } = await supabase
       .from('messanger')
       .select('id')
@@ -1228,7 +1351,7 @@ function createMessengerModule(core) {
 
     if (Array.isArray(existing) && existing.length > 0) {
       delete userState[userId];
-      return renderActiveThread(ctx, userId, threadId, meta, { forceNew: true });
+      return renderActiveThread(ctx, userId, threadId, meta, { forceNew: true, notifyPeerOnOpen: false });
     }
 
     userState[userId] = {
@@ -1311,8 +1434,8 @@ function createMessengerModule(core) {
       targetCtx.threadId,
       targetCtx,
       isFirstWizard
-        ? { forceNew: true, page: 0 }
-        : { editMessageId: targetCtx.cardMessageId, page: 0 }
+        ? { forceNew: true, page: 0, notifyPeerOnOpen: false }
+        : { editMessageId: targetCtx.cardMessageId, page: 0, notifyPeerOnOpen: false }
     );
 
     return true;
@@ -1433,7 +1556,8 @@ function createMessengerModule(core) {
       if (ret?.threadId) {
         await renderActiveThread(ctx, userId, ret.threadId, ret, {
           forceNew: true,
-          page: ret.page || 0
+          page: ret.page || 0,
+          notifyPeerOnOpen: false
         });
       } else {
         await showInboxList(ctx);
@@ -1453,7 +1577,8 @@ function createMessengerModule(core) {
       const target = rawText === BTN_PREV ? cur + 1 : Math.max(0, cur - 1);
       await renderActiveThread(ctx, userId, sess.threadId, sess, {
         editMessageId: sess.cardMessageId,
-        page: target
+        page: target,
+        notifyPeerOnOpen: false
       });
       return true;
     }
@@ -1521,7 +1646,7 @@ function createMessengerModule(core) {
       await renderActiveThread(
         ctx, userId, threadId,
         { propertyId, ownerId, receiverId, otherName },
-        { forceNew: true, page: 0 }
+        { forceNew: true, page: 0, notifyPeerOnOpen: false }
       );
       return true;
     }
@@ -1542,7 +1667,8 @@ function createMessengerModule(core) {
 
       await renderActiveThread(ctx, userId, sess.threadId, sess, {
         editMessageId: sess.cardMessageId,
-        page: 0
+        page: 0,
+        notifyPeerOnOpen: false
       });
       return true;
     }
@@ -1614,6 +1740,7 @@ function createMessengerModule(core) {
     getMessengerButtonLabel,
     insertMessage,
     notifyReceiverMessenger,
+    notifyPeerInteraction,
     fetchSenderThreads,
     fetchUserSharedProperties,
     openThreadMessages,
