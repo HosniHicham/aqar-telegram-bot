@@ -5,6 +5,8 @@
 // المرفق في استعلام العميل مدمج داخل نفس رسالة البطاقة بدون رسائل منفصلة.
 // =========================================================================
 
+const BTN_CONTACT_OWNER = '📞 اتصل بالمالك';
+
 module.exports = function registerUsers(bot, core) {
   const {
     Markup, supabase, app, WEBHOOK_DOMAIN, MAX_PROPERTY_IMAGES,
@@ -350,7 +352,7 @@ module.exports = function registerUsers(bot, core) {
     }
   }
 
-  function getBrowsingKeyboard(currentIndex, totalCount, mediaIdx = 0, totalMedia = 0) {
+  function getBrowsingKeyboard(currentIndex, totalCount, mediaIdx = 0, totalMedia = 0, canContactOwner = false) {
     const rows = [];
     if (totalMedia > 1) {
       const mediaRow = [];
@@ -364,6 +366,9 @@ module.exports = function registerUsers(bot, core) {
     navRow.push(`📄 ${currentIndex + 1} / ${totalCount}`);
     if (currentIndex < totalCount - 1) navRow.push('التالي ➡️');
     rows.push(navRow);
+    if (canContactOwner) {
+      rows.push([BTN_CONTACT_OWNER]);
+    }
     rows.push(['📍 تغيير الولاية', '🏠 القائمة الرئيسية']);
     return Markup.keyboard(rows).resize();
   }
@@ -960,6 +965,9 @@ module.exports = function registerUsers(bot, core) {
       session.page = pageIndex;
 
       const item = data[pageIndex];
+      const canContactOwner = Boolean(item.user_id && Number(item.user_id) !== Number(userId));
+      session.currentProperty = item;
+
       const orderedMedia = buildOrderedBrowsingMedia(item);
       const totalMedia = orderedMedia.length;
 
@@ -982,8 +990,8 @@ module.exports = function registerUsers(bot, core) {
         `📝 <b>الوصف:</b> ${escapeHtml(item.description || item.message || '')}`;
 
       const caption = fitTelegramText(rawCaption, !!currentMedia);
-      const replyKb = getBrowsingKeyboard(pageIndex, data.length, safeMediaIndex, totalMedia);
-      const msgInlineKb = (item.user_id && Number(item.user_id) !== Number(userId))
+      const replyKb = getBrowsingKeyboard(pageIndex, data.length, safeMediaIndex, totalMedia, canContactOwner);
+      const msgInlineKb = canContactOwner
         ? Markup.inlineKeyboard([
             [Markup.button.callback('💬 مراسلة المالك', `msg_prop:${item.id}:${item.user_id}`)]
           ])
@@ -1015,6 +1023,49 @@ module.exports = function registerUsers(bot, core) {
       await replyTracked(ctx, userId, '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getMainMenuKeyboard(userId, unreadCount), true);
     }
   }
+
+  bot.hears(BTN_CONTACT_OWNER, async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    const userId = ctx.from.id;
+    const session = browsingSession[userId];
+    let prop = session?.currentProperty || null;
+
+    if (!prop && session) {
+      try {
+        let query = supabase.from('test_messages').select('*').order('id', { ascending: false });
+        if (session.state !== 'ALL') query = query.eq('state_name', session.state);
+        const { data } = await query;
+        if (Array.isArray(data) && data.length > 0) {
+          const safeIdx = Math.min(Math.max(0, Number(session.page) || 0), data.length - 1);
+          prop = data[safeIdx];
+        }
+      } catch (_) {}
+    }
+
+    if (!prop?.id || !prop?.user_id) {
+      return replyTracked(
+        ctx,
+        userId,
+        '⚠️ <b>تعذر تحديد بيانات المالك لهذا العقار حالياً.</b>',
+        { parse_mode: 'HTML' },
+        true
+      );
+    }
+
+    if (Number(prop.user_id) === Number(userId)) {
+      return replyTracked(
+        ctx,
+        userId,
+        'ℹ️ <b>هذا العقار منشور بحسابك.</b>',
+        { parse_mode: 'HTML' },
+        true
+      );
+    }
+
+    if (typeof core.messenger?.startPropertyMessage === 'function') {
+      await core.messenger.startPropertyMessage(ctx, { id: prop.id, user_id: prop.user_id });
+    }
+  });
 
   bot.hears('الصورة التالية 🖼', async (ctx) => {
     await safeDeleteUserMessage(ctx);
