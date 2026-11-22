@@ -440,8 +440,10 @@ function createMessengerModule(core) {
     return data;
   }
 
+  // التحقق من الطرفين (uid و otherId) واستخراج العقارات المشتركة بينهما دون تكرار
   async function fetchSenderThreads(userId) {
     const uid = Number(userId);
+    if (!uid) return [];
 
     try {
       const { data, error } = await supabase
@@ -450,79 +452,88 @@ function createMessengerModule(core) {
         .or(`sender_id.eq.${uid},receiver_id.eq.${uid}`)
         .eq('is_closed', false)
         .order('created_at', { ascending: false })
-        .limit(200);
+        .limit(300);
 
       if (error || !Array.isArray(data)) return [];
 
-      const threadsMap = new Map();
+      const usersMap = new Map();
 
       for (const row of data) {
-        const otherId = Number(row.sender_id) === uid ? Number(row.receiver_id) : Number(row.sender_id);
+        const sId = Number(row.sender_id);
+        const rId = Number(row.receiver_id);
+        const otherId = sId === uid ? rId : sId;
+
         if (!otherId || otherId === uid) continue;
+        if (sId !== uid && rId !== uid) continue;
 
-        const tId = row.thread_id || buildThreadId(row.property_id, row.owner_id, otherId);
-
-        if (!threadsMap.has(tId)) {
-          threadsMap.set(tId, {
-            threadId: tId,
-            propertyId: row.property_id,
-            ownerId: row.owner_id,
+        if (!usersMap.has(otherId)) {
+          usersMap.set(otherId, {
             otherId,
             rawSenderName: '',
-            unreadCount: 0
+            totalUnread: 0,
+            propsMap: new Map()
           });
         }
 
-        const entry = threadsMap.get(tId);
-        if (!entry.rawSenderName && Number(row.sender_id) === otherId && row.sender_name) {
-          entry.rawSenderName = row.sender_name;
+        const userEntry = usersMap.get(otherId);
+        if (!userEntry.rawSenderName && sId === otherId && row.sender_name) {
+          userEntry.rawSenderName = row.sender_name;
         }
-        if (Number(row.receiver_id) === uid && Number(row.sender_id) !== uid && row.is_read === false) {
-          entry.unreadCount += 1;
-        }
-      }
 
-      const base = await Promise.all(
-        [...threadsMap.values()].map(async (t) => ({
-          ...t,
-          cleanName: await resolveCleanSenderName(t.otherId, t.rawSenderName)
-        }))
-      );
+        const propId = Number(row.property_id) || 0;
+        const propKey = String(propId);
+        const tId = row.thread_id || buildThreadId(propId, row.owner_id, otherId);
 
-      // تجميع المحادثات حسب الشخص (otherId): إذا كان له أكثر من عقار يظهر اسمه مرة واحدة وعند الضغط عليه تظهر أزرار العقارات
-      const groupedByUser = new Map();
-      for (const t of base) {
-        if (!groupedByUser.has(t.otherId)) {
-          groupedByUser.set(t.otherId, {
-            otherId: t.otherId,
-            cleanName: t.cleanName,
-            threads: [],
-            totalUnread: 0
+        if (!userEntry.propsMap.has(propKey)) {
+          userEntry.propsMap.set(propKey, {
+            threadId: tId,
+            propertyId: propId,
+            ownerId: Number(row.owner_id) || 0,
+            otherId,
+            unreadCount: 0,
+            lastCreatedAt: row.created_at
           });
         }
-        const g = groupedByUser.get(t.otherId);
-        g.threads.push(t);
-        g.totalUnread += Number(t.unreadCount || 0);
+
+        const propEntry = userEntry.propsMap.get(propKey);
+        if (rId === uid && sId !== uid && row.is_read === false) {
+          propEntry.unreadCount += 1;
+          userEntry.totalUnread += 1;
+        }
       }
 
       const result = [];
-      for (const g of groupedByUser.values()) {
-        if (g.threads.length === 1) {
-          const single = g.threads[0];
-          const buttonText = single.unreadCount > 0 ? `🟢 ${g.cleanName} (${single.unreadCount})` : `👤 ${g.cleanName}`;
+
+      for (const u of usersMap.values()) {
+        const cleanName = await resolveCleanSenderName(u.otherId, u.rawSenderName);
+        const propThreads = [...u.propsMap.values()].map((p) => ({
+          ...p,
+          cleanName
+        }));
+
+        if (propThreads.length === 1) {
+          const single = propThreads[0];
+          const buttonText = single.unreadCount > 0
+            ? `🟢 ${cleanName} (${single.unreadCount})`
+            : `👤 ${cleanName}`;
+
           result.push({
             ...single,
+            cleanName,
             isGroup: false,
             buttonText
           });
-        } else {
-          const buttonText = g.totalUnread > 0 ? `🟢 ${g.cleanName} (${g.totalUnread})` : `👤 ${g.cleanName}`;
+        } else if (propThreads.length > 1) {
+          const buttonText = u.totalUnread > 0
+            ? `🟢 ${cleanName} (${u.totalUnread})`
+            : `👤 ${cleanName}`;
+
           result.push({
             isGroup: true,
-            otherId: g.otherId,
-            cleanName: g.cleanName,
-            threads: g.threads,
-            unreadCount: g.totalUnread,
+            otherId: u.otherId,
+            cleanName,
+            threads: propThreads,
+            unreadCount: u.totalUnread,
             buttonText
           });
         }
@@ -773,7 +784,6 @@ function createMessengerModule(core) {
       ? out.join('\n')
       : `<blockquote><i>لا توجد رسائل بعد، اكتب رسالتك أو أرسل صورة أو فيديو 👇</i></blockquote>`;
 
-    // ترقيم الصفحات في الأسفل ليكون دائماً على مرأى عين المستخدم
     const pageBadge = totalPages > 1 ? ` • 📄 <b>${currentPage}/${totalPages}</b>` : '';
     const footer = `\n${LINE}\n✍️ <i>اكتب رسالتك أو أرسل صورة / فيديو</i>${pageBadge}`;
 
