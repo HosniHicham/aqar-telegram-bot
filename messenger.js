@@ -19,6 +19,7 @@ const BTN_NEXT = 'التالي ▶️';
 const BTN_BACK = '⬅️ قائمة المراسلين';
 const BTN_HOME = '🏠 القائمة الرئيسية';
 const BTN_BACK_TO_THREAD = '↩️ رجوع للمحادثة';
+const BTN_BACK_TO_USER_PROPS = '↩️ عقارات المراسل';
 
 function isBadName(name) {
   const n = String(name || '').trim();
@@ -520,6 +521,7 @@ function createMessengerModule(core) {
           result.push({
             ...single,
             cleanName,
+            threads: propThreads,
             isGroup: false,
             buttonText
           });
@@ -543,6 +545,70 @@ function createMessengerModule(core) {
     } catch (e) {
       console.error('fetchSenderThreads error:', e);
       return [];
+    }
+  }
+
+  // جلب العقارات المشتركة بين المستخدم الحالي وطرف معين (otherId) لإتاحة الرجوع السريع بينها
+  async function fetchUserSharedProperties(userId, otherId, fallbackName = '') {
+    const uid = Number(userId);
+    const targetOtherId = Number(otherId);
+    if (!uid || !targetOtherId) return null;
+
+    try {
+      const { data, error } = await supabase
+        .from('messanger')
+        .select('id, thread_id, property_id, owner_id, sender_id, receiver_id, sender_name, is_read, is_closed, created_at')
+        .or(`and(sender_id.eq.${uid},receiver_id.eq.${targetOtherId}),and(sender_id.eq.${targetOtherId},receiver_id.eq.${uid})`)
+        .eq('is_closed', false)
+        .order('created_at', { ascending: false })
+        .limit(300);
+
+      if (error || !Array.isArray(data) || !data.length) return null;
+
+      let rawName = '';
+      let totalUnread = 0;
+      const propsMap = new Map();
+
+      for (const row of data) {
+        const sId = Number(row.sender_id);
+        const rId = Number(row.receiver_id);
+        if (!rawName && sId === targetOtherId && row.sender_name) {
+          rawName = row.sender_name;
+        }
+
+        const propId = Number(row.property_id) || 0;
+        const propKey = String(propId);
+        const tId = row.thread_id || buildThreadId(propId, row.owner_id, targetOtherId);
+
+        if (!propsMap.has(propKey)) {
+          propsMap.set(propKey, {
+            threadId: tId,
+            propertyId: propId,
+            ownerId: Number(row.owner_id) || 0,
+            otherId: targetOtherId,
+            unreadCount: 0,
+            lastCreatedAt: row.created_at
+          });
+        }
+
+        const propEntry = propsMap.get(propKey);
+        if (rId === uid && sId === targetOtherId && row.is_read === false) {
+          propEntry.unreadCount += 1;
+          totalUnread += 1;
+        }
+      }
+
+      const cleanName = await resolveCleanSenderName(targetOtherId, rawName || fallbackName);
+      const threads = [...propsMap.values()].map((p) => ({ ...p, cleanName }));
+
+      return {
+        otherId: targetOtherId,
+        cleanName,
+        threads,
+        totalUnread
+      };
+    } catch (_) {
+      return null;
     }
   }
 
@@ -635,7 +701,8 @@ function createMessengerModule(core) {
           ownerId: currentSess.ownerId,
           receiverId: currentSess.receiverId,
           otherName: currentSess.otherName,
-          page: currentSess.page || 0
+          page: currentSess.page || 0,
+          hasMultipleUserProps: !!currentSess.hasMultipleUserProps
         }
       : (currentSess.returnThread || null);
 
@@ -799,11 +866,13 @@ function createMessengerModule(core) {
     };
   }
 
-  function threadKeyboard() {
-    return Markup.keyboard([
-      [BTN_PREV, BTN_NEXT],
-      [BTN_BACK, BTN_HOME]
-    ]).resize();
+  function threadKeyboard(hasMultipleUserProps = false) {
+    const rows = [[BTN_PREV, BTN_NEXT]];
+    if (hasMultipleUserProps) {
+      rows.push([BTN_BACK_TO_USER_PROPS]);
+    }
+    rows.push([BTN_BACK, BTN_HOME]);
+    return Markup.keyboard(rows).resize();
   }
 
   function propertyBrowseKeyboard(mediaIdx = 0, totalMedia = 0) {
@@ -916,7 +985,8 @@ function createMessengerModule(core) {
         ownerId: threadSess.ownerId,
         receiverId: threadSess.receiverId,
         otherName: threadSess.otherName,
-        page: threadSess.page || 0
+        page: threadSess.page || 0,
+        hasMultipleUserProps: !!threadSess.hasMultipleUserProps
       }
     };
   }
@@ -1097,6 +1167,9 @@ function createMessengerModule(core) {
     if (myName === 'مراسل') myName = await resolveCleanSenderName(userId, '');
     if (myName === 'مراسل') myName = 'أنا';
 
+    const sharedInfo = receiverId ? await fetchUserSharedProperties(userId, receiverId, otherName) : null;
+    const hasMultipleUserProps = Boolean(sharedInfo && sharedInfo.threads.length > 1);
+
     const botUsername = ctx?.botInfo?.username || core.bot?.botInfo?.username || '';
     const cardObj = formatSingleThreadCard(userId, view, {
       otherName,
@@ -1107,7 +1180,14 @@ function createMessengerModule(core) {
 
     const prevSession = messengerSession[userId] || {};
     const targetMsgId = editMessageId || prevSession.cardMessageId || null;
-    const msgId = await upsertCard(ctx, userId, cardObj, threadKeyboard(), targetMsgId, forceNew);
+    const msgId = await upsertCard(
+      ctx,
+      userId,
+      cardObj,
+      threadKeyboard(hasMultipleUserProps),
+      targetMsgId,
+      forceNew
+    );
 
     messengerSession[userId] = {
       mode: 'thread',
@@ -1116,6 +1196,7 @@ function createMessengerModule(core) {
       ownerId,
       receiverId,
       otherName,
+      hasMultipleUserProps,
       cardMessageId: msgId,
       page: view.page,
       totalPages: view.totalPages
@@ -1331,6 +1412,17 @@ function createMessengerModule(core) {
       }
     }
 
+    if (rawText === BTN_BACK_TO_USER_PROPS && sess?.mode === 'thread' && sess.receiverId) {
+      await safeDeleteUserMessage(ctx);
+      const sharedInfo = await fetchUserSharedProperties(userId, sess.receiverId, sess.otherName);
+      if (sharedInfo && sharedInfo.threads.length > 1) {
+        await showUserPropertyThreads(ctx, userId, sharedInfo, sess.cardMessageId);
+      } else {
+        await showInboxList(ctx);
+      }
+      return true;
+    }
+
     if (rawText === BTN_BACK_TO_THREAD) {
       await safeDeleteUserMessage(ctx);
       const ret = messengerSession[userId]?.returnThread;
@@ -1523,6 +1615,7 @@ function createMessengerModule(core) {
     insertMessage,
     notifyReceiverMessenger,
     fetchSenderThreads,
+    fetchUserSharedProperties,
     openThreadMessages,
     formatSingleThreadCard,
     showInboxList,
