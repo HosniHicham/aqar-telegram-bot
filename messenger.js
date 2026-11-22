@@ -127,6 +127,10 @@ function createMessengerModule(core) {
   const nameCache = new Map();
   const pendingAlbums = new Map();
 
+  function getTelegramClient(ctx) {
+    return core.bot?.telegram || ctx?.telegram || null;
+  }
+
   function nameFromTelegramObj(obj) {
     if (!obj) return '';
     const full = [obj.first_name, obj.last_name].filter(Boolean).join(' ').trim();
@@ -141,7 +145,9 @@ function createMessengerModule(core) {
 
   async function fetchTelegramName(userId) {
     try {
-      const chat = await core.bot.telegram.getChat(Number(userId));
+      const tg = getTelegramClient();
+      if (!tg) return '';
+      const chat = await tg.getChat(Number(userId));
       return nameFromTelegramObj(chat);
     } catch (_) {
       return '';
@@ -200,7 +206,7 @@ function createMessengerModule(core) {
     return count > 0 ? `💬 المراسلات (${count})` : '💬 المراسلات';
   }
 
-  // إشعار فوري للطرف الآخر (صوت + اهتزاز طبيعي) وفتح مباشر للمحادثة عند الدخول
+  // إشعار فوري ومضمون للطرف الآخر عند وصول أي رسالة
   async function notifyReceiverMessenger(ctx, {
     threadId,
     propertyId,
@@ -213,51 +219,75 @@ function createMessengerModule(core) {
   }) {
     const sId = Number(senderId);
     const rId = Number(receiverId);
-    if (!rId || !threadId || sId === rId) return;
+    if (!rId || !threadId || sId === rId) return false;
 
-    const telegramApi = ctx?.telegram || core.bot?.telegram;
-    if (!telegramApi) return;
+    const telegramApi = getTelegramClient(ctx);
+    if (!telegramApi) {
+      console.error('notifyReceiverMessenger: Telegram client is not available');
+      return false;
+    }
 
     let cleanSender = String(senderName || '').trim();
     if (isBadName(cleanSender)) {
       cleanSender = await resolveCleanSenderName(sId, 'مراسل');
     }
 
-    let previewLine = '';
+    let rawPreview = '';
     if (messageType === 'video') {
-      previewLine = mediaCount > 1 ? `🎬 أرسل ${mediaCount} فيديوهات` : '🎬 أرسل فيديو';
+      rawPreview = mediaCount > 1 ? `🎬 أرسل ${mediaCount} فيديوهات` : '🎬 أرسل فيديو';
     } else if (messageType === 'image' || messageType === 'photo') {
-      previewLine = mediaCount > 1 ? `🖼️ أرسل ${mediaCount} صور` : '🖼️ أرسل صورة';
+      rawPreview = mediaCount > 1 ? `🖼️ أرسل ${mediaCount} صور` : '🖼️ أرسل صورة';
     } else {
       const snippet = String(messageText || '').trim().replace(/\s+/g, ' ');
-      const shortSnippet = snippet.length > 90 ? `${snippet.slice(0, 90)}…` : snippet;
-      previewLine = shortSnippet ? `💬 ${escapeHtml(shortSnippet)}` : '💬 رسالة جديدة';
+      const shortSnippet = snippet.length > 100 ? `${snippet.slice(0, 100)}…` : snippet;
+      rawPreview = shortSnippet ? `💬 ${shortSnippet}` : '💬 رسالة جديدة';
     }
 
-    const propBadge = propertyId ? ` • 🏠 <b>#${Number(propertyId)}</b>` : '';
+    const propNumber = propertyId ? Number(propertyId) : 0;
+    const propBadge = propNumber ? ` • 🏠 #${propNumber}` : '';
     const botUsername = ctx?.botInfo?.username || core.bot?.botInfo?.username || '';
     const deepLink = botUsername
       ? `https://t.me/${botUsername}?start=chat_${encodeURIComponent(threadId)}`
       : '';
 
-    const notifText =
-      `🔔 <b>رسالة جديدة من ${escapeHtml(cleanSender)}</b>${propBadge}\n` +
-      `<blockquote>${previewLine}</blockquote>` +
+    const htmlText =
+      `🔔 <b>رسالة جديدة من ${escapeHtml(cleanSender)}</b>${propBadge ? ` • 🏠 <b>#${propNumber}</b>` : ''}\n` +
+      `<blockquote>💬 ${escapeHtml(rawPreview.replace(/^💬\s*/, ''))}</blockquote>` +
       (deepLink ? `\n👉 <a href="${escapeHtml(deepLink)}">افتح المحادثة مباشرة</a>` : '');
 
-    const inlineRows = [
-      [Markup.button.callback('💬 فتح المحادثة الآن', `msg_open:${threadId}`)]
-    ];
+    const plainText =
+      `🔔 رسالة جديدة من ${cleanSender}${propBadge}\n` +
+      `${rawPreview}` +
+      (deepLink ? `\nرابط المحادثة: ${deepLink}` : '');
 
+    const inlineKeyboard = Markup.inlineKeyboard([
+      [Markup.button.callback('💬 فتح المحادثة الآن', `msg_open:${threadId}`)]
+    ]);
+
+    let delivered = false;
     try {
-      await telegramApi.sendMessage(rId, notifText, {
+      await telegramApi.sendMessage(rId, htmlText, {
         parse_mode: 'HTML',
         disable_notification: false,
         link_preview_options: { is_disabled: true },
-        ...Markup.inlineKeyboard(inlineRows)
+        ...inlineKeyboard
       });
+      delivered = true;
     } catch (e) {
-      console.error('notifyReceiverMessenger error:', e?.message || e);
+      const errDesc = String(e?.description || e?.message || '');
+      if (errDesc.includes('bot was blocked') || errDesc.includes('chat not found') || errDesc.includes('user is deactivated')) {
+        console.warn(`notifyReceiverMessenger skipped for ${rId}: ${errDesc}`);
+        return false;
+      }
+      try {
+        await telegramApi.sendMessage(rId, plainText, {
+          disable_notification: false,
+          ...inlineKeyboard
+        });
+        delivered = true;
+      } catch (retryErr) {
+        console.error('notifyReceiverMessenger fallback failed:', retryErr?.message || retryErr);
+      }
     }
 
     const recSess = messengerSession[rId];
@@ -270,7 +300,7 @@ function createMessengerModule(core) {
         const cardObj = formatSingleThreadCard(rId, view, {
           otherName: recName,
           myName: myRecName,
-          propertyId: propertyId || recSess.propertyId,
+          propertyId: propNumber || recSess.propertyId,
           botUsername
         });
         await telegramApi.editMessageText(rId, recSess.cardMessageId, undefined, cardObj.text, {
@@ -280,13 +310,16 @@ function createMessengerModule(core) {
         }).catch(() => {});
       } catch (_) {}
     }
+
+    return delivered;
   }
 
   // رفع الوسائط إلى test_media وجلب الرابط العام (publicUrl) بنفس أسلوب Users
   async function uploadMediaToTestMedia(ctx, fileId, mediaType, index = 0) {
     if (!fileId) return '';
     try {
-      const fileLink = await ctx.telegram.getFileLink(String(fileId).trim());
+      const tg = getTelegramClient(ctx);
+      const fileLink = await tg.getFileLink(String(fileId).trim());
       const res = await fetch(fileLink.href);
       const buf = Buffer.from(await res.arrayBuffer());
       const isVideo = mediaType === 'video';
@@ -302,7 +335,8 @@ function createMessengerModule(core) {
     }
 
     try {
-      const fallbackLink = await ctx.telegram.getFileLink(String(fileId).trim());
+      const tg = getTelegramClient(ctx);
+      const fallbackLink = await tg.getFileLink(String(fileId).trim());
       return fallbackLink ? String(fallbackLink.href || fallbackLink).trim() : '';
     } catch (_) {
       return '';
@@ -1477,6 +1511,7 @@ function createMessengerModule(core) {
     getUnreadCount,
     getMessengerButtonLabel,
     insertMessage,
+    notifyReceiverMessenger,
     fetchSenderThreads,
     openThreadMessages,
     formatSingleThreadCard,
