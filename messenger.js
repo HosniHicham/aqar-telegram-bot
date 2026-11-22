@@ -455,15 +455,46 @@ function createMessengerModule(core) {
         }))
       );
 
-      const nameCount = {};
-      base.forEach((t) => { nameCount[t.cleanName] = (nameCount[t.cleanName] || 0) + 1; });
+      // تجميع المحادثات حسب الشخص (otherId): إذا كان له أكثر من عقار يظهر اسمه مرة واحدة وعند الضغط عليه تظهر أزرار العقارات
+      const groupedByUser = new Map();
+      for (const t of base) {
+        if (!groupedByUser.has(t.otherId)) {
+          groupedByUser.set(t.otherId, {
+            otherId: t.otherId,
+            cleanName: t.cleanName,
+            threads: [],
+            totalUnread: 0
+          });
+        }
+        const g = groupedByUser.get(t.otherId);
+        g.threads.push(t);
+        g.totalUnread += Number(t.unreadCount || 0);
+      }
 
-      return base.map((t) => {
-        let label = t.cleanName;
-        if (nameCount[t.cleanName] > 1) label += ` • عقار ${t.propertyId}`;
-        const buttonText = t.unreadCount > 0 ? `🟢 ${label} (${t.unreadCount})` : `👤 ${label}`;
-        return { ...t, buttonText };
-      });
+      const result = [];
+      for (const g of groupedByUser.values()) {
+        if (g.threads.length === 1) {
+          const single = g.threads[0];
+          const buttonText = single.unreadCount > 0 ? `🟢 ${g.cleanName} (${single.unreadCount})` : `👤 ${g.cleanName}`;
+          result.push({
+            ...single,
+            isGroup: false,
+            buttonText
+          });
+        } else {
+          const buttonText = g.totalUnread > 0 ? `🟢 ${g.cleanName} (${g.totalUnread})` : `👤 ${g.cleanName}`;
+          result.push({
+            isGroup: true,
+            otherId: g.otherId,
+            cleanName: g.cleanName,
+            threads: g.threads,
+            unreadCount: g.totalUnread,
+            buttonText
+          });
+        }
+      }
+
+      return result;
     } catch (e) {
       console.error('fetchSenderThreads error:', e);
       return [];
@@ -750,6 +781,46 @@ function createMessengerModule(core) {
     for (let i = 0; i < labels.length; i += 2) rows.push(labels.slice(i, i + 2));
     rows.push([BTN_HOME]);
     return Markup.keyboard(rows).resize();
+  }
+
+  function userPropertiesKeyboard(propLabels) {
+    const rows = [];
+    for (let i = 0; i < propLabels.length; i += 2) rows.push(propLabels.slice(i, i + 2));
+    rows.push([BTN_BACK, BTN_HOME]);
+    return Markup.keyboard(rows).resize();
+  }
+
+  async function showUserPropertyThreads(ctx, userId, groupItem, prevCardId = null) {
+    const propMap = {};
+    const labels = [];
+
+    for (const t of groupItem.threads || []) {
+      const lbl = t.unreadCount > 0
+        ? `🟢 عقار #${t.propertyId} (${t.unreadCount})`
+        : `🏠 عقار #${t.propertyId}`;
+      propMap[lbl] = t;
+      labels.push(lbl);
+    }
+
+    if (prevCardId && ctx.chat?.id) {
+      await ctx.telegram.deleteMessage(ctx.chat.id, prevCardId).catch(() => {});
+    }
+
+    const sent = await replyTracked(
+      ctx,
+      userId,
+      `👤 <b>${escapeHtml(groupItem.cleanName)}</b>\n👇 <i>اختر محادثة العقار</i>`,
+      { parse_mode: 'HTML', ...userPropertiesKeyboard(labels) },
+      true
+    );
+
+    messengerSession[userId] = {
+      mode: 'user_properties',
+      otherId: groupItem.otherId,
+      otherName: groupItem.cleanName,
+      propMap,
+      cardMessageId: sent?.message_id || null
+    };
   }
 
   async function upsertCard(ctx, userId, cardObj, keyboardExtra, targetMsgId, forceNew = false) {
@@ -1251,9 +1322,31 @@ function createMessengerModule(core) {
       return true;
     }
 
+    if (sess?.mode === 'user_properties' && sess.propMap?.[rawText]) {
+      await safeDeleteUserMessage(ctx);
+      const chosen = sess.propMap[rawText];
+      await renderActiveThread(
+        ctx,
+        userId,
+        chosen.threadId,
+        {
+          propertyId: chosen.propertyId,
+          ownerId: chosen.ownerId,
+          receiverId: chosen.otherId,
+          otherName: chosen.cleanName || sess.otherName
+        },
+        { editMessageId: sess.cardMessageId, forceNew: true, page: 0 }
+      );
+      return true;
+    }
+
     if (sess?.mode === 'list' && sess.senderMap?.[rawText]) {
       await safeDeleteUserMessage(ctx);
       const target = sess.senderMap[rawText];
+      if (target.isGroup && Array.isArray(target.threads) && target.threads.length > 1) {
+        await showUserPropertyThreads(ctx, userId, target, sess.cardMessageId);
+        return true;
+      }
       await renderActiveThread(
         ctx,
         userId,
@@ -1388,6 +1481,7 @@ function createMessengerModule(core) {
     openThreadMessages,
     formatSingleThreadCard,
     showInboxList,
+    showUserPropertyThreads,
     renderActiveThread,
     renderPropertyFromThread,
     renderMessageMediaDirectly,
