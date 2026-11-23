@@ -131,6 +131,13 @@ module.exports = function registerUsers(bot, core) {
     }
   }
 
+  function buildInquiryIndexButtonLabel(inq, pos) {
+    const subj = String(inq.subject || inq.message || 'استفسار').replace(/\s+/g, ' ').trim();
+    const shortSubj = subj.length > 22 ? `${subj.slice(0, 22)}…` : subj;
+    const statusDot = inq.status === 'resolved' ? '✅' : inq.status === 'closed' ? '🔒' : '🆕';
+    return `${statusDot} #${inq.id} (${pos}) • ${shortSubj}`;
+  }
+
   function getClientInquiriesKeyboard(idx, total, currentInquiry = null) {
     const rows = [];
     const navRow = [];
@@ -147,11 +154,14 @@ module.exports = function registerUsers(bot, core) {
     return Markup.keyboard(rows).resize();
   }
 
-  function formatClientInquiryCard(inquiry, replies, idx, total, isMediaCaption = false) {
+  function formatClientInquiryCard(inquiry, replies, idx, total, isMediaCaption = false, mediaSenderLabel = '') {
     const statusText = CLIENT_INQUIRY_STATUS[inquiry.status] || escapeHtml(inquiry.status || 'open');
     const roleText = CLIENT_ROLE_NAMES[inquiry.target_role] || escapeHtml(inquiry.target_role || 'الدعم العام');
     const propLine = inquiry.property_id ? `🏠 <b>الإعلان:</b> <code>#${inquiry.property_id}</code>\n` : '';
     const subjectLine = inquiry.subject ? `📌 <b>الموضوع:</b> ${escapeHtml(inquiry.subject)}\n` : '';
+    const mediaSourceLine = mediaSenderLabel
+      ? `📎 <b>مرسل المرفق:</b> <b>${escapeHtml(mediaSenderLabel)}</b>\n`
+      : '';
 
     const combinedReplies = Array.isArray(replies) ? [...replies] : [];
     if (combinedReplies.length === 0 && inquiry.admin_reply) {
@@ -186,6 +196,7 @@ module.exports = function registerUsers(bot, core) {
       `📨 <b>استعلاماتي</b> • <code>#${inquiry.id}</code> (${idx + 1}/${total})\n` +
       `📊 ${statusText} | 🎯 ${roleText}\n` +
       replyBanner +
+      mediaSourceLine +
       propLine +
       `🕒 <code>${escapeHtml(formatDateTime(inquiry.created_at))}</code>\n` +
       subjectLine +
@@ -195,14 +206,55 @@ module.exports = function registerUsers(bot, core) {
     return fitTelegramText(text, isMediaCaption);
   }
 
+  async function showClientInquiryIndexMenu(ctx, userId) {
+    delete browsingSession[userId];
+    let st = clientInquiryBrowse[userId];
+
+    if (!st || !Array.isArray(st.items) || st.items.length === 0) {
+      const list = await fetchClientInquiriesByUserId(userId);
+      st = { items: list, index: 0, selectingIndex: false, labelMap: {} };
+      clientInquiryBrowse[userId] = st;
+    }
+
+    if (!st.items.length) {
+      return renderClientInquiryAt(ctx, userId, 0, true);
+    }
+
+    st.selectingIndex = true;
+    st.labelMap = {};
+
+    const summaryLines = st.items.map((inq, idx) => {
+      const lbl = buildInquiryIndexButtonLabel(inq, idx + 1);
+      st.labelMap[lbl] = idx;
+      const dt = inq.created_at ? ` • <code>${escapeHtml(formatDateTime(inq.created_at))}</code>` : '';
+      return `${idx + 1}. <b>#${inq.id}</b> — ${escapeHtml(inq.subject || inq.message || 'استفسار')}${dt}`;
+    });
+
+    const buttons = Object.keys(st.labelMap);
+    const rows = chunkButtons(buttons, 1);
+    rows.push(['🔙 رجوع للاستعلام', '⬅️ لوحة العميل']);
+    rows.push(['🏠 القائمة الرئيسية']);
+
+    const sent = await ctx.reply(
+      `📑 <b>فهرس استعلاماتك (${st.items.length}):</b>\n\n${summaryLines.join('\n')}\n\n👇 <b>اضغط على زر الاستعلام للانتقال إليه مباشرة:</b>`,
+      { parse_mode: 'HTML', ...Markup.keyboard(rows).resize() }
+    ).catch(() => null);
+
+    const keepIds = sent?.message_id ? [sent.message_id] : [];
+    if (sent?.message_id) trackBotMessage(userId, ctx.chat.id, sent.message_id);
+    await clearTrackedBotMessages(ctx, userId, keepIds);
+  }
+
   async function renderClientInquiryAt(ctx, userId, index = 0, refresh = false) {
     delete browsingSession[userId];
     let st = clientInquiryBrowse[userId];
 
     if (!st || refresh) {
       const list = await fetchClientInquiriesByUserId(userId);
-      st = { items: list, index: 0 };
+      st = { items: list, index: 0, selectingIndex: false, labelMap: {} };
       clientInquiryBrowse[userId] = st;
+    } else {
+      st.selectingIndex = false;
     }
 
     if (!st.items || st.items.length === 0) {
@@ -230,17 +282,40 @@ module.exports = function registerUsers(bot, core) {
     const replies = await fetchClientRepliesForInquiry(currentInquiry.id);
     const kb = getClientInquiriesKeyboard(safeIdx, st.items.length, currentInquiry);
 
-    const latestMediaReply = [...replies].reverse().find(r => r.attachment_url && (r.media_type === 'photo' || r.media_type === 'video'));
+    const latestMediaReply = [...replies]
+      .reverse()
+      .find(r => r.attachment_url && (r.media_type === 'photo' || r.media_type === 'video'));
+
     const replyAttach = latestMediaReply ? normalizeMediaRef(latestMediaReply.attachment_url) : null;
     const inqAttach = normalizeMediaRef(currentInquiry.attachment_url);
 
-    const attachedMedia = replyAttach
-      ? { type: latestMediaReply.media_type === 'video' ? 'video' : 'photo', ref: replyAttach }
-      : (inqAttach ? { type: 'photo', ref: inqAttach } : null);
+    let attachedMedia = null;
+    if (replyAttach) {
+      const roleName = CLIENT_ROLE_NAMES[latestMediaReply.admin_role] || 'الإدارة';
+      attachedMedia = {
+        type: latestMediaReply.media_type === 'video' ? 'video' : 'photo',
+        ref: replyAttach,
+        senderLabel: `الإدارة (${roleName})`
+      };
+    } else if (inqAttach) {
+      const isVideoAttach = /\.(mp4|mov|webm)(\?|$)/i.test(inqAttach);
+      attachedMedia = {
+        type: isVideoAttach ? 'video' : 'photo',
+        ref: inqAttach,
+        senderLabel: 'أنت (العميل)'
+      };
+    }
 
     let sent = null;
     if (attachedMedia) {
-      const mediaCaption = formatClientInquiryCard(currentInquiry, replies, safeIdx, st.items.length, true);
+      const mediaCaption = formatClientInquiryCard(
+        currentInquiry,
+        replies,
+        safeIdx,
+        st.items.length,
+        true,
+        attachedMedia.senderLabel
+      );
       try {
         sent = attachedMedia.type === 'video'
           ? await ctx.replyWithVideo(attachedMedia.ref, { caption: mediaCaption, parse_mode: 'HTML', ...kb })
@@ -251,7 +326,7 @@ module.exports = function registerUsers(bot, core) {
     }
 
     if (!sent) {
-      const cardText = formatClientInquiryCard(currentInquiry, replies, safeIdx, st.items.length, false);
+      const cardText = formatClientInquiryCard(currentInquiry, replies, safeIdx, st.items.length, false, '');
       sent = await ctx.reply(cardText, { parse_mode: 'HTML', ...kb }).catch(() => null);
     }
 
@@ -1828,10 +1903,14 @@ module.exports = function registerUsers(bot, core) {
 
   bot.hears(/^📋 \d+ \/ \d+$/, async (ctx) => {
     await safeDeleteUserMessage(ctx);
+    await showClientInquiryIndexMenu(ctx, ctx.from.id);
+  });
+
+  bot.hears('🔙 رجوع للاستعلام', async (ctx) => {
+    await safeDeleteUserMessage(ctx);
     const userId = ctx.from.id;
     const st = clientInquiryBrowse[userId];
-    if (!st) return renderClientInquiryAt(ctx, userId, 0, true);
-    await renderClientInquiryAt(ctx, userId, st.index || 0, true);
+    await renderClientInquiryAt(ctx, userId, st?.index || 0, false);
   });
 
   bot.hears(/^💬 متابعة الاستعلام #(\d+)$/, async (ctx) => {
@@ -2077,6 +2156,13 @@ module.exports = function registerUsers(bot, core) {
     const userId = ctx.from.id;
     const userText = ctx.message.text ? ctx.message.text.trim() : '';
     if (userText.startsWith('/')) return;
+
+    const inqBrowse = clientInquiryBrowse[userId];
+    if (inqBrowse && inqBrowse.selectingIndex && inqBrowse.labelMap && Object.prototype.hasOwnProperty.call(inqBrowse.labelMap, userText)) {
+      await safeDeleteUserMessage(ctx);
+      const chosenIdx = inqBrowse.labelMap[userText];
+      return renderClientInquiryAt(ctx, userId, chosenIdx, false);
+    }
 
     const state = userState[userId];
     if (!state) return;
