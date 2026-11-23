@@ -2157,6 +2157,11 @@ module.exports = function registerUsers(bot, core) {
     const userText = ctx.message.text ? ctx.message.text.trim() : '';
     if (userText.startsWith('/')) return;
 
+    if (userText === core.WAIT_BTN_TEXT) {
+      await safeDeleteUserMessage(ctx);
+      return;
+    }
+
     const inqBrowse = clientInquiryBrowse[userId];
     if (inqBrowse && inqBrowse.selectingIndex && inqBrowse.labelMap && Object.prototype.hasOwnProperty.call(inqBrowse.labelMap, userText)) {
       await safeDeleteUserMessage(ctx);
