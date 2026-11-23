@@ -14,7 +14,8 @@ module.exports = function registerAdmin(bot, core) {
     trackBotMessage, clearTrackedBotMessages, replyTracked, safeDeleteUserMessage,
     getAdminIds, sanitizeNumericPrice, formatMoney, formatDateTime, escapeHtml, fitTelegramText,
     normalizeMediaRef, parseImagesFromImageUrl, parseMediaListFromField, buildOrderedBrowsingMedia,
-    getWebsiteButton
+    getWebsiteButton,
+    runSingleKnockWithSmartWake
   } = core;
 
   const adminBrowseState = {};
@@ -172,7 +173,13 @@ module.exports = function registerAdmin(bot, core) {
     delete adminInquiryState[adminId];
     core.resetSessions(adminId);
 
-    const stats = await getFullAdminStats();
+    const stats = typeof runSingleKnockWithSmartWake === 'function'
+      ? await runSingleKnockWithSmartWake(ctx, adminId, () => getFullAdminStats(), {
+          connectingText: '⏳ <b>لحظات من فضلك، جاري تجهيز لوحة الإدارة...</b>',
+          backLabel: '🎛 لوحة الإدارة'
+        })
+      : await getFullAdminStats();
+
     const name = escapeHtml(ctx.from.first_name || 'المدير');
 
     const text =
@@ -296,7 +303,12 @@ module.exports = function registerAdmin(bot, core) {
     let st = adminInquiryState[adminId];
 
     if (!st || st.statusFilter !== statusFilter || refreshList) {
-      const items = await fetchAdminInquiries(statusFilter);
+      const items = typeof runSingleKnockWithSmartWake === 'function'
+        ? await runSingleKnockWithSmartWake(ctx, adminId, () => fetchAdminInquiries(statusFilter), {
+            connectingText: '⏳ <b>لحظات من فضلك، جاري تحميل الاستعلامات...</b>',
+            backLabel: '🎛 لوحة الإدارة'
+          })
+        : await fetchAdminInquiries(statusFilter);
       st = { statusFilter, items, index: 0 };
       adminInquiryState[adminId] = st;
     }
@@ -328,7 +340,6 @@ module.exports = function registerAdmin(bot, core) {
     const inlineKb = buildInquiryInlineButtons(inquiry);
     const bottomKb = getAdminInquiriesKeyboard(safeIdx, st.items.length, inquiry);
 
-    // تحديد المرفق المرتبط بالاستعلام أو بأحدث رد لدمجه داخل نفس الرسالة
     const latestMediaReply = [...replies].reverse().find(r => r.attachment_url && (r.media_type === 'photo' || r.media_type === 'video'));
     const replyAttach = latestMediaReply ? normalizeMediaRef(latestMediaReply.attachment_url) : null;
     const inqAttach = normalizeMediaRef(inquiry.attachment_url);
@@ -625,7 +636,12 @@ module.exports = function registerAdmin(bot, core) {
     if (!st || st.filter !== filterType || refreshList) {
       const items = filterType === 'search' && Array.isArray(st?.items)
         ? st.items
-        : await fetchAdminAdsByFilter(filterType);
+        : (typeof runSingleKnockWithSmartWake === 'function'
+            ? await runSingleKnockWithSmartWake(ctx, adminId, () => fetchAdminAdsByFilter(filterType), {
+                connectingText: '⏳ <b>لحظات من فضلك، جاري تحميل الإعلانات...</b>',
+                backLabel: '🎛 لوحة الإدارة'
+              })
+            : await fetchAdminAdsByFilter(filterType));
       st = {
         filter: filterType,
         items,
@@ -1035,6 +1051,10 @@ module.exports = function registerAdmin(bot, core) {
     const text = ctx.message.text ? ctx.message.text.trim() : '';
 
     await safeDeleteUserMessage(ctx);
+
+    if (text === core.WAIT_BTN_TEXT) {
+      return;
+    }
 
     if (text.startsWith('/') && text !== '/start') {
       return openAdminHome(ctx);
