@@ -81,7 +81,8 @@ function createMessengerModule(core) {
     replyTracked,
     safeDeleteUserMessage,
     escapeHtml,
-    fitTelegramText
+    fitTelegramText,
+    runSingleKnockWithSmartWake
   } = core;
 
   const normalizeMediaRef = core.normalizeMediaRef || ((v) => {
@@ -209,7 +210,6 @@ function createMessengerModule(core) {
     return count > 0 ? `💬 المراسلات (${count})` : '💬 المراسلات';
   }
 
-  // إشعار مستخدم ↔ مستخدم عند التفاعل + إشعار الإدارة عند التفعيل
   async function notifyPeerInteraction(ctx, {
     actorId,
     targetId,
@@ -302,7 +302,6 @@ function createMessengerModule(core) {
     return sentToTarget;
   }
 
-  // إشعار فوري ومضمون للطرف الآخر عند وصول أي رسالة
   async function notifyReceiverMessenger(ctx, {
     threadId,
     propertyId,
@@ -410,7 +409,6 @@ function createMessengerModule(core) {
     return delivered;
   }
 
-  // رفع الوسائط إلى test_media وجلب الرابط العام (publicUrl) بنفس أسلوب Users
   async function uploadMediaToTestMedia(ctx, fileId, mediaType, index = 0) {
     if (!fileId) return '';
     try {
@@ -536,7 +534,6 @@ function createMessengerModule(core) {
     return data;
   }
 
-  // التحقق من الطرفين (uid و otherId) واستخراج العقارات المشتركة بينهما دون تكرار
   async function fetchSenderThreads(userId) {
     const uid = Number(userId);
     if (!uid) return [];
@@ -643,7 +640,6 @@ function createMessengerModule(core) {
     }
   }
 
-  // جلب العقارات المشتركة بين المستخدم الحالي وطرف معين (otherId) لإتاحة الرجوع السريع بينها
   async function fetchUserSharedProperties(userId, otherId, fallbackName = '') {
     const uid = Number(userId);
     const targetOtherId = Number(otherId);
@@ -771,7 +767,6 @@ function createMessengerModule(core) {
     };
   }
 
-  // فتح مرفق الرسالة مباشرة داخل المحادثة مع تفاصيل خفيفة (المرسل، الوقت، العقار، الوصف)
   async function renderMessageMediaDirectly(ctx, userId, msgId, mediaIdx = 0) {
     const id = Number(msgId);
     if (!id) return;
@@ -860,7 +855,6 @@ function createMessengerModule(core) {
     };
   }
 
-  // ───────── تصميم بطاقة المحادثة مع ترقيم الصفحات في الأسفل ─────────
   function formatSingleThreadCard(userId, view, meta = {}) {
     const uid = Number(userId);
     const { messages, totalPages, page } = view;
@@ -1208,7 +1202,11 @@ function createMessengerModule(core) {
       await ctx.telegram.deleteMessage(ctx.chat.id, prev.propViewMessageId).catch(() => {});
     }
 
-    const threads = await fetchSenderThreads(userId);
+    const threads = typeof runSingleKnockWithSmartWake === 'function'
+      ? await runSingleKnockWithSmartWake(ctx, userId, () => fetchSenderThreads(userId), {
+          connectingText: '⏳ <b>لحظات من فضلك، جاري فتح المراسلات...</b>'
+        })
+      : await fetchSenderThreads(userId);
 
     if (!threads.length) {
       delete messengerSession[userId];
@@ -1502,6 +1500,11 @@ function createMessengerModule(core) {
     const userId = ctx.from.id;
     const rawText = ctx.message?.text ? ctx.message.text.trim() : '';
     if (!rawText || rawText.startsWith('/')) return false;
+
+    if (rawText === core.WAIT_BTN_TEXT) {
+      await safeDeleteUserMessage(ctx);
+      return true;
+    }
 
     const st = userState[userId];
     const sess = messengerSession[userId];
