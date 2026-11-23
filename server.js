@@ -15,6 +15,7 @@ const SUPABASE_URL = process.env.SUPABASE_URL || 'https://jjrisfyotyryanhbsvlz.s
 const SUPABASE_KEY = process.env.SUPABASE_KEY || 'sb_publishable_t7kVxzmOtz16C95U_B52FA_AJl_WK-h';
 const MAX_PROPERTY_IMAGES = 6;
 const BACK_TO_ADMIN = '🔙 العودة لوضع الإدارة';
+const WAIT_BTN_TEXT = '⏳ لحظات من فضلك...';
 
 if (!BOT_TOKEN) {
   console.error('Error: Required environment variables are missing!');
@@ -34,6 +35,7 @@ const supportUserSession = {};
 const botMessagesHistory = {};
 const previewMode = {};
 const lastKnownRole = {}; // 'admin' | 'user'
+const activeWakeLocks = {};
 
 function resetSessions(userId) {
   delete userState[userId];
@@ -255,16 +257,96 @@ function getAuthKeyboard() {
   ]).resize().oneTime();
 }
 
+// ------------------------- انتظار ذكي بضغطة واحدة -------------------------
+function sleepMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getConnectingKeyboard(extraRows = [], backLabel = '🏠 القائمة الرئيسية') {
+  return Markup.keyboard([
+    [WAIT_BTN_TEXT],
+    ...extraRows,
+    [backLabel]
+  ]).resize();
+}
+
+async function runSingleKnockWithSmartWake(ctx, userId, fetcherFn, opts = {}) {
+  const lockKey = `${userId || ctx?.from?.id || 'anon'}`;
+  if (activeWakeLocks[lockKey]) {
+    return activeWakeLocks[lockKey];
+  }
+
+  const firstTimeoutMs = opts.firstTimeoutMs ?? 3000;
+  const secondDelayMs = opts.secondDelayMs ?? 2200;
+  const connectingText = opts.connectingText || '⏳ <b>لحظات من فضلك، جاري التجهيز...</b>';
+  const backLabel = opts.backLabel || (previewMode[userId] ? BACK_TO_ADMIN : '🏠 القائمة الرئيسية');
+  const connectingKb = opts.connectingKb || getConnectingKeyboard(opts.extraRows || [], backLabel);
+  const chatId = ctx?.chat?.id || ctx?.from?.id;
+
+  const taskPromise = (async () => {
+    if (ctx?.sendChatAction) {
+      await ctx.sendChatAction('typing').catch(() => {});
+    }
+
+    if (chatId) {
+      const statusMsg = await ctx.telegram.sendMessage(chatId, connectingText, {
+        parse_mode: 'HTML',
+        ...connectingKb
+      }).catch(() => null);
+
+      if (statusMsg?.message_id && userId) {
+        trackBotMessage(userId, chatId, statusMsg.message_id);
+      }
+    }
+
+    if (WEBHOOK_DOMAIN) {
+      fetch(`${WEBHOOK_DOMAIN}/health`, { method: 'GET' }).catch(() => {});
+    }
+
+    const fetchWithTimeout = async (timeoutMs) => {
+      return await Promise.race([
+        fetcherFn(),
+        sleepMs(timeoutMs).then(() => ({ __timedOut: true }))
+      ]);
+    };
+
+    let result = await fetchWithTimeout(firstTimeoutMs);
+
+    if (result && result.__timedOut) {
+      if (ctx?.sendChatAction) {
+        await ctx.sendChatAction('typing').catch(() => {});
+      }
+      if (WEBHOOK_DOMAIN) {
+        fetch(`${WEBHOOK_DOMAIN}/health`, { method: 'GET' }).catch(() => {});
+      }
+      await sleepMs(secondDelayMs);
+      result = await fetcherFn();
+    }
+
+    return result;
+  })();
+
+  activeWakeLocks[lockKey] = taskPromise;
+  try {
+    return await taskPromise;
+  } finally {
+    if (activeWakeLocks[lockKey] === taskPromise) {
+      delete activeWakeLocks[lockKey];
+    }
+  }
+}
+
 // ------------------------- بناء الـ core وتسجيل الوحدات -------------------------
 const core = {
   bot, app, supabase, Markup,
-  WEBHOOK_DOMAIN, getWebsiteUrl, MAX_PROPERTY_IMAGES, BACK_TO_ADMIN,
+  WEBHOOK_DOMAIN, getWebsiteUrl, MAX_PROPERTY_IMAGES, BACK_TO_ADMIN, WAIT_BTN_TEXT,
   userState, userLang, browsingSession, supportUserSession, previewMode, resetSessions,
   trackBotMessage, untrackBotMessage, clearTrackedBotMessages, replyTracked, safeDeleteUserMessage,
   getSetting, getAdminIds, isAdmin, getUserRecord, isUserVerified,
   chunkButtons, sanitizeNumericPrice, formatMoney, formatDateTime, escapeHtml, fitTelegramText,
   normalizeMediaRef, parseMediaListFromField, parseImagesFromImageUrl, buildOrderedBrowsingMedia,
   getWebsiteButton, getMainMenuKeyboard, getAuthKeyboard,
+  runSingleKnockWithSmartWake, getConnectingKeyboard,
   modules: {}
 };
 
@@ -329,7 +411,7 @@ bot.use(async (ctx, next) => {
     try {
       const waitMsg = await ctx.telegram.sendMessage(
         chatId,
-        '⏳ <i>جاري تحميل البيانات، لحظات من فضلك...</i>',
+        '⏳ <i>لحظات من فضلك، جاري التجهيز...</i>',
         { parse_mode: 'HTML' }
       );
       if (isResponded || shouldAbortWaitMsg) {
@@ -441,6 +523,7 @@ if (WEBHOOK_DOMAIN) {
     if (req.body && req.body.update_id) bot.handleUpdate(req.body);
   });
   bot.telegram.setWebhook(`${WEBHOOK_DOMAIN}/bot${BOT_TOKEN}`);
+  app.get('/health', (req, res) => res.status(200).json({ ok: true }));
   app.get('/', (req, res) => res.send('Aqar Algeria Production System is online 🚀'));
   app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
 } else {
