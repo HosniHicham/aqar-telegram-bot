@@ -257,14 +257,70 @@ module.exports = function registerUsers(bot, core) {
     }
   }
 
-  function buildInquiryIndexButtonLabel(inq, pos) {
-    const subj = String(inq.subject || inq.message || 'استفسار').replace(/\s+/g, ' ').trim();
-    const shortSubj = subj.length > 22 ? `${subj.slice(0, 22)}…` : subj;
-    const statusDot = inq.status === 'resolved' ? '✅' : inq.status === 'closed' ? '🔒' : '🆕';
-    return `${statusDot} #${inq.id} (${pos}) • ${shortSubj}`;
+  async function getClientRepliesSummary(userId, inquiriesList = null) {
+    const list = Array.isArray(inquiriesList)
+      ? inquiriesList
+      : await fetchClientInquiriesByUserId(userId);
+
+    if (!list.length) {
+      return {
+        inquiries: list,
+        totalReplies: 0,
+        repliedInquiriesCount: 0,
+        repliesCountByInquiryId: {}
+      };
+    }
+
+    const ids = list.map(i => i.id).filter(Boolean);
+    const repliesCountByInquiryId = {};
+    let totalReplies = 0;
+
+    try {
+      const { data: replyRows } = await supabase
+        .from('inquiry_replies')
+        .select('inquiry_id')
+        .in('inquiry_id', ids);
+
+      if (Array.isArray(replyRows)) {
+        for (const r of replyRows) {
+          repliesCountByInquiryId[r.inquiry_id] = (repliesCountByInquiryId[r.inquiry_id] || 0) + 1;
+          totalReplies += 1;
+        }
+      }
+    } catch (e) {}
+
+    for (const inq of list) {
+      if (!repliesCountByInquiryId[inq.id] && inq.admin_reply) {
+        repliesCountByInquiryId[inq.id] = 1;
+        totalReplies += 1;
+      }
+    }
+
+    const repliedInquiriesCount = Object.values(repliesCountByInquiryId).filter(c => c > 0).length;
+
+    return {
+      inquiries: list,
+      totalReplies,
+      repliedInquiriesCount,
+      repliesCountByInquiryId
+    };
   }
 
-  function getClientInquiriesKeyboard(idx, total, currentInquiry = null) {
+  function getInquiriesMenuLabel(totalReplies = 0) {
+    return totalReplies > 0
+      ? `📨 استعلاماتي وردود الإدارة (${totalReplies})`
+      : '📨 استعلاماتي وردود الإدارة';
+  }
+
+  function buildInquiryIndexButtonLabel(inq, pos, repCount = 0) {
+    const subj = String(inq.subject || inq.message || 'استفسار').replace(/\s+/g, ' ').trim();
+    const shortSubj = subj.length > 20 ? `${subj.slice(0, 20)}…` : subj;
+    const statusDot = inq.status === 'resolved' ? '✅' : inq.status === 'closed' ? '🔒' : '🆕';
+    const repTag = repCount > 0 ? ` (${repCount})` : '';
+    return `${statusDot} #${inq.id}${repTag} (${pos}) • ${shortSubj}`;
+  }
+
+  function getClientInquiriesKeyboard(idx, total, currentInquiry = null, totalReplies = 0) {
     const rows = [];
     const navRow = [];
     if (idx > 0) navRow.push('⬅️ استفساري السابق');
@@ -275,7 +331,10 @@ module.exports = function registerUsers(bot, core) {
     if (currentInquiry && currentInquiry.id) {
       rows.push([`💬 متابعة الاستعلام #${currentInquiry.id}`]);
     }
-    rows.push(['💬 دعم واقتراحات وشكر', '⬅️ لوحة العميل']);
+    rows.push([
+      '💬 دعم واقتراحات وشكر',
+      totalReplies > 0 ? `⬅️ لوحة العميل (${totalReplies})` : '⬅️ لوحة العميل'
+    ]);
     rows.push(['🏠 القائمة الرئيسية']);
     return Markup.keyboard(rows).resize();
   }
@@ -334,13 +393,15 @@ module.exports = function registerUsers(bot, core) {
 
   async function showClientInquiryIndexMenu(ctx, userId) {
     delete browsingSession[userId];
-    let st = clientInquiryBrowse[userId];
-
-    if (!st || !Array.isArray(st.items) || st.items.length === 0) {
-      const list = await fetchClientInquiriesByUserId(userId);
-      st = { items: list, index: 0, selectingIndex: false, labelMap: {} };
-      clientInquiryBrowse[userId] = st;
-    }
+    const { inquiries: list, repliesCountByInquiryId } = await getClientRepliesSummary(userId);
+    const st = {
+      items: list,
+      index: 0,
+      selectingIndex: false,
+      labelMap: {},
+      repliesCountByInquiryId
+    };
+    clientInquiryBrowse[userId] = st;
 
     if (!st.items.length) {
       return renderClientInquiryAt(ctx, userId, 0, true);
@@ -350,10 +411,12 @@ module.exports = function registerUsers(bot, core) {
     st.labelMap = {};
 
     const summaryLines = st.items.map((inq, idx) => {
-      const lbl = buildInquiryIndexButtonLabel(inq, idx + 1);
+      const repCount = repliesCountByInquiryId[inq.id] || 0;
+      const lbl = buildInquiryIndexButtonLabel(inq, idx + 1, repCount);
       st.labelMap[lbl] = idx;
       const dt = inq.created_at ? ` • <code>${escapeHtml(formatDateTime(inq.created_at))}</code>` : '';
-      return `${idx + 1}. <b>#${inq.id}</b> — ${escapeHtml(inq.subject || inq.message || 'استفسار')}${dt}`;
+      const repBadge = repCount > 0 ? ` • 💬 <b>(${repCount})</b>` : '';
+      return `${idx + 1}. <b>#${inq.id}</b> — ${escapeHtml(inq.subject || inq.message || 'استفسار')}${repBadge}${dt}`;
     });
 
     const buttons = Object.keys(st.labelMap);
@@ -376,8 +439,15 @@ module.exports = function registerUsers(bot, core) {
     let st = clientInquiryBrowse[userId];
 
     if (!st || refresh) {
-      const list = await fetchClientInquiriesByUserId(userId);
-      st = { items: list, index: 0, selectingIndex: false, labelMap: {} };
+      const { inquiries: list, totalReplies, repliesCountByInquiryId } = await getClientRepliesSummary(userId);
+      st = {
+        items: list,
+        index: 0,
+        selectingIndex: false,
+        labelMap: {},
+        totalReplies,
+        repliesCountByInquiryId
+      };
       clientInquiryBrowse[userId] = st;
     } else {
       st.selectingIndex = false;
@@ -406,7 +476,7 @@ module.exports = function registerUsers(bot, core) {
 
     const currentInquiry = st.items[safeIdx];
     const replies = await fetchClientRepliesForInquiry(currentInquiry.id);
-    const kb = getClientInquiriesKeyboard(safeIdx, st.items.length, currentInquiry);
+    const kb = getClientInquiriesKeyboard(safeIdx, st.items.length, currentInquiry, st.totalReplies || 0);
 
     const latestMediaReply = [...replies]
       .reverse()
@@ -1729,20 +1799,20 @@ module.exports = function registerUsers(bot, core) {
     return ads;
   }
 
-  function getSupportHubKeyboard() {
+  function getSupportHubKeyboard(totalReplies = 0) {
     return Markup.keyboard([
-      ['📨 استعلاماتي وردود الإدارة', '📋 إعلاناتي وحالتها'],
+      [getInquiriesMenuLabel(totalReplies), '📋 إعلاناتي وحالتها'],
       ['👤 ملفي الشخصي ورصيدي', '🗂 تصفح إعلاناتي الخاصة'],
       ['💬 دعم واقتراحات وشكر', '🏠 القائمة الرئيسية']
     ]).resize();
   }
 
-  function getSupportCategoriesKeyboard() {
+  function getSupportCategoriesKeyboard(totalReplies = 0) {
     return Markup.keyboard([
       ['💳 مشكلة في الدفع', '🏠 إعلان أو تصفح عقاري'],
       ['🪙 النقاط والمكافآت', '💡 اقتراح أو تحسين'],
       ['👏 شكر أو ملاحظة إيجابية', '💬 استفسار عام / أخرى'],
-      ['📨 استعلاماتي وردود الإدارة', '⬅️ لوحة العميل'],
+      [getInquiriesMenuLabel(totalReplies), totalReplies > 0 ? `⬅️ لوحة العميل (${totalReplies})` : '⬅️ لوحة العميل'],
       ['🏠 القائمة الرئيسية']
     ]).resize();
   }
@@ -1767,14 +1837,15 @@ module.exports = function registerUsers(bot, core) {
     ]);
   }
 
-  function getAdActionButtonsForStatus(ad) {
+  function getAdActionButtonsForStatus(ad, totalReplies = 0) {
     const id = ad.id || 'غير_محدد';
+    const inqBtn = getInquiriesMenuLabel(totalReplies);
     if (ad.ad_status === 'pending') {
       return Markup.keyboard([
         [`❓ لماذا إعلاني معلق؟ (#${id})`],
         [`⏱️ تذكير الإدارة بمراجعة الطلب (#${id})`],
         [`📞 لماذا لم يتم التواصل معي؟ (#${id})`],
-        ['📨 استعلاماتي وردود الإدارة', '⬅️ قائمة الإعلانات'],
+        [inqBtn, '⬅️ قائمة الإعلانات'],
         ['🏠 القائمة الرئيسية']
       ]).resize();
     }
@@ -1782,18 +1853,18 @@ module.exports = function registerUsers(bot, core) {
       return Markup.keyboard([
         [`❌ لماذا تم رفض إعلاني؟ (#${id})`],
         [`🔄 طلب إعادة مراجعة الإعلان (#${id})`],
-        ['📨 استعلاماتي وردود الإدارة', '⬅️ قائمة الإعلانات'],
+        [inqBtn, '⬅️ قائمة الإعلانات'],
         ['🏠 القائمة الرئيسية']
       ]).resize();
     }
     return Markup.keyboard([
       [`⚠️ ملاحظة أو استفسار حول الإعلان (#${id})`],
-      ['📨 استعلاماتي وردود الإدارة', '⬅️ قائمة الإعلانات'],
+      [inqBtn, '⬅️ قائمة الإعلانات'],
       ['🏠 القائمة الرئيسية']
     ]).resize();
   }
 
-  function getUserOwnBrowsingKeyboard(index, total, mediaIdx = 0, totalMedia = 0) {
+  function getUserOwnBrowsingKeyboard(index, total, mediaIdx = 0, totalMedia = 0, totalReplies = 0) {
     const rows = [];
     if (totalMedia > 1) {
       const mRow = [];
@@ -1807,7 +1878,10 @@ module.exports = function registerUsers(bot, core) {
     navRow.push(`🗂 ${index + 1} / ${total}`);
     if (index < total - 1) navRow.push('إعلاني التالي ➡️');
     rows.push(navRow);
-    rows.push(['📨 استعلاماتي وردود الإدارة', '⬅️ لوحة العميل']);
+    rows.push([
+      getInquiriesMenuLabel(totalReplies),
+      totalReplies > 0 ? `⬅️ لوحة العميل (${totalReplies})` : '⬅️ لوحة العميل'
+    ]);
     rows.push(['🏠 القائمة الرئيسية']);
     return Markup.keyboard(rows).resize();
   }
@@ -1815,7 +1889,7 @@ module.exports = function registerUsers(bot, core) {
   async function openSupportDashboard(ctx, userId) {
     const dbUser = await getUserRecord(userId);
     const allAds = await fetchUserOwnedAds(userId);
-    const myInquiries = await fetchClientInquiriesByUserId(userId);
+    const { inquiries: myInquiries, totalReplies, repliedInquiriesCount } = await getClientRepliesSummary(userId);
     const pendingCount = allAds.filter(a => a.ad_status === 'pending').length;
     const approvedCount = allAds.filter(a => a.ad_status === 'approved').length;
     const rejectedCount = allAds.filter(a => a.ad_status === 'rejected').length;
@@ -1825,8 +1899,12 @@ module.exports = function registerUsers(bot, core) {
     const name = escapeHtml(dbUser?.first_name || ctx.from.first_name || 'عميلنا الكريم');
     const supportIntro = (await getSetting('support_text', '')).replace(/\\n/g, '\n');
 
-    supportUserSession[userId] = { mode: 'dashboard', ads: allAds };
+    supportUserSession[userId] = { mode: 'dashboard', ads: allAds, totalReplies };
     userState[userId] = { step: 'support_dashboard', data: {}, chatId: ctx.chat.id, wizardMsgId: null };
+
+    const alertLine = totalReplies > 0
+      ? `\n🔔 <b>تنبيه الإدارة:</b> لديك <b>(${totalReplies})</b> رد إداري عبر <b>(${repliedInquiriesCount})</b> استعلام — افتح <b>"${getInquiriesMenuLabel(totalReplies)}"</b> لمتابعة الرقم المطلوب.`
+      : '';
 
     const text =
       `🎛 <b>لوحة العميل ومركز الدعم</b>\n` +
@@ -1834,19 +1912,21 @@ module.exports = function registerUsers(bot, core) {
       `👋 أهلاً بك يا <b>${name}</b>\n` +
       `💼 <b>رصيد المحفظة:</b> <b>${walletBalance}</b>\n` +
       `🪙 <b>رصيد النقاط:</b> <b>${points} نقطة</b>\n` +
-      `📨 <b>استعلاماتك المسجلة:</b> <b>${myInquiries.length}</b>\n` +
+      `📨 <b>استعلاماتك المسجلة:</b> <b>${myInquiries.length}</b> | 💬 <b>ردود الإدارة:</b> <b>(${totalReplies})</b>\n` +
       `📊 <b>إعلاناتك:</b> إجمالي <b>${allAds.length}</b> | ⏳ معلق: <b>${pendingCount}</b> | ✅ مقبول: <b>${approvedCount}</b> | ❌ مرفوض: <b>${rejectedCount}</b>` +
+      alertLine +
       (supportIntro ? `\n\n${supportIntro}` : '') +
-      `\n\n👇 <b>اختر "📨 استعلاماتي وردود الإدارة" لمتابعة استعلاماتك والردود عليها:</b>`;
+      `\n\n👇 <b>اختر "${getInquiriesMenuLabel(totalReplies)}" لمتابعة استعلاماتك والردود عليها:</b>`;
 
-    await replyTracked(ctx, userId, text, { parse_mode: 'HTML', ...getSupportHubKeyboard() }, true);
+    await replyTracked(ctx, userId, text, { parse_mode: 'HTML', ...getSupportHubKeyboard(totalReplies) }, true);
   }
 
   async function renderUserOwnAdBrowser(ctx, userId, adIndex = 0, mediaIndex = 0) {
     const allAds = await fetchUserOwnedAds(userId);
+    const { totalReplies } = await getClientRepliesSummary(userId);
     if (!allAds.length) {
       return replyTracked(ctx, userId, '📭 <b>لا توجد إعلانات مسجلة باسمك حتى الآن.</b>',
-        { parse_mode: 'HTML', ...getSupportHubKeyboard() }, true);
+        { parse_mode: 'HTML', ...getSupportHubKeyboard(totalReplies) }, true);
     }
 
     let safeIdx = Number(adIndex) || 0;
@@ -1863,7 +1943,7 @@ module.exports = function registerUsers(bot, core) {
 
     delete browsingSession[userId];
     supportUserSession[userId] = {
-      mode: 'browsing_own_ads', ads: allAds, page: safeIdx, mediaIndex: safeMediaIdx, selectingPage: false
+      mode: 'browsing_own_ads', ads: allAds, page: safeIdx, mediaIndex: safeMediaIdx, selectingPage: false, totalReplies
     };
 
     const currentMedia = totalMedia > 0 ? orderedMedia[safeMediaIdx] : null;
@@ -1883,7 +1963,7 @@ module.exports = function registerUsers(bot, core) {
       `📝 <b>الوصف:</b> ${escapeHtml(ad.description || ad.message || '')}`;
 
     const caption = fitTelegramText(rawCaption, !!currentMedia);
-    const kb = getUserOwnBrowsingKeyboard(safeIdx, allAds.length, safeMediaIdx, totalMedia);
+    const kb = getUserOwnBrowsingKeyboard(safeIdx, allAds.length, safeMediaIdx, totalMedia, totalReplies);
 
     let sentMsg = null;
     if (currentMedia) {
@@ -2068,6 +2148,7 @@ module.exports = function registerUsers(bot, core) {
       relatedAd, 'text', {}, reqId
     );
 
+    const { totalReplies } = await getClientRepliesSummary(userId);
     const inqRefLine = savedInq?.id ? `\n🔖 <b>رقم الاستعلام المسجل:</b> <code>#${savedInq.id}</code>` : '';
 
     await replyTracked(
@@ -2076,15 +2157,15 @@ module.exports = function registerUsers(bot, core) {
       {
         parse_mode: 'HTML',
         ...Markup.keyboard([
-          ['📨 استعلاماتي وردود الإدارة', '📋 إعلاناتي وحالتها'],
-          ['⬅️ لوحة العميل', '🏠 القائمة الرئيسية']
+          [getInquiriesMenuLabel(totalReplies), '📋 إعلاناتي وحالتها'],
+          [totalReplies > 0 ? `⬅️ لوحة العميل (${totalReplies})` : '⬅️ لوحة العميل', '🏠 القائمة الرئيسية']
         ]).resize()
       },
       true
     );
   }
 
-  bot.hears('📨 استعلاماتي وردود الإدارة', async (ctx) => {
+  bot.hears(/^📨 استعلاماتي وردود الإدارة(?:\s*\(\d+\))?$/, async (ctx) => {
     await safeDeleteUserMessage(ctx);
     await renderClientInquiryAt(ctx, ctx.from.id, 0, true);
   });
@@ -2121,6 +2202,7 @@ module.exports = function registerUsers(bot, core) {
     await safeDeleteUserMessage(ctx);
     const userId = ctx.from.id;
     const parentInquiryId = Number(ctx.match[1]);
+    const { totalReplies } = await getClientRepliesSummary(userId);
 
     userState[userId] = {
       step: 'client_following_up_inquiry',
@@ -2134,7 +2216,9 @@ module.exports = function registerUsers(bot, core) {
       `💬 <b>متابعة الاستعلام رقم</b> <code>#${parentInquiryId}</code>\n\nاكتب رسالتك أو أرفق صورة/فيديو ليتم حفظها في استعلاماتك وإرسالها للإدارة:`,
       {
         parse_mode: 'HTML',
-        ...Markup.keyboard([['📨 استعلاماتي وردود الإدارة', '⬅️ لوحة العميل']]).resize()
+        ...Markup.keyboard([
+          [getInquiriesMenuLabel(totalReplies), totalReplies > 0 ? `⬅️ لوحة العميل (${totalReplies})` : '⬅️ لوحة العميل']
+        ]).resize()
       },
       true
     );
@@ -2160,7 +2244,7 @@ module.exports = function registerUsers(bot, core) {
     await openSupportDashboard(ctx, ctx.from.id);
   });
 
-  bot.hears('⬅️ لوحة العميل', async (ctx) => {
+  bot.hears(/^⬅️ لوحة العميل(?:\s*\(\d+\))?$/, async (ctx) => {
     await safeDeleteUserMessage(ctx);
     await openSupportDashboard(ctx, ctx.from.id);
   });
@@ -2170,6 +2254,7 @@ module.exports = function registerUsers(bot, core) {
     const userId = ctx.from.id;
     const dbUser = await getUserRecord(userId);
     const allAds = await fetchUserOwnedAds(userId);
+    const { totalReplies } = await getClientRepliesSummary(userId);
 
     const text =
       `👤 <b>الملف الشخصي والرصيد</b>\n` +
@@ -2179,12 +2264,13 @@ module.exports = function registerUsers(bot, core) {
       `• <b>رصيد النقاط:</b> <b>${dbUser?.points ?? 0} نقطة</b>\n` +
       `• <b>عدد إعلاناتك المسجلة:</b> <b>${allAds.length}</b>`;
 
-    await replyTracked(ctx, userId, text, { parse_mode: 'HTML', ...getSupportHubKeyboard() }, true);
+    await replyTracked(ctx, userId, text, { parse_mode: 'HTML', ...getSupportHubKeyboard(totalReplies) }, true);
   });
 
   async function showAdsFilterMenu(ctx, userId, intro) {
     const allAds = await fetchUserOwnedAds(userId);
-    supportUserSession[userId] = { mode: 'ads_filter', ads: allAds };
+    const { totalReplies } = await getClientRepliesSummary(userId);
+    supportUserSession[userId] = { mode: 'ads_filter', ads: allAds, totalReplies };
 
     const pending = allAds.filter(a => a.ad_status === 'pending').length;
     const approved = allAds.filter(a => a.ad_status === 'approved').length;
@@ -2195,7 +2281,7 @@ module.exports = function registerUsers(bot, core) {
       ...Markup.keyboard([
         [`⏳ معلقة (${pending})`, `✅ مقبولة (${approved})`],
         [`❌ مرفوضة (${rejected})`, `📌 الكل (${allAds.length})`],
-        ['📨 استعلاماتي وردود الإدارة', '⬅️ لوحة العميل'],
+        [getInquiriesMenuLabel(totalReplies), totalReplies > 0 ? `⬅️ لوحة العميل (${totalReplies})` : '⬅️ لوحة العميل'],
         ['🏠 القائمة الرئيسية']
       ]).resize()
     }, true);
@@ -2217,6 +2303,7 @@ module.exports = function registerUsers(bot, core) {
     const userId = ctx.from.id;
     const prefix = ctx.match[1];
     const allAds = await fetchUserOwnedAds(userId);
+    const { totalReplies } = await getClientRepliesSummary(userId);
 
     let filtered = allAds;
     let label = 'جميع إعلاناتك';
@@ -2233,11 +2320,14 @@ module.exports = function registerUsers(bot, core) {
         `📭 <b>لا توجد إعلانات في فئة "${escapeHtml(label)}".</b>`,
         {
           parse_mode: 'HTML',
-          ...Markup.keyboard([['📋 إعلاناتي وحالتها'], ['⬅️ لوحة العميل', '🏠 القائمة الرئيسية']]).resize()
+          ...Markup.keyboard([
+            ['📋 إعلاناتي وحالتها'],
+            [totalReplies > 0 ? `⬅️ لوحة العميل (${totalReplies})` : '⬅️ لوحة العميل', '🏠 القائمة الرئيسية']
+          ]).resize()
         }, true);
     }
 
-    supportUserSession[userId] = { mode: 'select_ad_for_action', ads: filtered };
+    supportUserSession[userId] = { mode: 'select_ad_for_action', ads: filtered, totalReplies };
 
     const listLines = filtered.slice(0, 15).map((ad, idx) => {
       const adKind = ad.receipt_url === 'FREE_NO_RECEIPT' ? ' • 🆓 مجاني' : '';
@@ -2254,7 +2344,7 @@ module.exports = function registerUsers(bot, core) {
         parse_mode: 'HTML',
         ...Markup.keyboard([
           ...chunkButtons(adButtons, 2),
-          ['⬅️ قائمة الإعلانات', '⬅️ لوحة العميل']
+          ['⬅️ قائمة الإعلانات', totalReplies > 0 ? `⬅️ لوحة العميل (${totalReplies})` : '⬅️ لوحة العميل']
         ]).resize()
       },
       true
@@ -2266,10 +2356,11 @@ module.exports = function registerUsers(bot, core) {
     const userId = ctx.from.id;
     const reqIdStr = ctx.match[1];
     const allAds = supportUserSession[userId]?.ads || await fetchUserOwnedAds(userId);
+    const { totalReplies } = await getClientRepliesSummary(userId);
     const targetAd = allAds.find(a => String(a.id) === String(reqIdStr)) || allAds[0];
     if (!targetAd) return;
 
-    supportUserSession[userId] = { mode: 'ad_actions', ads: allAds, selectedAd: targetAd };
+    supportUserSession[userId] = { mode: 'ad_actions', ads: allAds, selectedAd: targetAd, totalReplies };
 
     const adKindLine = targetAd.receipt_url === 'FREE_NO_RECEIPT' ? `\n• <b>النوع:</b> <b>إعلان مجاني</b>` : '';
     const adDateLine = targetAd.created_at ? `\n• <b>التاريخ والوقت:</b> <code>${escapeHtml(formatDateTime(targetAd.created_at))}</code>` : '';
@@ -2287,7 +2378,7 @@ module.exports = function registerUsers(bot, core) {
     await replyTracked(ctx, userId, cardText, {
       parse_mode: 'HTML',
       ...getInteractiveAdInlineKeyboard(targetAd),
-      ...getAdActionButtonsForStatus(targetAd)
+      ...getAdActionButtonsForStatus(targetAd, totalReplies)
     }, true);
   });
 
@@ -2334,16 +2425,19 @@ module.exports = function registerUsers(bot, core) {
   bot.hears('💬 دعم واقتراحات وشكر', async (ctx) => {
     await safeDeleteUserMessage(ctx);
     const userId = ctx.from.id;
+    const { totalReplies } = await getClientRepliesSummary(userId);
     userState[userId] = { step: 'support_selecting_category', data: {}, chatId: ctx.chat.id, wizardMsgId: null };
 
     await replyTracked(ctx, userId, `💬 <b>اختر نوع الرسالة أو الملاحظة:</b>`,
-      { parse_mode: 'HTML', ...getSupportCategoriesKeyboard() }, true);
+      { parse_mode: 'HTML', ...getSupportCategoriesKeyboard(totalReplies) }, true);
   });
 
   bot.hears('💳 مشكلة في الدفع', async (ctx) => {
     await safeDeleteUserMessage(ctx);
     const userId = ctx.from.id;
     const topups = await fetchUserWalletTopups(userId);
+    const { totalReplies } = await getClientRepliesSummary(userId);
+    const dashBtn = totalReplies > 0 ? `⬅️ لوحة العميل (${totalReplies})` : '⬅️ لوحة العميل';
 
     if (!topups || topups.length === 0) {
       userState[userId] = {
@@ -2363,7 +2457,7 @@ module.exports = function registerUsers(bot, core) {
           parse_mode: 'HTML',
           ...Markup.keyboard([
             ['⏳ لم يصلني الرصيد بعد', '❌ تم رفض الدفع بدون سبب واضح'],
-            ['💬 دعم واقتراحات وشكر', '⬅️ لوحة العميل']
+            ['💬 دعم واقتراحات وشكر', dashBtn]
           ]).resize()
         },
         true
@@ -2388,7 +2482,7 @@ module.exports = function registerUsers(bot, core) {
     };
 
     const btnRows = chunkButtons(Object.keys(labelToTopup), 2);
-    btnRows.push(['💬 دعم واقتراحات وشكر', '⬅️ لوحة العميل']);
+    btnRows.push(['💬 دعم واقتراحات وشكر', dashBtn]);
     btnRows.push(['🏠 القائمة الرئيسية']);
 
     await replyTracked(
@@ -2410,13 +2504,14 @@ module.exports = function registerUsers(bot, core) {
 
     const savedInq = await sendStructuredTicketToAdmins(ctx, userId, chosenCat, presetDetail, null, 'text');
     delete userState[userId];
+    const { totalReplies } = await getClientRepliesSummary(userId);
 
     const inqTag = savedInq?.id ? `\n🔖 <b>رقم الاستعلام:</b> <code>#${savedInq.id}</code>` : '';
     const confirmMsg = chosenCat === '👏 شكر أو ملاحظة إيجابية'
       ? `👏 <b>شكراً جزيلاً لك على كلماتك الطيبة وثقتك بمنصة عقار الجزائر.</b>${inqTag}`
       : `✅ <b>تم تسجيل طلبك (${escapeHtml(chosenCat)}) وإرساله إلى الإدارة.</b>${inqTag}`;
 
-    await replyTracked(ctx, userId, confirmMsg, { parse_mode: 'HTML', ...getSupportHubKeyboard() }, true);
+    await replyTracked(ctx, userId, confirmMsg, { parse_mode: 'HTML', ...getSupportHubKeyboard(totalReplies) }, true);
   });
 
   bot.on('text', async (ctx) => {
@@ -2451,6 +2546,9 @@ module.exports = function registerUsers(bot, core) {
         );
       }
 
+      const { totalReplies } = await getClientRepliesSummary(userId);
+      const dashBtn = totalReplies > 0 ? `⬅️ لوحة العميل (${totalReplies})` : '⬅️ لوحة العميل';
+
       state.step = 'payment_issue_writing_detail';
       state.data = { selectedTopup: chosenTopup };
 
@@ -2470,7 +2568,7 @@ module.exports = function registerUsers(bot, core) {
           parse_mode: 'HTML',
           ...Markup.keyboard([
             ['⏳ لم يصلني الرصيد بعد', '❌ تم رفض الدفع بدون سبب واضح'],
-            ['💬 دعم واقتراحات وشكر', '⬅️ لوحة العميل']
+            ['💬 دعم واقتراحات وشكر', dashBtn]
           ]).resize()
         },
         true
@@ -2503,12 +2601,13 @@ module.exports = function registerUsers(bot, core) {
       );
 
       delete userState[userId];
+      const { totalReplies } = await getClientRepliesSummary(userId);
       const inqTag = savedInq?.id ? `\n🔖 <b>رقم الاستعلام المسجل:</b> <code>#${savedInq.id}</code>` : '';
 
       return replyTracked(
         ctx, userId,
-        `✅ <b>تم تسجيل استعلامك حول الدفعة وإرساله إلى الإدارة.</b>${inqTag}\nيمكنك متابعة الردود من قسم <b>"📨 استعلاماتي وردود الإدارة"</b>.`,
-        { parse_mode: 'HTML', ...getSupportHubKeyboard() },
+        `✅ <b>تم تسجيل استعلامك حول الدفعة وإرساله إلى الإدارة.</b>${inqTag}\nيمكنك متابعة الردود من قسم <b>"${getInquiriesMenuLabel(totalReplies)}"</b>.`,
+        { parse_mode: 'HTML', ...getSupportHubKeyboard(totalReplies) },
         true
       );
     }
@@ -2564,6 +2663,7 @@ module.exports = function registerUsers(bot, core) {
       );
 
       delete userState[userId];
+      const { totalReplies } = await getClientRepliesSummary(userId);
       const followRef = savedFollow?.id ? ` (رقم الاستعلام: <code>#${savedFollow.id}</code>)` : '';
       return replyTracked(
         ctx,
@@ -2572,7 +2672,7 @@ module.exports = function registerUsers(bot, core) {
         {
           parse_mode: 'HTML',
           ...Markup.keyboard([
-            ['📨 استعلاماتي وردود الإدارة', '⬅️ لوحة العميل'],
+            [getInquiriesMenuLabel(totalReplies), totalReplies > 0 ? `⬅️ لوحة العميل (${totalReplies})` : '⬅️ لوحة العميل'],
             ['🏠 القائمة الرئيسية']
           ]).resize()
         },
@@ -2739,6 +2839,7 @@ module.exports = function registerUsers(bot, core) {
         parentId || null
       );
       delete userState[userId];
+      const { totalReplies } = await getClientRepliesSummary(userId);
       const followRef = savedFollow?.id ? ` (رقم الاستعلام: <code>#${savedFollow.id}</code>)` : '';
       return replyTracked(
         ctx,
@@ -2747,7 +2848,7 @@ module.exports = function registerUsers(bot, core) {
         {
           parse_mode: 'HTML',
           ...Markup.keyboard([
-            ['📨 استعلاماتي وردود الإدارة', '⬅️ لوحة العميل'],
+            [getInquiriesMenuLabel(totalReplies), totalReplies > 0 ? `⬅️ لوحة العميل (${totalReplies})` : '⬅️ لوحة العميل'],
             ['🏠 القائمة الرئيسية']
           ]).resize()
         },
@@ -2898,6 +2999,7 @@ module.exports = function registerUsers(bot, core) {
         parentId || null
       );
       delete userState[userId];
+      const { totalReplies } = await getClientRepliesSummary(userId);
       const followRef = savedFollow?.id ? ` (رقم الاستعلام: <code>#${savedFollow.id}</code>)` : '';
       return replyTracked(
         ctx,
@@ -2906,7 +3008,7 @@ module.exports = function registerUsers(bot, core) {
         {
           parse_mode: 'HTML',
           ...Markup.keyboard([
-            ['📨 استعلاماتي وردود الإدارة', '⬅️ لوحة العميل'],
+            [getInquiriesMenuLabel(totalReplies), totalReplies > 0 ? `⬅️ لوحة العميل (${totalReplies})` : '⬅️ لوحة العميل'],
             ['🏠 القائمة الرئيسية']
           ]).resize()
         },
