@@ -23,6 +23,7 @@ module.exports = function registerAdmin(bot, core) {
   const adminInquiryState = {};
   const adminTopupState = {};
   const lastAdminButtonHintAt = {};
+  const adminHintTimers = {};
 
   // الخطوات المسموح فيها بالكتابة اليدوية للأدمن (تُستثنى من تنبيه "استعمل الأزرار")
   const ADMIN_FREE_TEXT_STEPS = new Set([
@@ -39,12 +40,20 @@ module.exports = function registerAdmin(bot, core) {
   async function notifyAdminUseButtonsHint(ctx, adminId) {
     if (isAdminFreeTextAllowed(adminId)) return;
 
-    // مسح رسالة المستخدم/الأدمن فوراً حتى لا تبقى في المحادثة
+    // مسح الرسالة المرسلة فوراً حتى لا تبقى في المحادثة
     await safeDeleteUserMessage(ctx);
 
     const now = Date.now();
     if (lastAdminButtonHintAt[adminId] && now - lastAdminButtonHintAt[adminId] < 3500) return;
     lastAdminButtonHintAt[adminId] = now;
+
+    if (adminHintTimers[adminId]) {
+      clearTimeout(adminHintTimers[adminId]);
+      delete adminHintTimers[adminId];
+    }
+
+    const chatId = ctx.chat?.id;
+    if (!chatId) return;
 
     const hintMsg = await ctx.reply(
       '👇 <b>يرجى استعمال الأزرار التفاعلية في الأسفل</b> — هذا الموضع غير مخصص للكتابة اليدوية.',
@@ -52,8 +61,10 @@ module.exports = function registerAdmin(bot, core) {
     ).catch(() => null);
 
     if (hintMsg?.message_id) {
-      setTimeout(() => {
-        ctx.telegram.deleteMessage(ctx.chat.id, hintMsg.message_id).catch(() => {});
+      const hintMsgId = hintMsg.message_id;
+      adminHintTimers[adminId] = setTimeout(async () => {
+        delete adminHintTimers[adminId];
+        await ctx.telegram.deleteMessage(chatId, hintMsgId).catch(() => {});
       }, 2500);
     }
   }
