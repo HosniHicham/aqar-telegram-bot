@@ -6,7 +6,8 @@
 // - إدارة ومعاينة استعلامات المستخدمين (user_inquiries) وسجل الردود (inquiry_replies)
 // - المرفق في الاستعلام والرد مدمج داخل نفس الرسالة (caption) بدون رسائل مرفق منفصلة
 // - مراسلة ناشر الإعلان بخصوص الإعلان (#ID) في كل الحالات (بما فيها المنشورة)
-// - اعتماد ورفض طلبات الشحن المسبق (wallet_topups) وتحديث رصيد المحفظة (wallet_balance)
+// - اعتماد ورفض طلبات الشحن (wallet_topups) وتحديث رصيد المحفظة (wallet_balance)
+// - مراقبة منظمة للأحداث + زر "📡 فحص ومراقبة النظام" للتحقق الفوري عند الحاجة
 // =========================================================================
 
 module.exports = function registerAdmin(bot, core) {
@@ -21,6 +22,18 @@ module.exports = function registerAdmin(bot, core) {
 
   const adminBrowseState = {};
   const adminInquiryState = {};
+  const recentAuditTrail = [];
+
+  function recordAuditEvent(tag, detail) {
+    recentAuditTrail.unshift({
+      tag,
+      detail,
+      at: formatDateTime(new Date())
+    });
+    if (recentAuditTrail.length > 8) {
+      recentAuditTrail.length = 8;
+    }
+  }
 
   const ROLE_LABELS = {
     ads_reviewer: '🏠 مراجعة الإعلانات',
@@ -41,7 +54,7 @@ module.exports = function registerAdmin(bot, core) {
     const rows = [
       ['⏳ المعلقة', '✅ المنشورة', '❌ المرفوضة'],
       ['📩 الاستعلامات', '🔎 بحث سريع', '📊 الإحصائيات'],
-      ['👁 معاينة المنصة كمستخدم']
+      ['📡 فحص ومراقبة النظام', '👁 معاينة المنصة كمستخدم']
     ];
     const webBtn = getWebsiteButton();
     if (webBtn) rows.push([webBtn]);
@@ -70,7 +83,7 @@ module.exports = function registerAdmin(bot, core) {
     }
 
     rows.push(['📩 الاستعلامات', '🔎 بحث سريع', '🎛 لوحة الإدارة']);
-    rows.push(['👁 معاينة المنصة كمستخدم']);
+    rows.push(['📡 فحص ومراقبة النظام', '👁 معاينة المنصة كمستخدم']);
 
     const webBtn = getWebsiteButton();
     if (webBtn && filterType) rows.push([webBtn]);
@@ -107,34 +120,79 @@ module.exports = function registerAdmin(bot, core) {
     try {
       let q = supabase.from(table).select('*', { count: 'exact', head: true });
       if (filter) q = q.eq(filter[0], filter[1]);
-      const { count } = await Promise.race([
+      const { data, count, error } = await Promise.race([
         q,
         new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 4000))
       ]);
-      return count ?? 0;
+      if (error) return { count: 0, ok: false, reason: error.message };
+      return { count: count ?? 0, ok: true, reason: '' };
     } catch (e) {
-      return 0;
+      return { count: 0, ok: false, reason: e?.message || 'timeout' };
     }
   }
 
   async function getFullAdminStats() {
-    const [pending, published, rejected, usersCount, openInquiries, inProgressInquiries] = await Promise.all([
+    const [pendingRes, publishedRes, rejectedRes, usersRes, openInqRes, inProgInqRes, topupsRes] = await Promise.all([
       countRows('pending_properties', ['status', 'pending']),
       countRows('test_messages'),
       countRows('pending_properties', ['status', 'rejected']),
       countRows('users'),
       countRows('user_inquiries', ['status', 'open']),
-      countRows('user_inquiries', ['status', 'in_progress'])
+      countRows('user_inquiries', ['status', 'in_progress']),
+      countRows('wallet_topups', ['status', 'pending'])
     ]);
     return {
-      pending,
-      published,
-      rejected,
-      usersCount,
-      activeInquiries: openInquiries + inProgressInquiries,
-      openInquiries,
-      inProgressInquiries
+      pending: pendingRes.count,
+      published: publishedRes.count,
+      rejected: rejectedRes.count,
+      usersCount: usersRes.count,
+      activeInquiries: openInqRes.count + inProgInqRes.count,
+      openInquiries: openInqRes.count,
+      inProgressInquiries: inProgInqRes.count,
+      pendingTopups: topupsRes.count,
+      tableHealth: {
+        pending_properties: pendingRes.ok,
+        test_messages: publishedRes.ok,
+        users: usersRes.ok,
+        user_inquiries: openInqRes.ok && inProgInqRes.ok,
+        wallet_topups: topupsRes.ok
+      }
     };
+  }
+
+  async function runSystemMonitorCheck(ctx, adminId) {
+    const startedAt = Date.now();
+    const adminIds = await getAdminIds();
+    const stats = typeof runSingleKnockWithSmartWake === 'function'
+      ? await runSingleKnockWithSmartWake(ctx, adminId, () => getFullAdminStats(), {
+          connectingText: '⏳ <b>جاري فحص نبض الجداول وحالة المراقبة...</b>',
+          backLabel: '🎛 لوحة الإدارة'
+        })
+      : await getFullAdminStats();
+
+    const latencyMs = Date.now() - startedAt;
+    const h = stats.tableHealth || {};
+    const statusIcon = (ok) => (ok ? '🟢 متصل' : '🔴 استجابة بطيئة/تحقق');
+
+    const auditLines = recentAuditTrail.length > 0
+      ? recentAuditTrail.slice(0, 5).map(ev => `• <code>${escapeHtml(ev.at)}</code> — <b>${escapeHtml(ev.tag)}</b>: ${escapeHtml(ev.detail)}`).join('\n')
+      : `<i>— لم تُسجَّل أحداث إدارية في الجلسة الحالية بعد —</i>`;
+
+    const text =
+      `📡 <b>تقرير فحص ومراقبة النظام</b>\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `⚡ <b>زمن الاستجابة:</b> <code>${latencyMs} ms</code> | 👑 <b>المشرفون المفعّلون:</b> <b>${adminIds.length}</b>\n\n` +
+      `🗄 <b>حالة الجداول الأساسية:</b>\n` +
+      `• الإعلانات المعلقة (<code>pending_properties</code>): ${statusIcon(h.pending_properties)} (<b>${stats.pending}</b>)\n` +
+      `• الإعلانات المنشورة (<code>test_messages</code>): ${statusIcon(h.test_messages)} (<b>${stats.published}</b>)\n` +
+      `• طلبات الشحن المعلقة (<code>wallet_topups</code>): ${statusIcon(h.wallet_topups)} (<b>${stats.pendingTopups}</b>)\n` +
+      `• الاستعلامات النشطة (<code>user_inquiries</code>): ${statusIcon(h.user_inquiries)} (<b>${stats.activeInquiries}</b>)\n` +
+      `• سجل الأعضاء (<code>users</code>): ${statusIcon(h.users)} (<b>${stats.usersCount}</b>)\n\n` +
+      `🔔 <b>آلية الإشعارات والتنبيهات:</b>\n` +
+      `الإشعارات الفورية تصل تلقائياً عند وصول طلبات جديدة أو اتخاذ قرار إداري دون إغراق مكرر، وهذا الفحص يضمن بقاء كل مسار متزامناً ومنظماً.\n\n` +
+      `🧾 <b>آخر الأحداث المرصودة في هذه الجلسة:</b>\n${auditLines}`;
+
+    await replyTracked(ctx, adminId, text, { parse_mode: 'HTML', ...getAdminMenuKeyboard() }, true);
   }
 
   async function resolveAdOwnerUserId(item) {
@@ -190,6 +248,7 @@ module.exports = function registerAdmin(bot, core) {
       `⏳ <b>إعلانات قيد المراجعة:</b> <b>${stats.pending}</b>\n` +
       `✅ <b>إعلانات منشورة:</b> <b>${stats.published}</b>\n` +
       `❌ <b>إعلانات مرفوضة:</b> <b>${stats.rejected}</b>\n` +
+      `💳 <b>طلبات شحن بانتظار المراجعة:</b> <b>${stats.pendingTopups}</b>\n` +
       `📩 <b>استعلامات نشطة:</b> <b>${stats.activeInquiries}</b> (🆕 ${stats.openInquiries} | ⏳ ${stats.inProgressInquiries})\n` +
       `👥 <b>الأعضاء المسجلون:</b> <b>${stats.usersCount}</b>`;
 
@@ -456,6 +515,8 @@ module.exports = function registerAdmin(bot, core) {
       deliverErrorReason = e?.message || 'خطأ في الإرسال';
       console.error('deliver inquiry reply to user failed:', deliverErrorReason);
     }
+
+    recordAuditEvent('رد على استعلام', `استعلام #${inquiryId} للعميل ${inquiry.user_id}`);
 
     delete userState[adminId];
     const deliveryNote = delivered
@@ -763,6 +824,11 @@ module.exports = function registerAdmin(bot, core) {
     await openAdminHome(ctx, true);
   });
 
+  bot.hears('📡 فحص ومراقبة النظام', async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    await runSystemMonitorCheck(ctx, ctx.from.id);
+  });
+
   bot.hears(['📩 الاستعلامات', '📂 كل الاستعلامات'], async (ctx) => {
     await safeDeleteUserMessage(ctx);
     await renderAdminInquiryAt(ctx, ctx.from.id, 'all', 0, true);
@@ -863,6 +929,7 @@ module.exports = function registerAdmin(bot, core) {
     }
 
     await supabase.from('user_inquiries').update({ status: newStatus }).eq('id', inquiryId);
+    recordAuditEvent('تحديث حالة استعلام', `استعلام #${inquiryId} → ${newStatus}`);
     await ctx.answerCbQuery(`تم تحديث الحالة: ${INQUIRY_STATUS_LABELS[newStatus] || newStatus}`);
 
     const st = adminInquiryState[adminId];
@@ -1038,6 +1105,8 @@ module.exports = function registerAdmin(bot, core) {
         { parse_mode: 'HTML', ...getAdminMenuKeyboard() }, true);
     }
 
+    recordAuditEvent('مراسلة مستخدم', `إلى ${targetUserId}${adId ? ` (إعلان #${adId})` : ''}`);
+
     delete userState[adminId];
     const kb = core.previewMode[adminId] ? core.getMainMenuKeyboard(adminId) : getAdminMenuKeyboard();
     const doneAdText = adId ? ` بخصوص الإعلان <code>#${adId}</code>` : '';
@@ -1198,11 +1267,12 @@ module.exports = function registerAdmin(bot, core) {
           .update({ status: 'approved', reviewed_by: adminId, reviewed_at: nowIso })
           .eq('id', topupId);
 
+        recordAuditEvent('اعتماد شحن', `طلب #${topupId} (+${formatMoney(amount)}) للعميل ${targetUserId}`);
         await ctx.answerCbQuery('✅ تم اعتماد الشحن وإضافة الرصيد');
 
         await ctx.telegram.sendMessage(
           targetUserId,
-          `🎉 <b>تمت الموافقة على طلب الشحن المسبق (#${topupId})!</b>\n` +
+          `🎉 <b>تمت الموافقة على طلب الشحن (#${topupId})!</b>\n` +
           `💰 <b>المبلغ المضاف:</b> +${formatMoney(amount)}\n` +
           `💼 <b>رصيد محفظتك الحالي:</b> <b>${formatMoney(newWallet)}</b>`,
           { parse_mode: 'HTML' }
@@ -1220,11 +1290,12 @@ module.exports = function registerAdmin(bot, core) {
           .update({ status: 'rejected', reviewed_by: adminId, reviewed_at: nowIso })
           .eq('id', topupId);
 
+        recordAuditEvent('رفض شحن', `طلب #${topupId} للعميل ${targetUserId}`);
         await ctx.answerCbQuery('❌ تم رفض طلب الشحن');
 
         await ctx.telegram.sendMessage(
           targetUserId,
-          `❌ <b>نعتذر، تعذّر اعتماد طلب الشحن المسبق (#${topupId})</b> بقيمة <b>${formatMoney(amount)}</b>. يرجى مراجعة وصل الدفع أو التواصل مع الدعم.`,
+          `❌ <b>نعتذر، تعذّر اعتماد طلب الشحن (#${topupId})</b> بقيمة <b>${formatMoney(amount)}</b>. يرجى مراجعة وصل الدفع أو التواصل مع الدعم.`,
           { parse_mode: 'HTML' }
         ).catch(() => {});
 
@@ -1253,6 +1324,7 @@ module.exports = function registerAdmin(bot, core) {
     try {
       if (action === 'delete_published') {
         await supabase.from('test_messages').delete().eq('id', requestId);
+        recordAuditEvent('حذف منشور', `إعلان #${requestId}`);
         await ctx.answerCbQuery('🗑 تم حذف الإعلان');
         await editCard(ctx, `🗑 <b>تم حذف الإعلان (#${requestId}) من المنصة.</b>`);
         return;
@@ -1271,6 +1343,7 @@ module.exports = function registerAdmin(bot, core) {
 
       if (action === 'requeue') {
         await supabase.from('pending_properties').update({ status: 'pending' }).eq('id', requestId);
+        recordAuditEvent('إعادة للمراجعة', `إعلان #${requestId}`);
         await ctx.answerCbQuery('♻️ أُعيد لقائمة المراجعة');
         await editCard(ctx, `♻️ <b>تمت إعادة الإعلان (#${requestId}) إلى قائمة المراجعة.</b>`);
         return;
@@ -1311,6 +1384,7 @@ module.exports = function registerAdmin(bot, core) {
         if (publishError) throw publishError;
 
         await supabase.from('pending_properties').update({ status: 'approved' }).eq('id', requestId);
+        recordAuditEvent('قبول ونشر إعلان', `إعلان #${requestId} للمعلن ${targetUserId}`);
         await ctx.answerCbQuery('✅ تم القبول والنشر');
 
         await ctx.telegram.sendMessage(
@@ -1327,6 +1401,7 @@ module.exports = function registerAdmin(bot, core) {
         );
       } else {
         await supabase.from('pending_properties').update({ status: 'rejected' }).eq('id', requestId);
+        recordAuditEvent('رفض إعلان', `إعلان #${requestId} للمعلن ${targetUserId}`);
         await ctx.answerCbQuery('❌ تم الرفض');
 
         const rejectUserMsg = isFreeAd
