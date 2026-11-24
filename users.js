@@ -333,6 +333,7 @@ module.exports = function registerUsers(bot, core) {
         totalReplies: 0,
         unreadRepliesCount: 0,
         unreadInquiriesCount: 0,
+        readInquiriesCount: 0,
         unreadCountByInquiryId: {},
         totalCountByInquiryId: {}
       };
@@ -362,16 +363,45 @@ module.exports = function registerUsers(bot, core) {
       }
     } catch (e) {}
 
-    const unreadInquiriesCount = Object.values(unreadCountByInquiryId).filter(c => c > 0).length;
+    const sortedList = [...list].sort((a, b) => {
+      const aUnread = (unreadCountByInquiryId[a.id] || 0) > 0 ? 1 : 0;
+      const bUnread = (unreadCountByInquiryId[b.id] || 0) > 0 ? 1 : 0;
+      if (bUnread !== aUnread) return bUnread - aUnread;
+      return Number(b.id || 0) - Number(a.id || 0);
+    });
+
+    const unreadInquiriesCount = sortedList.filter(i => (unreadCountByInquiryId[i.id] || 0) > 0).length;
+    const readInquiriesCount = sortedList.length - unreadInquiriesCount;
 
     return {
-      inquiries: list,
+      inquiries: sortedList,
       totalReplies,
       unreadRepliesCount,
       unreadInquiriesCount,
+      readInquiriesCount,
       unreadCountByInquiryId,
       totalCountByInquiryId
     };
+  }
+
+  function getFilteredInquiriesList(st) {
+    const all = Array.isArray(st?.allItems) ? st.allItems : [];
+    const unreadMap = st?.unreadCountByInquiryId || {};
+    const mode = st?.filterMode || 'all';
+
+    if (mode === 'unread') {
+      return all.filter(inq => (unreadMap[inq.id] || 0) > 0);
+    }
+    if (mode === 'read') {
+      return all.filter(inq => (unreadMap[inq.id] || 0) === 0);
+    }
+    return all;
+  }
+
+  function getFilterModeTitle(mode = 'all') {
+    if (mode === 'unread') return '🔔 غير المقروءة';
+    if (mode === 'read') return '📖 المقروءة';
+    return '📚 الكل';
   }
 
   function getInquiriesMenuLabel(unreadRepliesCount = 0) {
@@ -383,18 +413,30 @@ module.exports = function registerUsers(bot, core) {
   function buildInquiryIndexButtonLabel(inq, pos, unreadRepCount = 0, totalRepCount = 0) {
     const subj = String(inq.subject || inq.message || 'استفسار').replace(/\s+/g, ' ').trim();
     const shortSubj = subj.length > 20 ? `${subj.slice(0, 20)}…` : subj;
-    const statusDot = inq.status === 'resolved' ? '✅' : inq.status === 'closed' ? '🔒' : '🆕';
+    const statusDot = unreadRepCount > 0 ? '🔔' : (inq.status === 'resolved' ? '✅' : inq.status === 'closed' ? '🔒' : '🆕');
     const repTag = unreadRepCount > 0 ? ` (${unreadRepCount})` : (totalRepCount > 0 ? ` [${totalRepCount}]` : '');
     return `${statusDot} #${inq.id}${repTag} (${pos}) • ${shortSubj}`;
   }
 
-  function getClientInquiriesKeyboard(idx, total, currentInquiry = null, unreadRepliesCount = 0) {
+  function getClientInquiriesKeyboard(idx, total, currentInquiry = null, st = null) {
+    const unreadRepliesCount = st?.unreadRepliesCount || 0;
+    const unreadInqCount = st?.unreadInquiriesCount || 0;
+    const readInqCount = st?.readInquiriesCount || 0;
+    const totalInqCount = (st?.allItems || []).length;
+    const mode = st?.filterMode || 'all';
+
     const rows = [];
     const navRow = [];
     if (idx > 0) navRow.push('⬅️ استفساري السابق');
     navRow.push(`📋 ${idx + 1} / ${total}`);
     if (idx < total - 1) navRow.push('استفساري التالي ➡️');
     if (navRow.length > 0) rows.push(navRow);
+
+    rows.push([
+      `${mode === 'unread' ? '✅ ' : ''}🔔 غير المقروءة (${unreadInqCount})`,
+      `${mode === 'read' ? '✅ ' : ''}📖 المقروءة (${readInqCount})`,
+      `${mode === 'all' ? '✅ ' : ''}📚 الكل (${totalInqCount})`
+    ]);
 
     if (currentInquiry && currentInquiry.id) {
       rows.push([`💬 متابعة الاستعلام #${currentInquiry.id}`]);
@@ -407,7 +449,7 @@ module.exports = function registerUsers(bot, core) {
     return Markup.keyboard(rows).resize();
   }
 
-  function formatClientInquiryCard(inquiry, replies, idx, total, isMediaCaption = false, mediaSenderLabel = '') {
+  function formatClientInquiryCard(inquiry, replies, idx, total, isMediaCaption = false, mediaSenderLabel = '', filterMode = 'all') {
     const statusText = CLIENT_INQUIRY_STATUS[inquiry.status] || escapeHtml(inquiry.status || 'open');
     const roleText = CLIENT_ROLE_NAMES[inquiry.target_role] || escapeHtml(inquiry.target_role || 'الدعم العام');
     const propLine = inquiry.property_id ? `🏠 <b>الإعلان:</b> <code>#${inquiry.property_id}</code>\n` : '';
@@ -446,7 +488,7 @@ module.exports = function registerUsers(bot, core) {
     }
 
     const text =
-      `📨 <b>استعلاماتي</b> • <code>#${inquiry.id}</code> (${idx + 1}/${total})\n` +
+      `📨 <b>استعلاماتي (${getFilterModeTitle(filterMode)})</b> • <code>#${inquiry.id}</code> (${idx + 1}/${total})\n` +
       `📊 ${statusText} | 🎯 ${roleText}\n` +
       replyBanner +
       mediaSourceLine +
@@ -461,40 +503,44 @@ module.exports = function registerUsers(bot, core) {
 
   async function showClientInquiryIndexMenu(ctx, userId) {
     delete browsingSession[userId];
-    const {
-      inquiries: list,
-      unreadRepliesCount,
-      unreadCountByInquiryId,
-      totalCountByInquiryId
-    } = await getClientRepliesSummary(userId);
+    let st = clientInquiryBrowse[userId];
 
-    const st = {
-      items: list,
-      index: 0,
-      selectingIndex: false,
-      labelMap: {},
-      unreadRepliesCount,
-      unreadCountByInquiryId,
-      totalCountByInquiryId
-    };
-    clientInquiryBrowse[userId] = st;
+    if (!st || !Array.isArray(st.allItems)) {
+      const summary = await getClientRepliesSummary(userId);
+      st = {
+        allItems: summary.inquiries,
+        items: summary.inquiries,
+        index: 0,
+        filterMode: 'all',
+        selectingIndex: false,
+        labelMap: {},
+        unreadRepliesCount: summary.unreadRepliesCount,
+        unreadInquiriesCount: summary.unreadInquiriesCount,
+        readInquiriesCount: summary.readInquiriesCount,
+        unreadCountByInquiryId: summary.unreadCountByInquiryId,
+        totalCountByInquiryId: summary.totalCountByInquiryId
+      };
+      clientInquiryBrowse[userId] = st;
+    }
+
+    st.items = getFilteredInquiriesList(st);
 
     if (!st.items.length) {
-      return renderClientInquiryAt(ctx, userId, 0, true);
+      return renderClientInquiryAt(ctx, userId, 0, false);
     }
 
     st.selectingIndex = true;
     st.labelMap = {};
 
     const summaryLines = st.items.map((inq, idx) => {
-      const unreadRepCount = unreadCountByInquiryId[inq.id] || 0;
-      const totalRepCount = totalCountByInquiryId[inq.id] || 0;
+      const unreadRepCount = st.unreadCountByInquiryId[inq.id] || 0;
+      const totalRepCount = st.totalCountByInquiryId[inq.id] || 0;
       const lbl = buildInquiryIndexButtonLabel(inq, idx + 1, unreadRepCount, totalRepCount);
       st.labelMap[lbl] = idx;
       const dt = inq.created_at ? ` • <code>${escapeHtml(formatDateTime(inq.created_at))}</code>` : '';
       const repBadge = unreadRepCount > 0
         ? ` • 🔔 جديد <b>(${unreadRepCount})</b>`
-        : (totalRepCount > 0 ? ` • 💬 مقروء (${totalRepCount})` : '');
+        : (totalRepCount > 0 ? ` • 📖 مقروء (${totalRepCount})` : '');
       return `${idx + 1}. <b>#${inq.id}</b> — ${escapeHtml(inq.subject || inq.message || 'استفسار')}${repBadge}${dt}`;
     });
 
@@ -502,12 +548,12 @@ module.exports = function registerUsers(bot, core) {
     const rows = chunkButtons(buttons, 1);
     rows.push([
       '🔙 رجوع للاستعلام',
-      unreadRepliesCount > 0 ? `⬅️ لوحة العميل (${unreadRepliesCount})` : '⬅️ لوحة العميل'
+      st.unreadRepliesCount > 0 ? `⬅️ لوحة العميل (${st.unreadRepliesCount})` : '⬅️ لوحة العميل'
     ]);
     rows.push(['🏠 القائمة الرئيسية']);
 
     const sent = await ctx.reply(
-      `📑 <b>فهرس استعلاماتك (${st.items.length}):</b>\n\n${summaryLines.join('\n')}\n\n👇 <b>اضغط على زر الاستعلام للانتقال إليه مباشرة:</b>`,
+      `📑 <b>فهرس الاستعلامات (${getFilterModeTitle(st.filterMode)} • ${st.items.length}):</b>\n\n${summaryLines.join('\n')}\n\n👇 <b>اضغط على زر الاستعلام للانتقال إليه مباشرة:</b>`,
       { parse_mode: 'HTML', ...Markup.keyboard(rows).resize() }
     ).catch(() => null);
 
@@ -516,33 +562,38 @@ module.exports = function registerUsers(bot, core) {
     await clearTrackedBotMessages(ctx, userId, keepIds);
   }
 
-  async function renderClientInquiryAt(ctx, userId, index = 0, refresh = false) {
+  async function renderClientInquiryAt(ctx, userId, index = 0, refresh = false, forcedFilterMode = null) {
     delete browsingSession[userId];
     let st = clientInquiryBrowse[userId];
 
     if (!st || refresh) {
-      const {
-        inquiries: list,
-        unreadRepliesCount,
-        unreadCountByInquiryId,
-        totalCountByInquiryId
-      } = await getClientRepliesSummary(userId);
+      const summary = await getClientRepliesSummary(userId);
+      const nextMode = forcedFilterMode || st?.filterMode || 'all';
 
       st = {
-        items: list,
+        allItems: summary.inquiries,
+        items: [],
         index: 0,
+        filterMode: nextMode,
         selectingIndex: false,
         labelMap: {},
-        unreadRepliesCount,
-        unreadCountByInquiryId,
-        totalCountByInquiryId
+        unreadRepliesCount: summary.unreadRepliesCount,
+        unreadInquiriesCount: summary.unreadInquiriesCount,
+        readInquiriesCount: summary.readInquiriesCount,
+        unreadCountByInquiryId: summary.unreadCountByInquiryId,
+        totalCountByInquiryId: summary.totalCountByInquiryId
       };
+      st.items = getFilteredInquiriesList(st);
       clientInquiryBrowse[userId] = st;
     } else {
+      if (forcedFilterMode) {
+        st.filterMode = forcedFilterMode;
+      }
+      st.items = getFilteredInquiriesList(st);
       st.selectingIndex = false;
     }
 
-    if (!st.items || st.items.length === 0) {
+    if (!st.allItems || st.allItems.length === 0) {
       delete clientInquiryBrowse[userId];
       return replyTracked(
         ctx, userId,
@@ -553,6 +604,19 @@ module.exports = function registerUsers(bot, core) {
             ['💬 دعم واقتراحات وشكر', '📋 إعلاناتي وحالتها'],
             ['⬅️ لوحة العميل', '🏠 القائمة الرئيسية']
           ]).resize()
+        },
+        true
+      );
+    }
+
+    if (!st.items.length) {
+      const emptyLabel = getFilterModeTitle(st.filterMode);
+      return replyTracked(
+        ctx, userId,
+        `📭 <b>لا توجد استفسارات ضمن قسم (${emptyLabel}) حالياً.</b>`,
+        {
+          parse_mode: 'HTML',
+          ...getClientInquiriesKeyboard(0, 1, null, st)
         },
         true
       );
@@ -574,10 +638,12 @@ module.exports = function registerUsers(bot, core) {
       const removedUnread = st.unreadCountByInquiryId?.[currentInquiry.id] || replies.filter(r => r.is_read === false).length;
       st.unreadCountByInquiryId[currentInquiry.id] = 0;
       st.unreadRepliesCount = Math.max(0, (st.unreadRepliesCount || 0) - removedUnread);
+      st.unreadInquiriesCount = (st.allItems || []).filter(i => (st.unreadCountByInquiryId[i.id] || 0) > 0).length;
+      st.readInquiriesCount = (st.allItems || []).length - st.unreadInquiriesCount;
       for (const r of replies) r.is_read = true;
     }
 
-    const kb = getClientInquiriesKeyboard(safeIdx, st.items.length, currentInquiry, st.unreadRepliesCount || 0);
+    const kb = getClientInquiriesKeyboard(safeIdx, st.items.length, currentInquiry, st);
 
     const latestMediaReply = [...replies]
       .reverse()
@@ -611,7 +677,8 @@ module.exports = function registerUsers(bot, core) {
         safeIdx,
         st.items.length,
         true,
-        attachedMedia.senderLabel
+        attachedMedia.senderLabel,
+        st.filterMode
       );
       try {
         sent = attachedMedia.type === 'video'
@@ -623,7 +690,7 @@ module.exports = function registerUsers(bot, core) {
     }
 
     if (!sent) {
-      const cardText = formatClientInquiryCard(currentInquiry, replies, safeIdx, st.items.length, false, '');
+      const cardText = formatClientInquiryCard(currentInquiry, replies, safeIdx, st.items.length, false, '', st.filterMode);
       sent = await ctx.reply(cardText, { parse_mode: 'HTML', ...kb }).catch(() => null);
     }
 
@@ -2006,7 +2073,8 @@ module.exports = function registerUsers(bot, core) {
     const {
       inquiries: myInquiries,
       unreadRepliesCount,
-      unreadInquiriesCount
+      unreadInquiriesCount,
+      readInquiriesCount
     } = await getClientRepliesSummary(userId);
 
     const pendingCount = allAds.filter(a => a.ad_status === 'pending').length;
@@ -2031,7 +2099,7 @@ module.exports = function registerUsers(bot, core) {
       `👋 أهلاً بك يا <b>${name}</b>\n` +
       `💼 <b>رصيد المحفظة:</b> <b>${walletBalance}</b>\n` +
       `🪙 <b>رصيد النقاط:</b> <b>${points} نقطة</b>\n` +
-      `📨 <b>استعلاماتك المسجلة:</b> <b>${myInquiries.length}</b> | 💬 <b>ردود جديدة:</b> <b>(${unreadRepliesCount})</b>\n` +
+      `📨 <b>استعلاماتك:</b> الكل <b>${myInquiries.length}</b> | 🔔 غير مقروءة: <b>${unreadInquiriesCount}</b> | 📖 مقروءة: <b>${readInquiriesCount}</b> | 💬 ردود جديدة: <b>(${unreadRepliesCount})</b>\n` +
       `📊 <b>إعلاناتك:</b> إجمالي <b>${allAds.length}</b> | ⏳ معلق: <b>${pendingCount}</b> | ✅ مقبول: <b>${approvedCount}</b> | ❌ مرفوض: <b>${rejectedCount}</b>` +
       alertLine +
       (supportIntro ? `\n\n${supportIntro}` : '') +
@@ -2289,14 +2357,29 @@ module.exports = function registerUsers(bot, core) {
 
   bot.hears(/^📨 استعلاماتي وردود الإدارة(?:\s*\(\d+\))?$/, async (ctx) => {
     await safeDeleteUserMessage(ctx);
-    await renderClientInquiryAt(ctx, ctx.from.id, 0, true);
+    await renderClientInquiryAt(ctx, ctx.from.id, 0, true, 'all');
+  });
+
+  bot.hears(/^(?:✅\s*)?🔔 غير المقروءة(?:\s*\(\d+\))?$/, async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    await renderClientInquiryAt(ctx, ctx.from.id, 0, true, 'unread');
+  });
+
+  bot.hears(/^(?:✅\s*)?📖 المقروءة(?:\s*\(\d+\))?$/, async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    await renderClientInquiryAt(ctx, ctx.from.id, 0, true, 'read');
+  });
+
+  bot.hears(/^(?:✅\s*)?📚 الكل(?:\s*\(\d+\))?$/, async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    await renderClientInquiryAt(ctx, ctx.from.id, 0, true, 'all');
   });
 
   bot.hears('⬅️ استفساري السابق', async (ctx) => {
     await safeDeleteUserMessage(ctx);
     const userId = ctx.from.id;
     const st = clientInquiryBrowse[userId];
-    if (!st) return renderClientInquiryAt(ctx, userId, 0, true);
+    if (!st) return renderClientInquiryAt(ctx, userId, 0, true, 'all');
     await renderClientInquiryAt(ctx, userId, Math.max((st.index || 0) - 1, 0), false);
   });
 
@@ -2304,7 +2387,7 @@ module.exports = function registerUsers(bot, core) {
     await safeDeleteUserMessage(ctx);
     const userId = ctx.from.id;
     const st = clientInquiryBrowse[userId];
-    if (!st) return renderClientInquiryAt(ctx, userId, 0, true);
+    if (!st) return renderClientInquiryAt(ctx, userId, 0, true, 'all');
     await renderClientInquiryAt(ctx, userId, (st.index || 0) + 1, false);
   });
 
