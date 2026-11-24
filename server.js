@@ -498,7 +498,7 @@ bot.use(async (ctx, next) => {
   }
 
   const forceAdmin =
-    /^(approve_|reject_|requeue_|del_pub_|support_reply_|inq_reply_|inq_status_)/.test(cbData) ||
+    /^(approve_|reject_|requeue_|del_pub_|support_reply_|inq_reply_|inq_status_|topup_approve_|topup_reject_)/.test(cbData) ||
     ['replying_to_support_user', 'replying_to_inquiry', 'searching_admin_ads'].includes(userState[userId]?.step);
 
   if (previewMode[userId]) injectBackButton(ctx);
