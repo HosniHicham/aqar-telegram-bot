@@ -1599,3 +1599,4 @@ module.exports = function registerAdmin(bot, core) {
 
   return { openAdminHome };
 };
+
