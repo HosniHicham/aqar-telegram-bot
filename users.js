@@ -71,7 +71,7 @@ module.exports = function registerUsers(bot, core) {
       buttonHintTimers[userId] = setTimeout(async () => {
         delete buttonHintTimers[userId];
         await ctx.telegram.deleteMessage(chatId, hintMsgId).catch(() => {});
-      }, 2500);
+      }, 3500);
     }
   }
 
