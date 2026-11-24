@@ -21,6 +21,45 @@ module.exports = function registerUsers(bot, core) {
   } = core;
 
   const clientInquiryBrowse = {};
+  const lastButtonHintAt = {};
+
+  // الخطوات والمواضع المسموح فيها بالكتابة اليدوية (تُستثنى من تنبيه "استعمل الأزرار")
+  const FREE_TEXT_STEPS = new Set([
+    'payment_issue_writing_detail',
+    'topup_waiting_amount',
+    'client_following_up_inquiry'
+  ]);
+
+  function isFreeTextInputAllowed(userId, userText) {
+    if (/^\d+$/.test(userText)) {
+      const own = supportUserSession[userId];
+      if (own && own.mode === 'browsing_own_ads' && own.selectingPage) return true;
+      const session = browsingSession[userId];
+      if (session && session.selectingPage) return true;
+    }
+    const st = userState[userId];
+    if (st && FREE_TEXT_STEPS.has(st.step)) return true;
+    return false;
+  }
+
+  async function notifyUseButtonsHint(ctx, userId) {
+    if (isFreeTextInputAllowed(userId, ctx.message?.text ? ctx.message.text.trim() : '')) return;
+
+    const now = Date.now();
+    if (lastButtonHintAt[userId] && now - lastButtonHintAt[userId] < 3500) return;
+    lastButtonHintAt[userId] = now;
+
+    const hintMsg = await ctx.reply(
+      '👇 <b>يرجى استعمال الأزرار التفاعلية في الأسفل</b> — هذا الموضع غير مخصص للكتابة اليدوية.',
+      { parse_mode: 'HTML' }
+    ).catch(() => null);
+
+    if (hintMsg?.message_id) {
+      setTimeout(() => {
+        ctx.telegram.deleteMessage(ctx.chat.id, hintMsg.message_id).catch(() => {});
+      }, 4000);
+    }
+  }
 
   const CLIENT_INQUIRY_STATUS = {
     open: '🆕 مفتوح (بانتظار الرد)',
@@ -2749,7 +2788,10 @@ module.exports = function registerUsers(bot, core) {
     }
 
     const state = userState[userId];
-    if (!state) return;
+    if (!state) {
+      await notifyUseButtonsHint(ctx, userId);
+      return;
+    }
 
     if (state.step === 'payment_issue_selecting_topup') {
       await safeDeleteUserMessage(ctx);
@@ -2911,6 +2953,7 @@ module.exports = function registerUsers(bot, core) {
         state.tempInput = '';
         return renderWizard(ctx, userId);
       }
+      await notifyUseButtonsHint(ctx, userId);
       return;
     }
 
@@ -2957,6 +3000,7 @@ module.exports = function registerUsers(bot, core) {
           return renderWizard(ctx, userId);
         }
       }
+      await notifyUseButtonsHint(ctx, userId);
       return;
     }
 
@@ -2996,6 +3040,8 @@ module.exports = function registerUsers(bot, core) {
         if (!state.data.features_list.includes(userText)) state.data.features_list.push(userText);
         return renderWizard(ctx, userId);
       }
+      await notifyUseButtonsHint(ctx, userId);
+      return;
     }
 
     if (state.step === 'waiting_for_media') {
@@ -3016,7 +3062,11 @@ module.exports = function registerUsers(bot, core) {
         state.step = 'waiting_for_payment_choice';
         return renderWizard(ctx, userId);
       }
+      await notifyUseButtonsHint(ctx, userId);
+      return;
     }
+
+    await notifyUseButtonsHint(ctx, userId);
   });
 
   bot.on('photo', async (ctx) => {
