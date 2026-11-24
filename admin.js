@@ -3,11 +3,10 @@
 // 🛡️ SERVER ADMIN — لوحة تحكم الإدارة
 // - تصفح صور وفيديوهات الإعلانات بنفس أسلوب التصفح السلس
 // - التنقل بين الإعلانات (المعلقة / المنشورة / المرفوضة / البحث)
+// - تصفح طلبات الشحن (wallet_topups) والموافقة أو الرفض أو المراسلة
 // - إدارة ومعاينة استعلامات المستخدمين (user_inquiries) وسجل الردود (inquiry_replies)
 // - المرفق في الاستعلام والرد مدمج داخل نفس الرسالة (caption) بدون رسائل مرفق منفصلة
-// - مراسلة ناشر الإعلان بخصوص الإعلان (#ID) في كل الحالات (بما فيها المنشورة)
-// - اعتماد ورفض طلبات الشحن (wallet_topups) وتحديث رصيد المحفظة (wallet_balance)
-// - مراقبة منظمة للأحداث + زر "📡 فحص ومراقبة النظام" للتحقق الفوري عند الحاجة
+// - مراسلة ناشر الإعلان أو صاحب طلب الشحن (#ID) مباشرة
 // =========================================================================
 
 module.exports = function registerAdmin(bot, core) {
@@ -22,18 +21,7 @@ module.exports = function registerAdmin(bot, core) {
 
   const adminBrowseState = {};
   const adminInquiryState = {};
-  const recentAuditTrail = [];
-
-  function recordAuditEvent(tag, detail) {
-    recentAuditTrail.unshift({
-      tag,
-      detail,
-      at: formatDateTime(new Date())
-    });
-    if (recentAuditTrail.length > 8) {
-      recentAuditTrail.length = 8;
-    }
-  }
+  const adminTopupState = {};
 
   const ROLE_LABELS = {
     ads_reviewer: '🏠 مراجعة الإعلانات',
@@ -50,11 +38,17 @@ module.exports = function registerAdmin(bot, core) {
     closed: '🔒 مغلق'
   };
 
+  const TOPUP_STATUS_LABELS = {
+    pending: '⏳ معلق',
+    approved: '✅ موافق عليه',
+    rejected: '❌ مرفوض'
+  };
+
   function getAdminMenuKeyboard() {
     const rows = [
       ['⏳ المعلقة', '✅ المنشورة', '❌ المرفوضة'],
-      ['📩 الاستعلامات', '🔎 بحث سريع', '📊 الإحصائيات'],
-      ['📡 فحص ومراقبة النظام', '👁 معاينة المنصة كمستخدم']
+      ['💳 طلبات الشحن', '📩 الاستعلامات', '🔎 بحث سريع'],
+      ['📊 الإحصائيات', '👁 معاينة المنصة كمستخدم']
     ];
     const webBtn = getWebsiteButton();
     if (webBtn) rows.push([webBtn]);
@@ -83,10 +77,29 @@ module.exports = function registerAdmin(bot, core) {
     }
 
     rows.push(['📩 الاستعلامات', '🔎 بحث سريع', '🎛 لوحة الإدارة']);
-    rows.push(['📡 فحص ومراقبة النظام', '👁 معاينة المنصة كمستخدم']);
+    rows.push(['👁 معاينة المنصة كمستخدم']);
 
     const webBtn = getWebsiteButton();
     if (webBtn && filterType) rows.push([webBtn]);
+
+    return Markup.keyboard(rows).resize();
+  }
+
+  function getAdminTopupsKeyboard(idx, total, currentTopup = null) {
+    const rows = [];
+
+    const navRow = [];
+    if (idx > 0) navRow.push('⬅️ الشحن السابق');
+    navRow.push(`💳 ${idx + 1} / ${total}`);
+    if (idx < total - 1) navRow.push('الشحن التالي ➡️');
+    if (navRow.length > 0) rows.push(navRow);
+
+    if (currentTopup && currentTopup.user_id) {
+      rows.push([`✉️ مراسلة العميل (${currentTopup.user_id})`]);
+    }
+
+    rows.push(['⏳ شحن معلق', '✅ شحن موافق عليه', '❌ شحن مرفوض', '📂 كل الشحن']);
+    rows.push(['🎛 لوحة الإدارة', '👁 معاينة المنصة كمستخدم']);
 
     return Markup.keyboard(rows).resize();
   }
@@ -120,19 +133,18 @@ module.exports = function registerAdmin(bot, core) {
     try {
       let q = supabase.from(table).select('*', { count: 'exact', head: true });
       if (filter) q = q.eq(filter[0], filter[1]);
-      const { data, count, error } = await Promise.race([
+      const { count } = await Promise.race([
         q,
         new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 4000))
       ]);
-      if (error) return { count: 0, ok: false, reason: error.message };
-      return { count: count ?? 0, ok: true, reason: '' };
+      return count ?? 0;
     } catch (e) {
-      return { count: 0, ok: false, reason: e?.message || 'timeout' };
+      return 0;
     }
   }
 
   async function getFullAdminStats() {
-    const [pendingRes, publishedRes, rejectedRes, usersRes, openInqRes, inProgInqRes, topupsRes] = await Promise.all([
+    const [pending, published, rejected, usersCount, openInquiries, inProgressInquiries, pendingTopups] = await Promise.all([
       countRows('pending_properties', ['status', 'pending']),
       countRows('test_messages'),
       countRows('pending_properties', ['status', 'rejected']),
@@ -142,57 +154,15 @@ module.exports = function registerAdmin(bot, core) {
       countRows('wallet_topups', ['status', 'pending'])
     ]);
     return {
-      pending: pendingRes.count,
-      published: publishedRes.count,
-      rejected: rejectedRes.count,
-      usersCount: usersRes.count,
-      activeInquiries: openInqRes.count + inProgInqRes.count,
-      openInquiries: openInqRes.count,
-      inProgressInquiries: inProgInqRes.count,
-      pendingTopups: topupsRes.count,
-      tableHealth: {
-        pending_properties: pendingRes.ok,
-        test_messages: publishedRes.ok,
-        users: usersRes.ok,
-        user_inquiries: openInqRes.ok && inProgInqRes.ok,
-        wallet_topups: topupsRes.ok
-      }
+      pending,
+      published,
+      rejected,
+      usersCount,
+      activeInquiries: openInquiries + inProgressInquiries,
+      openInquiries,
+      inProgressInquiries,
+      pendingTopups
     };
-  }
-
-  async function runSystemMonitorCheck(ctx, adminId) {
-    const startedAt = Date.now();
-    const adminIds = await getAdminIds();
-    const stats = typeof runSingleKnockWithSmartWake === 'function'
-      ? await runSingleKnockWithSmartWake(ctx, adminId, () => getFullAdminStats(), {
-          connectingText: '⏳ <b>جاري فحص نبض الجداول وحالة المراقبة...</b>',
-          backLabel: '🎛 لوحة الإدارة'
-        })
-      : await getFullAdminStats();
-
-    const latencyMs = Date.now() - startedAt;
-    const h = stats.tableHealth || {};
-    const statusIcon = (ok) => (ok ? '🟢 متصل' : '🔴 استجابة بطيئة/تحقق');
-
-    const auditLines = recentAuditTrail.length > 0
-      ? recentAuditTrail.slice(0, 5).map(ev => `• <code>${escapeHtml(ev.at)}</code> — <b>${escapeHtml(ev.tag)}</b>: ${escapeHtml(ev.detail)}`).join('\n')
-      : `<i>— لم تُسجَّل أحداث إدارية في الجلسة الحالية بعد —</i>`;
-
-    const text =
-      `📡 <b>تقرير فحص ومراقبة النظام</b>\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n` +
-      `⚡ <b>زمن الاستجابة:</b> <code>${latencyMs} ms</code> | 👑 <b>المشرفون المفعّلون:</b> <b>${adminIds.length}</b>\n\n` +
-      `🗄 <b>حالة الجداول الأساسية:</b>\n` +
-      `• الإعلانات المعلقة (<code>pending_properties</code>): ${statusIcon(h.pending_properties)} (<b>${stats.pending}</b>)\n` +
-      `• الإعلانات المنشورة (<code>test_messages</code>): ${statusIcon(h.test_messages)} (<b>${stats.published}</b>)\n` +
-      `• طلبات الشحن المعلقة (<code>wallet_topups</code>): ${statusIcon(h.wallet_topups)} (<b>${stats.pendingTopups}</b>)\n` +
-      `• الاستعلامات النشطة (<code>user_inquiries</code>): ${statusIcon(h.user_inquiries)} (<b>${stats.activeInquiries}</b>)\n` +
-      `• سجل الأعضاء (<code>users</code>): ${statusIcon(h.users)} (<b>${stats.usersCount}</b>)\n\n` +
-      `🔔 <b>آلية الإشعارات والتنبيهات:</b>\n` +
-      `الإشعارات الفورية تصل تلقائياً عند وصول طلبات جديدة أو اتخاذ قرار إداري دون إغراق مكرر، وهذا الفحص يضمن بقاء كل مسار متزامناً ومنظماً.\n\n` +
-      `🧾 <b>آخر الأحداث المرصودة في هذه الجلسة:</b>\n${auditLines}`;
-
-    await replyTracked(ctx, adminId, text, { parse_mode: 'HTML', ...getAdminMenuKeyboard() }, true);
   }
 
   async function resolveAdOwnerUserId(item) {
@@ -230,6 +200,7 @@ module.exports = function registerAdmin(bot, core) {
     delete userState[adminId];
     delete adminBrowseState[adminId];
     delete adminInquiryState[adminId];
+    delete adminTopupState[adminId];
     core.resetSessions(adminId);
 
     const stats = typeof runSingleKnockWithSmartWake === 'function'
@@ -248,11 +219,154 @@ module.exports = function registerAdmin(bot, core) {
       `⏳ <b>إعلانات قيد المراجعة:</b> <b>${stats.pending}</b>\n` +
       `✅ <b>إعلانات منشورة:</b> <b>${stats.published}</b>\n` +
       `❌ <b>إعلانات مرفوضة:</b> <b>${stats.rejected}</b>\n` +
-      `💳 <b>طلبات شحن بانتظار المراجعة:</b> <b>${stats.pendingTopups}</b>\n` +
+      `💳 <b>طلبات شحن معلقة:</b> <b>${stats.pendingTopups}</b>\n` +
       `📩 <b>استعلامات نشطة:</b> <b>${stats.activeInquiries}</b> (🆕 ${stats.openInquiries} | ⏳ ${stats.inProgressInquiries})\n` +
       `👥 <b>الأعضاء المسجلون:</b> <b>${stats.usersCount}</b>`;
 
     await replyTracked(ctx, adminId, text, { parse_mode: 'HTML', ...getAdminMenuKeyboard() }, true);
+  }
+
+  async function fetchAdminTopups(statusFilter = 'pending') {
+    try {
+      let q = supabase
+        .from('wallet_topups')
+        .select('*')
+        .order('id', { ascending: false })
+        .limit(100);
+
+      if (statusFilter === 'pending') {
+        q = q.eq('status', 'pending');
+      } else if (statusFilter === 'approved') {
+        q = q.eq('status', 'approved');
+      } else if (statusFilter === 'rejected') {
+        q = q.eq('status', 'rejected');
+      }
+
+      const { data, error } = await q;
+      if (error || !data) return [];
+      return data;
+    } catch (e) {
+      console.error('fetchAdminTopups error:', e);
+      return [];
+    }
+  }
+
+  function buildTopupInlineButtons(topup) {
+    const id = topup.id;
+    const rows = [];
+    if (topup.status === 'pending') {
+      rows.push([
+        Markup.button.callback(`❌ رفض (#${id})`, `topup_reject_${id}`),
+        Markup.button.callback(`✅ موافقة (#${id})`, `topup_approve_${id}`)
+      ]);
+    }
+    if (topup.user_id) {
+      rows.push([Markup.button.callback(`✉️ مراسلة العميل (${topup.user_id})`, `support_reply_${topup.user_id}`)]);
+    }
+    return rows.length > 0 ? Markup.inlineKeyboard(rows) : undefined;
+  }
+
+  function formatTopupCardText(topup, idx, total, statusFilter, hasMedia = false) {
+    const filterTitles = {
+      pending: '⏳ طلبات الشحن المعلقة',
+      approved: '✅ طلبات الشحن الموافق عليها',
+      rejected: '❌ طلبات الشحن المرفوضة',
+      all: '📂 كل طلبات الشحن'
+    };
+
+    const stLabel = TOPUP_STATUS_LABELS[topup.status] || escapeHtml(topup.status || 'pending');
+    const amount = sanitizeNumericPrice(topup.amount || 0);
+    const methodText = escapeHtml(topup.payment_method || 'BaridiMob / CCP');
+    const reviewedLine = topup.reviewed_at
+      ? `\n🕒 <b>وقت المراجعة:</b> <code>${escapeHtml(formatDateTime(topup.reviewed_at))}</code>`
+      : '';
+
+    const rawText =
+      `${filterTitles[statusFilter] || '💳 طلبات الشحن'} • <code>#${topup.id}</code> (${idx + 1}/${total})\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `📊 <b>الحالة:</b> <b>${stLabel}</b>\n` +
+      `👤 <b>العميل:</b> <code>${topup.user_id}</code>\n` +
+      `💰 <b>المبلغ:</b> <b>${formatMoney(amount)}</b>\n` +
+      `💳 <b>الوسيلة:</b> ${methodText}\n` +
+      `🕒 <b>تاريخ الطلب:</b> <code>${escapeHtml(formatDateTime(topup.created_at))}</code>` +
+      reviewedLine;
+
+    return fitTelegramText(rawText, hasMedia);
+  }
+
+  async function renderAdminTopupAt(ctx, adminId, statusFilter = 'pending', index = 0, refreshList = false) {
+    delete adminBrowseState[adminId];
+    delete adminInquiryState[adminId];
+
+    let st = adminTopupState[adminId];
+    if (!st || st.statusFilter !== statusFilter || refreshList) {
+      const items = typeof runSingleKnockWithSmartWake === 'function'
+        ? await runSingleKnockWithSmartWake(ctx, adminId, () => fetchAdminTopups(statusFilter), {
+            connectingText: '⏳ <b>لحظات من فضلك، جاري تحميل طلبات الشحن...</b>',
+            backLabel: '🎛 لوحة الإدارة'
+          })
+        : await fetchAdminTopups(statusFilter);
+      st = { statusFilter, items, index: 0 };
+      adminTopupState[adminId] = st;
+    }
+
+    if (!st.items || st.items.length === 0) {
+      delete adminTopupState[adminId];
+      return replyTracked(
+        ctx, adminId,
+        `📭 <b>لا توجد طلبات شحن في هذه الفئة حالياً.</b>`,
+        {
+          parse_mode: 'HTML',
+          ...Markup.keyboard([
+            ['⏳ شحن معلق', '✅ شحن موافق عليه', '❌ شحن مرفوض', '📂 كل الشحن'],
+            ['🎛 لوحة الإدارة']
+          ]).resize()
+        },
+        true
+      );
+    }
+
+    let safeIdx = Number(index) || 0;
+    if (safeIdx < 0) safeIdx = 0;
+    if (safeIdx >= st.items.length) safeIdx = st.items.length - 1;
+    st.index = safeIdx;
+
+    const topup = st.items[safeIdx];
+    const receiptRef = normalizeMediaRef(topup.receipt_urls || topup.receipt_url);
+    const inlineKb = buildTopupInlineButtons(topup);
+    const bottomKb = getAdminTopupsKeyboard(safeIdx, st.items.length, topup);
+
+    let sentCard = null;
+    if (receiptRef) {
+      const mediaCaption = formatTopupCardText(topup, safeIdx, st.items.length, statusFilter, true);
+      const photoExtra = inlineKb ? { caption: mediaCaption, parse_mode: 'HTML', ...inlineKb } : { caption: mediaCaption, parse_mode: 'HTML' };
+      try {
+        sentCard = await ctx.replyWithPhoto(receiptRef, photoExtra);
+      } catch (e) {}
+    }
+
+    if (!sentCard) {
+      const textCard = formatTopupCardText(topup, safeIdx, st.items.length, statusFilter, false);
+      const msgExtra = inlineKb ? { parse_mode: 'HTML', ...inlineKb } : { parse_mode: 'HTML' };
+      sentCard = await ctx.reply(textCard, msgExtra).catch(() => null);
+    }
+
+    const ctrlMsg = await ctx.reply(`🧭 <b>طلب شحن ${safeIdx + 1} / ${st.items.length}</b>`, {
+      parse_mode: 'HTML',
+      ...bottomKb
+    }).catch(() => null);
+
+    const keepIds = [];
+    if (sentCard?.message_id) {
+      keepIds.push(sentCard.message_id);
+      trackBotMessage(adminId, ctx.chat.id, sentCard.message_id);
+    }
+    if (ctrlMsg?.message_id) {
+      keepIds.push(ctrlMsg.message_id);
+      trackBotMessage(adminId, ctx.chat.id, ctrlMsg.message_id);
+    }
+
+    await clearTrackedBotMessages(ctx, adminId, keepIds);
   }
 
   async function fetchAdminInquiries(statusFilter = 'all') {
@@ -360,6 +474,7 @@ module.exports = function registerAdmin(bot, core) {
 
   async function renderAdminInquiryAt(ctx, adminId, statusFilter = 'all', index = 0, refreshList = false) {
     delete adminBrowseState[adminId];
+    delete adminTopupState[adminId];
     let st = adminInquiryState[adminId];
 
     if (!st || st.statusFilter !== statusFilter || refreshList) {
@@ -515,8 +630,6 @@ module.exports = function registerAdmin(bot, core) {
       deliverErrorReason = e?.message || 'خطأ في الإرسال';
       console.error('deliver inquiry reply to user failed:', deliverErrorReason);
     }
-
-    recordAuditEvent('رد على استعلام', `استعلام #${inquiryId} للعميل ${inquiry.user_id}`);
 
     delete userState[adminId];
     const deliveryNote = delivered
@@ -692,6 +805,7 @@ module.exports = function registerAdmin(bot, core) {
 
   async function renderAdminAdAt(ctx, adminId, filterType, index = 0, refreshList = false, mediaIndex = 0) {
     delete adminInquiryState[adminId];
+    delete adminTopupState[adminId];
     const stats = await getFullAdminStats();
     let st = adminBrowseState[adminId];
 
@@ -824,9 +938,68 @@ module.exports = function registerAdmin(bot, core) {
     await openAdminHome(ctx, true);
   });
 
-  bot.hears('📡 فحص ومراقبة النظام', async (ctx) => {
+  bot.hears(['💳 طلبات الشحن', '⏳ شحن معلق'], async (ctx) => {
     await safeDeleteUserMessage(ctx);
-    await runSystemMonitorCheck(ctx, ctx.from.id);
+    await renderAdminTopupAt(ctx, ctx.from.id, 'pending', 0, true);
+  });
+
+  bot.hears('✅ شحن موافق عليه', async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    await renderAdminTopupAt(ctx, ctx.from.id, 'approved', 0, true);
+  });
+
+  bot.hears('❌ شحن مرفوض', async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    await renderAdminTopupAt(ctx, ctx.from.id, 'rejected', 0, true);
+  });
+
+  bot.hears('📂 كل الشحن', async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    await renderAdminTopupAt(ctx, ctx.from.id, 'all', 0, true);
+  });
+
+  bot.hears('⬅️ الشحن السابق', async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    const adminId = ctx.from.id;
+    const st = adminTopupState[adminId];
+    if (!st) return renderAdminTopupAt(ctx, adminId, 'pending', 0, true);
+    await renderAdminTopupAt(ctx, adminId, st.statusFilter, Math.max((st.index || 0) - 1, 0), false);
+  });
+
+  bot.hears('الشحن التالي ➡️', async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    const adminId = ctx.from.id;
+    const st = adminTopupState[adminId];
+    if (!st) return renderAdminTopupAt(ctx, adminId, 'pending', 0, true);
+    await renderAdminTopupAt(ctx, adminId, st.statusFilter, (st.index || 0) + 1, false);
+  });
+
+  bot.hears(/^💳 \d+ \/ \d+$/, async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    const adminId = ctx.from.id;
+    const st = adminTopupState[adminId];
+    if (!st) return renderAdminTopupAt(ctx, adminId, 'pending', 0, true);
+    await renderAdminTopupAt(ctx, adminId, st.statusFilter, st.index || 0, true);
+  });
+
+  bot.hears(/^✉️ مراسلة العميل \((\d+)\)$/, async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    const adminId = ctx.from.id;
+    const targetUserId = Number(ctx.match[1]);
+
+    userState[adminId] = {
+      step: 'replying_to_support_user',
+      data: { targetUserId, adId: null },
+      chatId: ctx.chat.id,
+      wizardMsgId: null
+    };
+
+    await replyTracked(
+      ctx, adminId,
+      `✉️ <b>مراسلة العميل</b> <code>${targetUserId}</code>\n\nاكتب رسالتك أو أرفق صورة/فيديو لإرسالها مباشرة:`,
+      { parse_mode: 'HTML', ...Markup.keyboard([['🎛 لوحة الإدارة']]).resize() },
+      true
+    );
   });
 
   bot.hears(['📩 الاستعلامات', '📂 كل الاستعلامات'], async (ctx) => {
@@ -929,7 +1102,6 @@ module.exports = function registerAdmin(bot, core) {
     }
 
     await supabase.from('user_inquiries').update({ status: newStatus }).eq('id', inquiryId);
-    recordAuditEvent('تحديث حالة استعلام', `استعلام #${inquiryId} → ${newStatus}`);
     await ctx.answerCbQuery(`تم تحديث الحالة: ${INQUIRY_STATUS_LABELS[newStatus] || newStatus}`);
 
     const st = adminInquiryState[adminId];
@@ -1105,8 +1277,6 @@ module.exports = function registerAdmin(bot, core) {
         { parse_mode: 'HTML', ...getAdminMenuKeyboard() }, true);
     }
 
-    recordAuditEvent('مراسلة مستخدم', `إلى ${targetUserId}${adId ? ` (إعلان #${adId})` : ''}`);
-
     delete userState[adminId];
     const kb = core.previewMode[adminId] ? core.getMainMenuKeyboard(adminId) : getAdminMenuKeyboard();
     const doneAdText = adId ? ` بخصوص الإعلان <code>#${adId}</code>` : '';
@@ -1267,7 +1437,6 @@ module.exports = function registerAdmin(bot, core) {
           .update({ status: 'approved', reviewed_by: adminId, reviewed_at: nowIso })
           .eq('id', topupId);
 
-        recordAuditEvent('اعتماد شحن', `طلب #${topupId} (+${formatMoney(amount)}) للعميل ${targetUserId}`);
         await ctx.answerCbQuery('✅ تم اعتماد الشحن وإضافة الرصيد');
 
         await ctx.telegram.sendMessage(
@@ -1290,7 +1459,6 @@ module.exports = function registerAdmin(bot, core) {
           .update({ status: 'rejected', reviewed_by: adminId, reviewed_at: nowIso })
           .eq('id', topupId);
 
-        recordAuditEvent('رفض شحن', `طلب #${topupId} للعميل ${targetUserId}`);
         await ctx.answerCbQuery('❌ تم رفض طلب الشحن');
 
         await ctx.telegram.sendMessage(
@@ -1304,6 +1472,11 @@ module.exports = function registerAdmin(bot, core) {
           `❌ <b>تم رفض طلب الشحن (#${topupId})</b>\n` +
           `👤 العميل: <code>${targetUserId}</code> • المبلغ: <b>${formatMoney(amount)}</b>`
         );
+      }
+
+      const topupSt = adminTopupState[adminId];
+      if (topupSt) {
+        await renderAdminTopupAt(ctx, adminId, topupSt.statusFilter || 'pending', topupSt.index || 0, true);
       }
     } catch (err) {
       console.error(`Topup action error #${topupId}:`, err);
@@ -1324,7 +1497,6 @@ module.exports = function registerAdmin(bot, core) {
     try {
       if (action === 'delete_published') {
         await supabase.from('test_messages').delete().eq('id', requestId);
-        recordAuditEvent('حذف منشور', `إعلان #${requestId}`);
         await ctx.answerCbQuery('🗑 تم حذف الإعلان');
         await editCard(ctx, `🗑 <b>تم حذف الإعلان (#${requestId}) من المنصة.</b>`);
         return;
@@ -1343,7 +1515,6 @@ module.exports = function registerAdmin(bot, core) {
 
       if (action === 'requeue') {
         await supabase.from('pending_properties').update({ status: 'pending' }).eq('id', requestId);
-        recordAuditEvent('إعادة للمراجعة', `إعلان #${requestId}`);
         await ctx.answerCbQuery('♻️ أُعيد لقائمة المراجعة');
         await editCard(ctx, `♻️ <b>تمت إعادة الإعلان (#${requestId}) إلى قائمة المراجعة.</b>`);
         return;
@@ -1384,7 +1555,6 @@ module.exports = function registerAdmin(bot, core) {
         if (publishError) throw publishError;
 
         await supabase.from('pending_properties').update({ status: 'approved' }).eq('id', requestId);
-        recordAuditEvent('قبول ونشر إعلان', `إعلان #${requestId} للمعلن ${targetUserId}`);
         await ctx.answerCbQuery('✅ تم القبول والنشر');
 
         await ctx.telegram.sendMessage(
@@ -1401,7 +1571,6 @@ module.exports = function registerAdmin(bot, core) {
         );
       } else {
         await supabase.from('pending_properties').update({ status: 'rejected' }).eq('id', requestId);
-        recordAuditEvent('رفض إعلان', `إعلان #${requestId} للمعلن ${targetUserId}`);
         await ctx.answerCbQuery('❌ تم الرفض');
 
         const rejectUserMsg = isFreeAd
