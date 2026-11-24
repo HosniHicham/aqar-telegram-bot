@@ -17,7 +17,7 @@ module.exports = function registerUsers(bot, core) {
     getSetting, getAdminIds, getUserRecord, isUserVerified,
     chunkButtons, sanitizeNumericPrice, formatMoney, formatDateTime, escapeHtml, fitTelegramText,
     normalizeMediaRef, parseMediaListFromField, parseImagesFromImageUrl, buildOrderedBrowsingMedia,
-    getMainMenuKeyboard, getAuthKeyboard, getWebsiteUrl
+    getMainMenuKeyboard: rawGetMainMenuKeyboard, getAuthKeyboard, getWebsiteUrl
   } = core;
 
   const clientInquiryBrowse = {};
@@ -43,6 +43,57 @@ module.exports = function registerUsers(bot, core) {
     rejected: '❌ مرفوض'
   };
 
+  function getSupportButtonLabel(unreadRepliesCount = 0) {
+    return unreadRepliesCount > 0
+      ? `📞 الدعم والإدارة (${unreadRepliesCount})`
+      : '📞 الدعم والإدارة';
+  }
+
+  function applySupportBadgeToKeyboard(kbObj, unreadRepliesCount = 0) {
+    if (!kbObj || !kbObj.reply_markup || !Array.isArray(kbObj.reply_markup.keyboard)) {
+      return kbObj;
+    }
+    const targetLabel = getSupportButtonLabel(unreadRepliesCount);
+    const updatedRows = kbObj.reply_markup.keyboard.map(row =>
+      Array.isArray(row)
+        ? row.map(btn => {
+            if (typeof btn === 'string' && /^📞 الدعم والإدارة(?:\s*\(\d+\))?$/.test(btn)) {
+              return targetLabel;
+            }
+            if (btn && typeof btn === 'object' && typeof btn.text === 'string' && /^📞 الدعم والإدارة(?:\s*\(\d+\))?$/.test(btn.text)) {
+              return { ...btn, text: targetLabel };
+            }
+            return btn;
+          })
+        : row
+    );
+    return {
+      ...kbObj,
+      reply_markup: {
+        ...kbObj.reply_markup,
+        keyboard: updatedRows
+      }
+    };
+  }
+
+  async function buildUserMainKeyboard(userId, unreadCount = 0) {
+    let unreadRepliesCount = 0;
+    try {
+      const summary = await getClientRepliesSummary(userId);
+      unreadRepliesCount = summary.unreadRepliesCount || 0;
+    } catch (e) {}
+
+    const baseKb = typeof rawGetMainMenuKeyboard === 'function'
+      ? await rawGetMainMenuKeyboard(userId, unreadCount, unreadRepliesCount)
+      : Markup.keyboard([
+          ['🔍 تصفح العقارات المتاحة', '➕ إضافة عقار جديد'],
+          ['🎁 رصيدي وجمع النقاط', getSupportButtonLabel(unreadRepliesCount)],
+          ['🌐 تصفح الموقع الرسمي (البروزر)', 'ℹ️ عن المنصة']
+        ]).resize();
+
+    return applySupportBadgeToKeyboard(baseKb, unreadRepliesCount);
+  }
+
   async function uploadSingleReceiptToStorage(ctx, fileId, userId) {
     try {
       const fileLink = await ctx.telegram.getFileLink(fileId);
@@ -58,12 +109,13 @@ module.exports = function registerUsers(bot, core) {
 
   async function submitWalletTopupRequest(ctx, userId, amount, receiptFileId) {
     const unreadCount = core.messenger?.getUnreadCount ? await core.messenger.getUnreadCount(userId) : 0;
+    const mainKb = await buildUserMainKeyboard(userId, unreadCount);
     const cleanAmount = sanitizeNumericPrice(amount);
 
     if (!cleanAmount || cleanAmount <= 0 || !receiptFileId) {
       delete userState[userId];
       return replyTracked(ctx, userId, '⚠️ البيانات غير مكتملة، يرجى المحاولة مرة أخرى.', {
-        parse_mode: 'HTML', ...getMainMenuKeyboard(userId, unreadCount)
+        parse_mode: 'HTML', ...mainKb
       }, true);
     }
 
@@ -134,7 +186,7 @@ module.exports = function registerUsers(bot, core) {
       `💼 <b>المبلغ:</b> <b>${formatMoney(cleanAmount)}</b>\n` +
       `🕒 <b>التوقيت:</b> <code>${escapeHtml(submittedAt)}</code>\n\n` +
       `سيُضاف الرصيد إلى محفظتك فور تأكيد العملية من فريق المراجعة، لتكون جاهزاً متى شئت.`,
-      { parse_mode: 'HTML', ...getMainMenuKeyboard(userId, unreadCount) },
+      { parse_mode: 'HTML', ...mainKb },
       true
     );
   }
@@ -794,11 +846,12 @@ module.exports = function registerUsers(bot, core) {
     const userId = ctx.from.id;
     const userName = ctx.from.first_name || 'مستخدمنا الكريم';
     const unreadCount = core.messenger?.getUnreadCount ? await core.messenger.getUnreadCount(userId) : 0;
+    const mainKb = await buildUserMainKeyboard(userId, unreadCount);
     const rawWelcomeTpl = await getSetting('welcome_msg_template', 'أهلاً بك يا <b>{name}</b> في <b>منصة عقار الجزائر (Aqar)</b> 🏠\n\nنظام رقمي احترافي لإدارة وعروض العقارات. اختر من القائمة أدناه:');
     const welcomeText = rawWelcomeTpl.replace('{name}', userName).replace(/\\n/g, '\n');
     await replyTracked(ctx, userId, prefixNote + welcomeText, {
       parse_mode: 'HTML',
-      ...getMainMenuKeyboard(userId, unreadCount)
+      ...mainKb
     }, true);
   }
 
@@ -1041,6 +1094,7 @@ module.exports = function registerUsers(bot, core) {
     const currentPoints = user ? (user.points || 0) : 0;
     const publishCost = await getSetting('publish_cost_points', '100');
     const unreadCount = core.messenger?.getUnreadCount ? await core.messenger.getUnreadCount(userId) : 0;
+    const mainKb = await buildUserMainKeyboard(userId, unreadCount);
 
     if (state.step === 'waiting_for_payment_choice' && !opts.footer) {
       opts.footer =
@@ -1060,7 +1114,7 @@ module.exports = function registerUsers(bot, core) {
       return;
     }
 
-    const replyKeyboard = opts.noKeyboard ? getMainMenuKeyboard(userId, unreadCount) : await getStandardReplyKeyboard(state);
+    const replyKeyboard = opts.noKeyboard ? mainKb : await getStandardReplyKeyboard(state);
 
     const sent = await ctx.reply(text, { parse_mode: 'HTML', ...replyKeyboard });
     const oldId = state.wizardMsgId;
@@ -1133,8 +1187,9 @@ module.exports = function registerUsers(bot, core) {
 
       delete userState[userId];
       const unreadCount = core.messenger?.getUnreadCount ? await core.messenger.getUnreadCount(userId) : 0;
+      const mainKb = await buildUserMainKeyboard(userId, unreadCount);
       await replyTracked(ctx, userId, '🎉 <b>تم توثيق حسابك بنجاح!</b>', {
-        parse_mode: 'HTML', ...getMainMenuKeyboard(userId, unreadCount)
+        parse_mode: 'HTML', ...mainKb
       }, true);
     } catch (err) {
       await replyTracked(ctx, userId, '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.');
@@ -1162,8 +1217,9 @@ module.exports = function registerUsers(bot, core) {
     if (core.messenger?.messengerSession) delete core.messenger.messengerSession[userId];
 
     const unreadCount = core.messenger?.getUnreadCount ? await core.messenger.getUnreadCount(userId) : 0;
+    const mainKb = await buildUserMainKeyboard(userId, unreadCount);
     await replyTracked(ctx, userId, '✅ العودة إلى القائمة الرئيسية:', {
-      parse_mode: 'HTML', ...getMainMenuKeyboard(userId, unreadCount)
+      parse_mode: 'HTML', ...mainKb
     }, true);
   });
 
@@ -1254,32 +1310,35 @@ module.exports = function registerUsers(bot, core) {
     await safeDeleteUserMessage(ctx);
     const userId = ctx.from.id;
     const unreadCount = core.messenger?.getUnreadCount ? await core.messenger.getUnreadCount(userId) : 0;
+    const mainKb = await buildUserMainKeyboard(userId, unreadCount);
     if (!getWebsiteUrl()) {
-      return replyTracked(ctx, userId, '⚠️ الموقع غير متاح حالياً.', { ...getMainMenuKeyboard(userId, unreadCount) }, true);
+      return replyTracked(ctx, userId, '⚠️ الموقع غير متاح حالياً.', { ...mainKb }, true);
     }
     await replyTracked(ctx, userId, '🌐 <b>منصة عقار الجزائر</b>', {
       parse_mode: 'HTML',
       ...Markup.inlineKeyboard([[Markup.button.url('🌐 فتح الموقع الرسمي', getWebsiteUrl())]])
     }, true);
-    await ctx.reply('👇', { ...getMainMenuKeyboard(userId, unreadCount) }).then(m => trackBotMessage(userId, ctx.chat.id, m.message_id)).catch(() => {});
+    await ctx.reply('👇', { ...mainKb }).then(m => trackBotMessage(userId, ctx.chat.id, m.message_id)).catch(() => {});
   });
 
   bot.hears('ℹ️ عن المنصة', async (ctx) => {
     await safeDeleteUserMessage(ctx);
     const userId = ctx.from.id;
     const unreadCount = core.messenger?.getUnreadCount ? await core.messenger.getUnreadCount(userId) : 0;
+    const mainKb = await buildUserMainKeyboard(userId, unreadCount);
     const aboutMsg = await getSetting('about_text', '🏛 <b>عن منصة عقار الجزائر (Aqar System):</b>\n\nنظام رقمي ذكي ومتطور لإدارة المعاملات العقارية.');
-    await replyTracked(ctx, userId, aboutMsg, { parse_mode: 'HTML', ...getMainMenuKeyboard(userId, unreadCount) }, true);
+    await replyTracked(ctx, userId, aboutMsg, { parse_mode: 'HTML', ...mainKb }, true);
   });
 
   async function showStatesMenu(ctx) {
     const userId = ctx.from.id;
     const unreadCount = core.messenger?.getUnreadCount ? await core.messenger.getUnreadCount(userId) : 0;
+    const mainKb = await buildUserMainKeyboard(userId, unreadCount);
     try {
       const { data, error } = await supabase.from('test_messages').select('state_name');
       if (error) throw error;
       if (!data || data.length === 0) {
-        return replyTracked(ctx, userId, '📭 عذراً، لا توجد أي عقارات مسجلة في المنصة حالياً.', getMainMenuKeyboard(userId, unreadCount), true);
+        return replyTracked(ctx, userId, '📭 عذراً، لا توجد أي عقارات مسجلة في المنصة حالياً.', mainKb, true);
       }
 
       const uniqueStates = [...new Set(data.map(item => item.state_name).filter(Boolean))];
@@ -1291,7 +1350,7 @@ module.exports = function registerUsers(bot, core) {
       await replyTracked(ctx, userId, browseTitle, { parse_mode: 'HTML', ...Markup.keyboard(chunkedStates).resize() }, true);
     } catch (err) {
       console.error('showStatesMenu error:', err);
-      await replyTracked(ctx, userId, '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getMainMenuKeyboard(userId, unreadCount), true);
+      await replyTracked(ctx, userId, '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', mainKb, true);
     }
   }
 
@@ -1346,6 +1405,7 @@ module.exports = function registerUsers(bot, core) {
     session.selectingPage = false;
 
     const unreadCount = core.messenger?.getUnreadCount ? await core.messenger.getUnreadCount(userId) : 0;
+    const mainKb = await buildUserMainKeyboard(userId, unreadCount);
 
     try {
       let query = supabase.from('test_messages').select('*').order('id', { ascending: false });
@@ -1354,7 +1414,7 @@ module.exports = function registerUsers(bot, core) {
       const { data, error } = await query;
       if (error) throw error;
       if (!data || data.length === 0) {
-        return replyTracked(ctx, userId, '📭 عذراً، لا توجد عقارات مسجلة.', getMainMenuKeyboard(userId, unreadCount), true);
+        return replyTracked(ctx, userId, '📭 عذراً، لا توجد عقارات مسجلة.', mainKb, true);
       }
 
       if (pageIndex < 0) pageIndex = 0;
@@ -1417,7 +1477,7 @@ module.exports = function registerUsers(bot, core) {
       await clearTrackedBotMessages(ctx, userId, keepId);
     } catch (err) {
       console.error('renderPropertyPage error:', err);
-      await replyTracked(ctx, userId, '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getMainMenuKeyboard(userId, unreadCount), true);
+      await replyTracked(ctx, userId, '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', mainKb, true);
     }
   }
 
@@ -1617,6 +1677,7 @@ module.exports = function registerUsers(bot, core) {
     if (!state || state.step !== 'waiting_for_payment_choice') return;
 
     const unreadCount = core.messenger?.getUnreadCount ? await core.messenger.getUnreadCount(userId) : 0;
+    const mainKb = await buildUserMainKeyboard(userId, unreadCount);
     state.data.payment_label = '🆓 إعلان مجاني (بانتظار الإدارة)';
     state.step = 'publishing';
 
@@ -1715,7 +1776,7 @@ module.exports = function registerUsers(bot, core) {
         `🆓 <b>نوع الطلب:</b> إعلان مجاني\n` +
         `🕒 <b>تاريخ ووقت الإرسال:</b> <code>${escapeHtml(submittedAt)}</code>\n\n` +
         `سيتم نشره في التصفح فور موافقة الإدارة عليه.`,
-        { parse_mode: 'HTML', ...getMainMenuKeyboard(userId, unreadCount) },
+        { parse_mode: 'HTML', ...mainKb },
         true
       );
     } catch (err) {
@@ -1724,7 +1785,7 @@ module.exports = function registerUsers(bot, core) {
       await replyTracked(
         ctx, userId,
         `⚠️ <b>تعذر إرسال الإعلان المجاني إلى قائمة الانتظار:</b>\n<code>${escapeHtml(err.message || 'خطأ غير معروف')}</code>`,
-        { parse_mode: 'HTML', ...getMainMenuKeyboard(userId, unreadCount) },
+        { parse_mode: 'HTML', ...mainKb },
         true
       );
     }
@@ -1737,6 +1798,7 @@ module.exports = function registerUsers(bot, core) {
     if (!state || state.step !== 'waiting_for_payment_choice') return;
 
     const unreadCount = core.messenger?.getUnreadCount ? await core.messenger.getUnreadCount(userId) : 0;
+    const mainKb = await buildUserMainKeyboard(userId, unreadCount);
     const user = await getUserRecord(userId);
     const currentPoints = user ? (user.points || 0) : 0;
     const publishCost = Number(await getSetting('publish_cost_points', '100'));
@@ -1781,13 +1843,13 @@ module.exports = function registerUsers(bot, core) {
       delete userState[userId];
       await replyTracked(ctx, userId,
         `🎉 <b>تم خصم ${publishCost} نقطة ونشر إعلانك بنجاح في المنصة مجاناً!</b>\n🕒 <b>تاريخ ووقت النشر:</b> <code>${escapeHtml(formatDateTime(nowIso))}</code>`,
-        { parse_mode: 'HTML', ...getMainMenuKeyboard(userId, unreadCount) },
+        { parse_mode: 'HTML', ...mainKb },
         true
       );
     } catch (err) {
       console.error('Free publish error:', err);
       delete userState[userId];
-      await replyTracked(ctx, userId, '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getMainMenuKeyboard(userId, unreadCount), true);
+      await replyTracked(ctx, userId, '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', mainKb, true);
     }
   });
 
@@ -2302,7 +2364,7 @@ module.exports = function registerUsers(bot, core) {
     await processAdInquiryAction(ctx, ctx.from.id, ctx.match[1], ctx.match[2]);
   });
 
-  bot.hears('📞 الدعم والإدارة', async (ctx) => {
+  bot.hears(/^📞 الدعم والإدارة(?:\s*\(\d+\))?$/, async (ctx) => {
     await safeDeleteUserMessage(ctx);
     await openSupportDashboard(ctx, ctx.from.id);
   });
@@ -2878,6 +2940,7 @@ module.exports = function registerUsers(bot, core) {
     const userId = ctx.from.id;
     const state = userState[userId];
     const unreadCount = core.messenger?.getUnreadCount ? await core.messenger.getUnreadCount(userId) : 0;
+    const mainKb = await buildUserMainKeyboard(userId, unreadCount);
 
     await safeDeleteUserMessage(ctx);
 
@@ -2894,7 +2957,7 @@ module.exports = function registerUsers(bot, core) {
         return replyTracked(
           ctx, userId,
           `⚠️ <b>تعذر تسجيل طلب الشحن:</b> <code>${escapeHtml(err.message || 'خطأ')}</code>`,
-          { parse_mode: 'HTML', ...getMainMenuKeyboard(userId, unreadCount) },
+          { parse_mode: 'HTML', ...mainKb },
           true
         );
       }
@@ -3047,13 +3110,13 @@ module.exports = function registerUsers(bot, core) {
         delete userState[userId];
         await replyTracked(ctx, userId,
           `⏳ <b>تم استلام وصل الدفع وحفظ طلبك برقم (#${requestId})!</b>\n🕒 <b>التاريخ والوقت:</b> <code>${escapeHtml(submittedAt)}</code>\n\nالإعلان قيد المراجعة من طرف الإدارة وسيتم نشره فور تأكيد التحويل.`,
-          { parse_mode: 'HTML', ...getMainMenuKeyboard(userId, unreadCount) },
+          { parse_mode: 'HTML', ...mainKb },
           true
         );
       } catch (err) {
         console.error('Receipt publish error:', err);
         delete userState[userId];
-        await replyTracked(ctx, userId, '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', getMainMenuKeyboard(userId, unreadCount), true);
+        await replyTracked(ctx, userId, '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', mainKb, true);
       }
     }
   });
