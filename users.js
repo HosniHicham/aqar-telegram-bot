@@ -37,6 +37,12 @@ module.exports = function registerUsers(bot, core) {
     super_admin: '👑 الإدارة العامة'
   };
 
+  const TOPUP_STATUS_TEXT = {
+    pending: '⏳ معلق',
+    approved: '✅ مقبول',
+    rejected: '❌ مرفوض'
+  };
+
   async function uploadSingleReceiptToStorage(ctx, fileId, userId) {
     try {
       const fileLink = await ctx.telegram.getFileLink(fileId);
@@ -133,9 +139,31 @@ module.exports = function registerUsers(bot, core) {
     );
   }
 
+  async function fetchUserWalletTopups(userId) {
+    try {
+      const { data, error } = await supabase
+        .from('wallet_topups')
+        .select('*')
+        .eq('user_id', Number(userId))
+        .order('id', { ascending: false })
+        .limit(20);
+
+      if (error || !data) return [];
+      return data;
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function formatTopupChoiceLabel(topup) {
+    const stIcon = topup.status === 'approved' ? '✅' : topup.status === 'rejected' ? '❌' : '⏳';
+    const amtText = formatMoney(sanitizeNumericPrice(topup.amount || 0));
+    return `${stIcon} شحن #${topup.id} • ${amtText}`;
+  }
+
   function inferTargetRole(titleText = '', detailText = '') {
     const src = `${titleText} ${detailText}`.toLowerCase();
-    if (/دفع|وصل|baridimob|ccp|payment/.test(src)) return 'payments_admin';
+    if (/دفع|وصل|baridimob|ccp|payment|شحن/.test(src)) return 'payments_admin';
     if (/نقاط|مكافآت|رصيد|points/.test(src)) return 'points_admin';
     if (/معلق|مرفوض|مراجعة|تذكير|إعلان|التواصل|reject|pending|remind|re_review|no_contact|ad_note/.test(src)) {
       return 'ads_reviewer';
@@ -150,7 +178,7 @@ module.exports = function registerUsers(bot, core) {
     if (/لماذا تم رفض/.test(titleText)) return 'why_rejected';
     if (/إعادة مراجعة/.test(titleText)) return 're_review';
     if (/ملاحظة أو استفسار/.test(titleText)) return 'ad_note';
-    if (/مشكلة في الدفع/.test(titleText)) return 'payment_issue';
+    if (/مشكلة في الدفع|شحن/.test(titleText)) return 'payment_issue';
     if (/النقاط/.test(titleText)) return 'points_issue';
     if (/اقتراح/.test(titleText)) return 'suggestion';
     if (/شكر/.test(titleText)) return 'thanks';
@@ -1654,7 +1682,6 @@ module.exports = function registerUsers(bot, core) {
   };
 
   const QUICK_SUPPORT_PRESETS = {
-    '💳 مشكلة في الدفع': 'العميل يبلغ عن مشكلة أو استفسار بخصوص الدفع.',
     '🏠 إعلان أو تصفح عقاري': 'العميل لديه استفسار بخصوص الإعلانات أو التصفح العقاري.',
     '🪙 النقاط والمكافآت': 'العميل يستفسر عن النقاط والمكافآت.',
     '💡 اقتراح أو تحسين': 'العميل يشارك اقتراحاً أو فكرة لتحسين المنصة.',
@@ -1794,6 +1821,7 @@ module.exports = function registerUsers(bot, core) {
     const rejectedCount = allAds.filter(a => a.ad_status === 'rejected').length;
 
     const points = dbUser?.points ?? 0;
+    const walletBalance = formatMoney(sanitizeNumericPrice(dbUser?.wallet_balance || 0));
     const name = escapeHtml(dbUser?.first_name || ctx.from.first_name || 'عميلنا الكريم');
     const supportIntro = (await getSetting('support_text', '')).replace(/\\n/g, '\n');
 
@@ -1804,6 +1832,7 @@ module.exports = function registerUsers(bot, core) {
       `🎛 <b>لوحة العميل ومركز الدعم</b>\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
       `👋 أهلاً بك يا <b>${name}</b>\n` +
+      `💼 <b>رصيد المحفظة:</b> <b>${walletBalance}</b>\n` +
       `🪙 <b>رصيد النقاط:</b> <b>${points} نقطة</b>\n` +
       `📨 <b>استعلاماتك المسجلة:</b> <b>${myInquiries.length}</b>\n` +
       `📊 <b>إعلاناتك:</b> إجمالي <b>${allAds.length}</b> | ⏳ معلق: <b>${pendingCount}</b> | ✅ مقبول: <b>${approvedCount}</b> | ❌ مرفوض: <b>${rejectedCount}</b>` +
@@ -1905,7 +1934,7 @@ module.exports = function registerUsers(bot, core) {
     return candidate;
   }
 
-  async function sendStructuredTicketToAdmins(ctx, senderUserId, ticketTitle, detailText, relatedAd = null, payloadType = 'text', mediaContent = {}, fallbackAdId = null) {
+  async function sendStructuredTicketToAdmins(ctx, senderUserId, ticketTitle, detailText, relatedAd = null, payloadType = 'text', mediaContent = {}, fallbackAdId = null, forcedAttachmentUrl = null) {
     const adminIds = await getAdminIds();
     const dbUser = await getUserRecord(senderUserId);
     const fullName = escapeHtml(
@@ -1914,7 +1943,7 @@ module.exports = function registerUsers(bot, core) {
     const phoneLine = dbUser?.phone_number ? `\n📞 <b>هاتف العميل:</b> <code>${escapeHtml(dbUser.phone_number)}</code>` : '';
 
     const resolvedAd = await resolvePendingRecordForReview(relatedAd, senderUserId, fallbackAdId);
-    const receiptRef = normalizeMediaRef(resolvedAd?.receipt_url);
+    const receiptRef = normalizeMediaRef(resolvedAd?.receipt_url || forcedAttachmentUrl);
     const isFreeAd = resolvedAd?.receipt_url === 'FREE_NO_RECEIPT';
 
     const adIdNum = Number(resolvedAd?.id || fallbackAdId);
@@ -1926,7 +1955,7 @@ module.exports = function registerUsers(bot, core) {
         ? `tg:${mediaContent.fileId}`
         : payloadType === 'video' && mediaContent.fileId
         ? `tg:${mediaContent.fileId}`
-        : null;
+        : (forcedAttachmentUrl || null);
 
     const savedInquiry = await saveInquiryToSupabase({
       userId: senderUserId,
@@ -2004,7 +2033,7 @@ module.exports = function registerUsers(bot, core) {
           await ctx.telegram.sendVideo(adminId, mediaContent.fileId, { caption: cap, parse_mode: 'HTML', ...replyMarkup });
         } else if (receiptRef) {
           const receiptCaption = fitTelegramText(
-            fullAdminText + `\n\n🧾 <b>وصل الدفع (الفيرسمون) المرفق داخل الرسالة أعلاه 👆</b>`,
+            fullAdminText + `\n\n🧾 <b>وصل الدفع المرفق داخل الرسالة أعلاه 👆</b>`,
             true
           );
           try {
@@ -2311,7 +2340,69 @@ module.exports = function registerUsers(bot, core) {
       { parse_mode: 'HTML', ...getSupportCategoriesKeyboard() }, true);
   });
 
-  bot.hears(['💳 مشكلة في الدفع', '🏠 إعلان أو تصفح عقاري', '🪙 النقاط والمكافآت', '💡 اقتراح أو تحسين', '👏 شكر أو ملاحظة إيجابية', '💬 استفسار عام / أخرى'], async (ctx) => {
+  bot.hears('💳 مشكلة في الدفع', async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    const userId = ctx.from.id;
+    const topups = await fetchUserWalletTopups(userId);
+
+    if (!topups || topups.length === 0) {
+      userState[userId] = {
+        step: 'payment_issue_writing_detail',
+        data: { selectedTopup: null },
+        chatId: ctx.chat.id,
+        wizardMsgId: null
+      };
+
+      return replyTracked(
+        ctx, userId,
+        `💳 <b>مشكلة في الدفع</b>\n` +
+        `━━━━━━━━━━━━━━━━━━━━\n` +
+        `لم نعثر على عمليات شحن سابقة مسجلة لحسابك.\n` +
+        `اكتب الآن تفاصيل مشكلة الدفع أو اختر سبباً سريعاً ليتم تسجيلها كاستعلام وإرسالها للإدارة:`,
+        {
+          parse_mode: 'HTML',
+          ...Markup.keyboard([
+            ['⏳ لم يصلني الرصيد بعد', '❌ تم رفض الدفع بدون سبب واضح'],
+            ['💬 دعم واقتراحات وشكر', '⬅️ لوحة العميل']
+          ]).resize()
+        },
+        true
+      );
+    }
+
+    const labelToTopup = {};
+    const summaryLines = topups.map((t, i) => {
+      const lbl = formatTopupChoiceLabel(t);
+      labelToTopup[lbl] = t;
+      const stText = TOPUP_STATUS_TEXT[t.status] || t.status || 'pending';
+      const amtText = formatMoney(sanitizeNumericPrice(t.amount || 0));
+      const dtText = t.created_at ? ` • <code>${escapeHtml(formatDateTime(t.created_at))}</code>` : '';
+      return `${i + 1}. <b>#${t.id}</b> — <b>${amtText}</b> (${stText})${dtText}`;
+    });
+
+    userState[userId] = {
+      step: 'payment_issue_selecting_topup',
+      data: { labelToTopup },
+      chatId: ctx.chat.id,
+      wizardMsgId: null
+    };
+
+    const btnRows = chunkButtons(Object.keys(labelToTopup), 2);
+    btnRows.push(['💬 دعم واقتراحات وشكر', '⬅️ لوحة العميل']);
+    btnRows.push(['🏠 القائمة الرئيسية']);
+
+    await replyTracked(
+      ctx, userId,
+      `💳 <b>مشكلة في الدفع — اختر الدفعة المعنية:</b>\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `${summaryLines.join('\n')}\n\n` +
+      `👇 <b>اضغط على الدفعة التي تواجه فيها مشكلة لكتابة استعلامك بخصوصها:</b>`,
+      { parse_mode: 'HTML', ...Markup.keyboard(btnRows).resize() },
+      true
+    );
+  });
+
+  bot.hears(['🏠 إعلان أو تصفح عقاري', '🪙 النقاط والمكافآت', '💡 اقتراح أو تحسين', '👏 شكر أو ملاحظة إيجابية', '💬 استفسار عام / أخرى'], async (ctx) => {
     await safeDeleteUserMessage(ctx);
     const userId = ctx.from.id;
     const chosenCat = ctx.message.text.trim();
@@ -2347,6 +2438,80 @@ module.exports = function registerUsers(bot, core) {
 
     const state = userState[userId];
     if (!state) return;
+
+    if (state.step === 'payment_issue_selecting_topup') {
+      await safeDeleteUserMessage(ctx);
+      const chosenTopup = state.data?.labelToTopup?.[userText];
+      if (!chosenTopup) {
+        return replyTracked(
+          ctx, userId,
+          `⚠️ <b>يرجى اختيار إحدى الدفعات من الأزرار الظاهرة في الأسفل:</b>`,
+          { parse_mode: 'HTML' },
+          true
+        );
+      }
+
+      state.step = 'payment_issue_writing_detail';
+      state.data = { selectedTopup: chosenTopup };
+
+      const amtText = formatMoney(sanitizeNumericPrice(chosenTopup.amount || 0));
+      const stText = TOPUP_STATUS_TEXT[chosenTopup.status] || chosenTopup.status || 'pending';
+      const dtText = chosenTopup.created_at ? formatDateTime(chosenTopup.created_at) : 'غير مسجل';
+
+      return replyTracked(
+        ctx, userId,
+        `💳 <b>استعلام حول الدفعة #${chosenTopup.id}</b>\n` +
+        `━━━━━━━━━━━━━━━━━━━━\n` +
+        `• <b>المبلغ:</b> <b>${amtText}</b>\n` +
+        `• <b>حالة الدفعة:</b> <b>${stText}</b>\n` +
+        `• <b>تاريخ العملية:</b> <code>${escapeHtml(dtText)}</code>\n\n` +
+        `✍️ <b>اكتب الآن استفسارك أو تفاصيل المشكلة بخصوص هذه الدفعة، أو اختر سبباً سريعاً من الأسفل:</b>`,
+        {
+          parse_mode: 'HTML',
+          ...Markup.keyboard([
+            ['⏳ لم يصلني الرصيد بعد', '❌ تم رفض الدفع بدون سبب واضح'],
+            ['💬 دعم واقتراحات وشكر', '⬅️ لوحة العميل']
+          ]).resize()
+        },
+        true
+      );
+    }
+
+    if (state.step === 'payment_issue_writing_detail') {
+      await safeDeleteUserMessage(ctx);
+      const topup = state.data?.selectedTopup || null;
+      const topupRef = topup ? normalizeMediaRef(topup.receipt_urls || topup.receipt_url) : null;
+
+      const subjectTitle = topup
+        ? `مشكلة في الدفع — طلب شحن #${topup.id}`
+        : 'مشكلة في الدفع';
+
+      const topupContextLine = topup
+        ? `[بيانات الدفعة: طلب #${topup.id} | المبلغ: ${formatMoney(sanitizeNumericPrice(topup.amount || 0))} | الحالة الحالية: ${TOPUP_STATUS_TEXT[topup.status] || topup.status || 'pending'} | التاريخ: ${topup.created_at ? formatDateTime(topup.created_at) : 'غير مسجل'}]\n`
+        : '';
+
+      const savedInq = await sendStructuredTicketToAdmins(
+        ctx,
+        userId,
+        subjectTitle,
+        `${topupContextLine}تفاصيل الاستعلام: ${userText}`,
+        null,
+        'text',
+        {},
+        null,
+        topupRef
+      );
+
+      delete userState[userId];
+      const inqTag = savedInq?.id ? `\n🔖 <b>رقم الاستعلام المسجل:</b> <code>#${savedInq.id}</code>` : '';
+
+      return replyTracked(
+        ctx, userId,
+        `✅ <b>تم تسجيل استعلامك حول الدفعة وإرساله إلى الإدارة.</b>${inqTag}\nيمكنك متابعة الردود من قسم <b>"📨 استعلاماتي وردود الإدارة"</b>.`,
+        { parse_mode: 'HTML', ...getSupportHubKeyboard() },
+        true
+      );
+    }
 
     if (state.step === 'topup_waiting_amount') {
       await safeDeleteUserMessage(ctx);
