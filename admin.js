@@ -22,6 +22,41 @@ module.exports = function registerAdmin(bot, core) {
   const adminBrowseState = {};
   const adminInquiryState = {};
   const adminTopupState = {};
+  const lastAdminButtonHintAt = {};
+
+  // الخطوات المسموح فيها بالكتابة اليدوية للأدمن (تُستثنى من تنبيه "استعمل الأزرار")
+  const ADMIN_FREE_TEXT_STEPS = new Set([
+    'searching_admin_ads',
+    'replying_to_inquiry',
+    'replying_to_support_user'
+  ]);
+
+  function isAdminFreeTextAllowed(adminId) {
+    const st = userState[adminId];
+    return Boolean(st && ADMIN_FREE_TEXT_STEPS.has(st.step));
+  }
+
+  async function notifyAdminUseButtonsHint(ctx, adminId) {
+    if (isAdminFreeTextAllowed(adminId)) return;
+
+    // مسح رسالة المستخدم/الأدمن فوراً حتى لا تبقى في المحادثة
+    await safeDeleteUserMessage(ctx);
+
+    const now = Date.now();
+    if (lastAdminButtonHintAt[adminId] && now - lastAdminButtonHintAt[adminId] < 3500) return;
+    lastAdminButtonHintAt[adminId] = now;
+
+    const hintMsg = await ctx.reply(
+      '👇 <b>يرجى استعمال الأزرار التفاعلية في الأسفل</b> — هذا الموضع غير مخصص للكتابة اليدوية.',
+      { parse_mode: 'HTML' }
+    ).catch(() => null);
+
+    if (hintMsg?.message_id) {
+      setTimeout(() => {
+        ctx.telegram.deleteMessage(ctx.chat.id, hintMsg.message_id).catch(() => {});
+      }, 2500);
+    }
+  }
 
   const ROLE_LABELS = {
     ads_reviewer: '🏠 مراجعة الإعلانات',
@@ -1290,17 +1325,18 @@ module.exports = function registerAdmin(bot, core) {
     const state = userState[adminId];
     const text = ctx.message.text ? ctx.message.text.trim() : '';
 
-    await safeDeleteUserMessage(ctx);
-
     if (text === core.WAIT_BTN_TEXT) {
+      await safeDeleteUserMessage(ctx);
       return;
     }
 
     if (text.startsWith('/') && text !== '/start') {
+      await safeDeleteUserMessage(ctx);
       return openAdminHome(ctx);
     }
 
     if (state && state.step === 'searching_admin_ads') {
+      await safeDeleteUserMessage(ctx);
       delete userState[adminId];
       const matches = await searchAdminAds(text);
       adminBrowseState[adminId] = {
@@ -1314,6 +1350,7 @@ module.exports = function registerAdmin(bot, core) {
     }
 
     if (state && state.step === 'replying_to_inquiry') {
+      await safeDeleteUserMessage(ctx);
       const inquiryId = state.data?.inquiryId;
       if (!inquiryId) {
         delete userState[adminId];
@@ -1323,6 +1360,7 @@ module.exports = function registerAdmin(bot, core) {
     }
 
     if (state && state.step === 'replying_to_support_user') {
+      await safeDeleteUserMessage(ctx);
       const targetUserId = state.data?.targetUserId;
       const adId = state.data?.adId || null;
       if (!targetUserId) {
@@ -1332,7 +1370,7 @@ module.exports = function registerAdmin(bot, core) {
       return deliverAdminReplyToUser(ctx, adminId, targetUserId, 'text', { text }, adId);
     }
 
-    return openAdminHome(ctx);
+    await notifyAdminUseButtonsHint(ctx, adminId);
   });
 
   bot.on('photo', async (ctx, next) => {
@@ -1599,4 +1637,3 @@ module.exports = function registerAdmin(bot, core) {
 
   return { openAdminHome };
 };
-
