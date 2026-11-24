@@ -6,6 +6,7 @@
 // - إدارة ومعاينة استعلامات المستخدمين (user_inquiries) وسجل الردود (inquiry_replies)
 // - المرفق في الاستعلام والرد مدمج داخل نفس الرسالة (caption) بدون رسائل مرفق منفصلة
 // - مراسلة ناشر الإعلان بخصوص الإعلان (#ID) في كل الحالات (بما فيها المنشورة)
+// - اعتماد ورفض طلبات الشحن المسبق (wallet_topups) وتحديث رصيد المحفظة (wallet_balance)
 // =========================================================================
 
 module.exports = function registerAdmin(bot, core) {
@@ -1143,6 +1144,102 @@ module.exports = function registerAdmin(bot, core) {
       await ctx.editMessageText(text, extra).catch(() => {});
     }
   }
+
+  bot.action(/^(topup_approve|topup_reject)_(\d+)$/, async (ctx) => {
+    const actionType = ctx.match[1];
+    const topupId = Number(ctx.match[2]);
+    const adminId = ctx.from.id;
+
+    const adminIds = await getAdminIds();
+    if (!adminIds.includes(adminId)) {
+      return ctx.answerCbQuery('⛔ هذا الإجراء مخصص للإدارة فقط.', { show_alert: true });
+    }
+
+    try {
+      const { data: topup, error } = await supabase
+        .from('wallet_topups')
+        .select('*')
+        .eq('id', topupId)
+        .single();
+
+      if (error || !topup) {
+        await ctx.answerCbQuery('⚠️ طلب الشحن غير موجود', { show_alert: true });
+        return editCard(ctx, `⚠️ <b>طلب الشحن (#${topupId}) غير موجود أو تمت معالجته.</b>`);
+      }
+
+      if (topup.status !== 'pending') {
+        await ctx.answerCbQuery(`ℹ️ الطلب حالته الحالية: ${topup.status}`, { show_alert: true });
+        return;
+      }
+
+      const nowIso = new Date().toISOString();
+      const targetUserId = Number(topup.user_id);
+      const amount = sanitizeNumericPrice(topup.amount || 0);
+
+      if (actionType === 'topup_approve') {
+        const { data: targetUser } = await supabase
+          .from('users')
+          .select('wallet_balance')
+          .eq('id', targetUserId)
+          .single();
+
+        const currentWallet = sanitizeNumericPrice(targetUser?.wallet_balance || 0);
+        const newWallet = currentWallet + amount;
+
+        const { error: balErr } = await supabase
+          .from('users')
+          .update({ wallet_balance: newWallet })
+          .eq('id', targetUserId);
+
+        if (balErr) throw balErr;
+
+        await supabase
+          .from('wallet_topups')
+          .update({ status: 'approved', reviewed_by: adminId, reviewed_at: nowIso })
+          .eq('id', topupId);
+
+        await ctx.answerCbQuery('✅ تم اعتماد الشحن وإضافة الرصيد');
+
+        await ctx.telegram.sendMessage(
+          targetUserId,
+          `🎉 <b>تمت الموافقة على طلب الشحن المسبق (#${topupId})!</b>\n` +
+          `💰 <b>المبلغ المضاف:</b> +${formatMoney(amount)}\n` +
+          `💼 <b>رصيد محفظتك الحالي:</b> <b>${formatMoney(newWallet)}</b>`,
+          { parse_mode: 'HTML' }
+        ).catch(() => {});
+
+        await editCard(
+          ctx,
+          `✅ <b>تم اعتماد طلب الشحن (#${topupId}) وإضافة الرصيد</b>\n` +
+          `👤 العميل: <code>${targetUserId}</code> • المبلغ: <b>${formatMoney(amount)}</b>\n` +
+          `💼 الرصيد الجديد: <b>${formatMoney(newWallet)}</b>`
+        );
+      } else {
+        await supabase
+          .from('wallet_topups')
+          .update({ status: 'rejected', reviewed_by: adminId, reviewed_at: nowIso })
+          .eq('id', topupId);
+
+        await ctx.answerCbQuery('❌ تم رفض طلب الشحن');
+
+        await ctx.telegram.sendMessage(
+          targetUserId,
+          `❌ <b>نعتذر، تعذّر اعتماد طلب الشحن المسبق (#${topupId})</b> بقيمة <b>${formatMoney(amount)}</b>. يرجى مراجعة وصل الدفع أو التواصل مع الدعم.`,
+          { parse_mode: 'HTML' }
+        ).catch(() => {});
+
+        await editCard(
+          ctx,
+          `❌ <b>تم رفض طلب الشحن (#${topupId})</b>\n` +
+          `👤 العميل: <code>${targetUserId}</code> • المبلغ: <b>${formatMoney(amount)}</b>`
+        );
+      }
+    } catch (err) {
+      console.error(`Topup action error #${topupId}:`, err);
+      await ctx.answerCbQuery('⚠️ تعذرت العملية', { show_alert: true }).catch(() => {});
+      await ctx.reply(`⚠️ تعذرت معالجة طلب الشحن #${topupId}: ${escapeHtml(err.message)}`, { parse_mode: 'HTML' }).catch(() => {});
+    }
+  });
 
   const handleAdminAction = async (ctx, action) => {
     const requestId = Number(ctx.match[1]);
