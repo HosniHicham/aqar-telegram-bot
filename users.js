@@ -22,6 +22,7 @@ module.exports = function registerUsers(bot, core) {
 
   const clientInquiryBrowse = {};
   const lastButtonHintAt = {};
+  const buttonHintTimers = {};
 
   // الخطوات والمواضع المسموح فيها بالكتابة اليدوية (تُستثنى من تنبيه "استعمل الأزرار")
   const FREE_TEXT_STEPS = new Set([
@@ -45,9 +46,20 @@ module.exports = function registerUsers(bot, core) {
   async function notifyUseButtonsHint(ctx, userId) {
     if (isFreeTextInputAllowed(userId, ctx.message?.text ? ctx.message.text.trim() : '')) return;
 
+    // حذف رسالة المستخدم نفسها فوراً حتى لا تبقى معلّقة في المحادثة
+    await safeDeleteUserMessage(ctx);
+
     const now = Date.now();
     if (lastButtonHintAt[userId] && now - lastButtonHintAt[userId] < 3500) return;
     lastButtonHintAt[userId] = now;
+
+    if (buttonHintTimers[userId]) {
+      clearTimeout(buttonHintTimers[userId]);
+      delete buttonHintTimers[userId];
+    }
+
+    const chatId = ctx.chat?.id;
+    if (!chatId) return;
 
     const hintMsg = await ctx.reply(
       '👇 <b>يرجى استعمال الأزرار التفاعلية في الأسفل</b> — هذا الموضع غير مخصص للكتابة اليدوية.',
@@ -55,9 +67,11 @@ module.exports = function registerUsers(bot, core) {
     ).catch(() => null);
 
     if (hintMsg?.message_id) {
-      setTimeout(() => {
-        ctx.telegram.deleteMessage(ctx.chat.id, hintMsg.message_id).catch(() => {});
-      }, 4000);
+      const hintMsgId = hintMsg.message_id;
+      buttonHintTimers[userId] = setTimeout(async () => {
+        delete buttonHintTimers[userId];
+        await ctx.telegram.deleteMessage(chatId, hintMsgId).catch(() => {});
+      }, 2500);
     }
   }
 
