@@ -3,7 +3,8 @@
 // 👤 SERVER USERS — كل ما يخص المستخدم
 // يستدعيه server.js (الأب) للمستخدمين العاديين، وللأدمن في وضع المعاينة.
 // المرفق في استعلام العميل مدمج داخل نفس رسالة البطاقة بدون رسائل منفصلة.
-// يدعم الشحن المسبق للمحفظة عبر BaridiMob / CCP مع وصل واحد أو عدة وصولات.
+// يدعم الشحن عبر BaridiMob / CCP (وصل واحد لكل عملية شحن،
+// مع حفظ أرشيف كامل لجميع عمليات الشحن المتتالية في جدول wallet_topups).
 // =========================================================================
 
 const BTN_CONTACT_OWNER = '📞 اتصل بالمالك';
@@ -36,12 +37,12 @@ module.exports = function registerUsers(bot, core) {
     super_admin: '👑 الإدارة العامة'
   };
 
-  async function uploadSingleReceiptToStorage(ctx, fileId, userId, idx = 0) {
+  async function uploadSingleReceiptToStorage(ctx, fileId, userId) {
     try {
       const fileLink = await ctx.telegram.getFileLink(fileId);
       const res = await fetch(fileLink.href);
       const buf = Buffer.from(await res.arrayBuffer());
-      const fileName = `${Date.now()}_${idx}_topup_${userId}.jpg`;
+      const fileName = `${Date.now()}_topup_${userId}.jpg`;
       await supabase.storage.from('test_media').upload(fileName, buf, { contentType: 'image/jpeg', upsert: true });
       const { data: pubUrl } = supabase.storage.from('test_media').getPublicUrl(fileName);
       if (pubUrl && pubUrl.publicUrl) return pubUrl.publicUrl;
@@ -49,31 +50,25 @@ module.exports = function registerUsers(bot, core) {
     return `tg:${fileId}`;
   }
 
-  async function submitWalletTopupRequest(ctx, userId, amount, receiptItems = []) {
+  async function submitWalletTopupRequest(ctx, userId, amount, receiptFileId) {
     const unreadCount = core.messenger?.getUnreadCount ? await core.messenger.getUnreadCount(userId) : 0;
     const cleanAmount = sanitizeNumericPrice(amount);
 
-    if (!cleanAmount || cleanAmount <= 0) {
+    if (!cleanAmount || cleanAmount <= 0 || !receiptFileId) {
       delete userState[userId];
-      return replyTracked(ctx, userId, '⚠️ المبلغ غير صالح.', {
+      return replyTracked(ctx, userId, '⚠️ البيانات غير مكتملة، يرجى المحاولة مرة أخرى.', {
         parse_mode: 'HTML', ...getMainMenuKeyboard(userId, unreadCount)
       }, true);
     }
 
-    const uploadedRefs = [];
-    for (let i = 0; i < receiptItems.length; i++) {
-      const ref = await uploadSingleReceiptToStorage(ctx, receiptItems[i].file_id, userId, i);
-      uploadedRefs.push(ref);
-    }
-
-    const receiptUrlsStr = uploadedRefs.length > 0 ? uploadedRefs.join('|') : 'EMPTY';
+    const receiptUrl = await uploadSingleReceiptToStorage(ctx, receiptFileId, userId);
 
     const { data: topupRow, error } = await supabase
       .from('wallet_topups')
       .insert([{
         user_id: Number(userId),
         amount: cleanAmount,
-        receipt_urls: receiptUrlsStr,
+        receipt_urls: receiptUrl,
         payment_method: 'BaridiMob / CCP',
         status: 'pending'
       }])
@@ -90,11 +85,10 @@ module.exports = function registerUsers(bot, core) {
     );
 
     const adminCaption =
-      `💳 <b>طلب شحن محفظة مسبق (#${topupId})</b>\n` +
+      `💳 <b>طلب شحن محفظة (#${topupId})</b>\n` +
       `🕒 <b>التاريخ والوقت:</b> <code>${escapeHtml(submittedAt)}</code>\n\n` +
       `👤 <b>العميل:</b> ${senderName} (<code>${userId}</code>)\n` +
-      `💰 <b>مبلغ الشحن:</b> <b>${formatMoney(cleanAmount)}</b>\n` +
-      `🧾 <b>عدد الوصولات المرفقة:</b> <b>${uploadedRefs.length}</b>`;
+      `💰 <b>مبلغ الشحن:</b> <b>${formatMoney(cleanAmount)}</b>`;
 
     const adminButtons = Markup.inlineKeyboard([
       [
@@ -105,25 +99,20 @@ module.exports = function registerUsers(bot, core) {
     ]);
 
     const adminIds = await getAdminIds();
-    const firstReceiptRef = normalizeMediaRef(uploadedRefs[0]);
+    const photoSource = typeof receiptUrl === 'string' && receiptUrl.startsWith('http')
+      ? receiptUrl
+      : receiptFileId;
 
     for (const adminId of adminIds) {
       try {
-        if (firstReceiptRef) {
-          await ctx.telegram.sendPhoto(adminId, firstReceiptRef, {
-            caption: fitTelegramText(
-              adminCaption + (uploadedRefs.length > 1 ? `\n📎 <i>يوجد ${uploadedRefs.length} وصولات؛ الأول ظاهر هنا.</i>` : ''),
-              true
-            ),
-            parse_mode: 'HTML',
-            ...adminButtons
-          });
-        } else {
-          await ctx.telegram.sendMessage(adminId, fitTelegramText(adminCaption, false), {
-            parse_mode: 'HTML',
-            ...adminButtons
-          });
-        }
+        await ctx.telegram.sendPhoto(adminId, photoSource, {
+          caption: fitTelegramText(
+            adminCaption + `\n\n👇 <b>يرجى مراجعة وصل الدفع أعلاه واتخاذ القرار:</b>`,
+            true
+          ),
+          parse_mode: 'HTML',
+          ...adminButtons
+        });
       } catch (e) {
         await ctx.telegram.sendMessage(adminId, fitTelegramText(adminCaption, false), {
           parse_mode: 'HTML',
@@ -135,11 +124,10 @@ module.exports = function registerUsers(bot, core) {
     delete userState[userId];
     await replyTracked(
       ctx, userId,
-      `✅ <b>تم إرسال طلب الشحن المسبق برقم (#${topupId}) إلى الإدارة!</b>\n\n` +
-      `💰 <b>المبلغ:</b> <b>${formatMoney(cleanAmount)}</b>\n` +
-      `🧾 <b>عدد الوصولات:</b> <b>${uploadedRefs.length}</b>\n` +
-      `🕒 <b>الوقت:</b> <code>${escapeHtml(submittedAt)}</code>\n\n` +
-      `سيتم إضافة المبلغ إلى رصيد محفظتك فور التحقق والموافقة من طرف الإدارة.`,
+      `✨ <b>وصلتنا تفاصيل تحويلك بنجاح (طلب #${topupId})</b>\n\n` +
+      `💼 <b>المبلغ:</b> <b>${formatMoney(cleanAmount)}</b>\n` +
+      `🕒 <b>التوقيت:</b> <code>${escapeHtml(submittedAt)}</code>\n\n` +
+      `سيُضاف الرصيد إلى محفظتك فور تأكيد العملية من فريق المراجعة، لتكون جاهزاً متى شئت.`,
       { parse_mode: 'HTML', ...getMainMenuKeyboard(userId, unreadCount) },
       true
     );
@@ -604,6 +592,57 @@ module.exports = function registerUsers(bot, core) {
     return `📎 تم إرفاق ${parts.join(' و ')} (يمكنك إضافة المزيد)`;
   }
 
+  function buildPsychologyCue(points, publishCost, walletNum) {
+    const remaining = Math.max(0, publishCost - points);
+    if (points >= publishCost) {
+      return `✨ <b>رصيد نقاطك مكتمل الآن!</b> بإمكانك نشر إعلانك القادم دون أي عناء، أو إبقاء رصيدك جاهزاً لوقت الحاجة.`;
+    }
+    if (walletNum === 0 && remaining <= 50) {
+      return `💡 <b>أنت قريب جداً من النشر المجاني!</b> لم يتبقَّ لك سوى <b>${remaining} نقطة</b> لتصل إلى ${publishCost} نقطة — أو يمكنك شحن محفظتك الآن لتكون جاهزاً في أي لحظة دون انتظار.`;
+    }
+    if (walletNum === 0) {
+      return `💡 <b>اختر الإيقاع الذي يناسبك:</b> اجمع نقاطك بهدوء عبر المشاهدة أو الدعوة، أو اشحن رصيدك الآن لتنجز إعلاناتك بسرعة وراحة بال.`;
+    }
+    return `✨ <b>محفظتك نشطة وجاهزة</b> — استثمر رصيدك أو اجمع نقاطاً إضافية لتوسيع فرصك على المنصة.`;
+  }
+
+  async function showWalletAndPointsScreen(ctx, userId) {
+    const user = await getUserRecord(userId);
+    const points = Number(user?.points || 0);
+    const walletNum = sanitizeNumericPrice(user?.wallet_balance || 0);
+    const walletBalance = formatMoney(walletNum);
+    const rewardPoints = Number(await getSetting('ad_reward_points', '25'));
+    const publishCost = Number(await getSetting('publish_cost_points', '100'));
+
+    const botUsername = ctx.botInfo?.username || 'AqarDZ_bot';
+    const refLink = `https://t.me/${botUsername}?start=ref_${userId}`;
+    const cue = buildPsychologyCue(points, publishCost, walletNum);
+
+    const msg =
+      `🎁 <b>مساحة رصيدك ونقاطك</b>\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `💼 <b>رصيد المحفظة:</b> <b>${walletBalance}</b>\n` +
+      `🪙 <b>رصيد النقاط:</b> <b>${points} نقطة</b>\n` +
+      `🎯 <b>عتبة النشر بالنقاط:</b> <b>${publishCost} نقطة</b>\n\n` +
+      `${cue}\n\n` +
+      `🎬 <b>1. مشاهدة إعلان (+${rewardPoints} نقطة):</b>\n` +
+      `خطوة سريعة من الزر أدناه تُضاف نقاطها مباشرة إلى رصيدك فور اكتمال العرض.\n\n` +
+      `👥 <b>2. دعوة معارفك (+50 نقطة لكل انضمام):</b>\n` +
+      `كل صديق ينضم عبر رابطك يقرّبك خطوة إضافية:\n<code>${refLink}</code>\n\n` +
+      `💳 <b>3. شحن الرصيد عبر BaridiMob / CCP:</b>\n` +
+      `إذا كنت تفضل الجاهزية الفورية وتوفير الوقت، يمكنك شحن رصيدك الآن بخطوات بسيطة.`;
+
+    const keyboardRows = [['💳 شحن الرصيد (CCP / BaridiMob)']];
+    if (WEBHOOK_DOMAIN) {
+      keyboardRows.push([
+        Markup.button.webApp(`🎬 مشاهدة إعلان (+${rewardPoints} نقطة)`, `${WEBHOOK_DOMAIN}/watch-ad?uid=${userId}`)
+      ]);
+    }
+    keyboardRows.push(['🏠 القائمة الرئيسية']);
+
+    await replyTracked(ctx, userId, msg, { parse_mode: 'HTML', ...Markup.keyboard(keyboardRows).resize() }, true);
+  }
+
   async function openUserHome(ctx, prefixNote = '') {
     const userId = ctx.from.id;
     const userName = ctx.from.first_name || 'مستخدمنا الكريم';
@@ -625,7 +664,7 @@ module.exports = function registerUsers(bot, core) {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>مشاهدة إعلان وربح نقاط</title>
+  <title>إضافة نقاط إلى رصيدك</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <script src='//libtl.com/sdk.js' data-zone='12268522' data-sdk='show_12268522'></script>
   <style>
@@ -639,8 +678,8 @@ module.exports = function registerUsers(bot, core) {
       padding: 24px; max-width: 400px; width: 100%; box-shadow: 0 10px 25px rgba(0,0,0,0.4);
     }
     .alert-box {
-      background: #7F1D1D; color: #FCA5A5; border: 1px solid #991B1B;
-      padding: 12px; border-radius: 8px; font-size: 13px; font-weight: bold;
+      background: #1E3A5F; color: #BAE6FD; border: 1px solid #0284C7;
+      padding: 12px; border-radius: 8px; font-size: 13px;
       margin-bottom: 15px; display: none; line-height: 1.5;
     }
     button {
@@ -653,12 +692,12 @@ module.exports = function registerUsers(bot, core) {
 </head>
 <body>
   <div class="card">
-    <h2>🎁 ربح نقاط عقار الجزائر</h2>
-    <p style="color:#94A3B8; font-size:14px;">اضغط على الزر أدناه لبدء مشاهدة الإعلان وربح +${rewardPoints} نقطة.</p>
+    <h2>🎁 تعزيز رصيد نقاطك</h2>
+    <p style="color:#94A3B8; font-size:14px;">أكمل عرض الفيديو القصير لإضافة +${rewardPoints} نقطة إلى رصيدك.</p>
     <div id="alertBox" class="alert-box">
-      ⚠️ <b>تنبيه هام جداً:</b><br>يرجى الانتظار وعدم إغلاق الصفحة حتى ينتهي الإعلان بالكامل لكي يتم احتساب نقاطك تلقائياً!
+      ℹ️ <b>يرجى البقاء في الصفحة حتى اكتمال العرض</b> ليتم تسجيل نقاطك تلقائياً في حسابك.
     </div>
-    <button id="adBtn" onclick="triggerAd()">▶️ عرض الإعلان الآن</button>
+    <button id="adBtn" onclick="triggerAd()">▶️ بدء العرض الآن</button>
   </div>
   <script>
     const tg = window.Telegram.WebApp;
@@ -668,16 +707,16 @@ module.exports = function registerUsers(bot, core) {
 
     function triggerAd() {
       btnEl.disabled = true;
-      btnEl.textContent = '⏳ جاري عرض الإعلان... يرجى الانتظار';
+      btnEl.textContent = '⏳ جاري التحميل... يرجى الانتظار';
       alertBox.style.display = 'block';
 
       if (typeof show_12268522 === 'function') {
         show_12268522().then(() => {
           claimReward();
         }).catch((e) => {
-          alert('تعذر عرض الإعلان حالياً، حاول مجدداً.');
+          alert('العرض غير متاح حالياً، يمكنك المحاولة بعد قليل.');
           btnEl.disabled = false;
-          btnEl.textContent = '▶️ عرض الإعلان الآن';
+          btnEl.textContent = '▶️ بدء العرض الآن';
           alertBox.style.display = 'none';
         });
       } else {
@@ -694,18 +733,18 @@ module.exports = function registerUsers(bot, core) {
         });
         const data = await res.json();
         if (data.ok) {
-          alert('🎉 مبروك! تمت إضافة النقاط بنجاح.');
+          alert('✨ تم إضافة النقاط إلى رصيدك بنجاح.');
           tg.close();
         } else {
-          alert('حدث خطأ، حاول مجدداً');
+          alert('تعذر إتمام العملية، يرجى المحاولة مجدداً.');
           btnEl.disabled = false;
-          btnEl.textContent = '▶️ عرض الإعلان الآن';
+          btnEl.textContent = '▶️ بدء العرض الآن';
           alertBox.style.display = 'none';
         }
       } catch (e) {
-        alert('خطأ في الاتصال بالسيرفر');
+        alert('تعذر الاتصال بالخادم حالياً.');
         btnEl.disabled = false;
-        btnEl.textContent = '▶️ عرض الإعلان الآن';
+        btnEl.textContent = '▶️ بدء العرض الآن';
         alertBox.style.display = 'none';
       }
     }
@@ -728,7 +767,7 @@ module.exports = function registerUsers(bot, core) {
 
       await core.bot.telegram.sendMessage(
         userId,
-        `🎉 <b>مبروك! تمت إضافة +${rewardPoints} نقطة إلى رصيدك بعد مشاهدة الإعلان.</b>\n🪙 <b>رصيدك الحالي:</b> ${newPoints} نقطة.`,
+        `✨ <b>تمت إضافة +${rewardPoints} نقطة إلى رصيدك.</b>\n🪙 <b>رصيدك الآن:</b> <b>${newPoints} نقطة</b>`,
         { parse_mode: 'HTML' }
       ).catch(() => {});
 
@@ -989,37 +1028,12 @@ module.exports = function registerUsers(bot, core) {
 
     if (state.step === 'topup_waiting_amount') {
       delete userState[userId];
-      return ctx.telegram.sendMessage(userId, '🎁', { parse_mode: 'HTML' }).then(async () => {
-        const user = await getUserRecord(userId);
-        const points = user ? (user.points || 0) : 0;
-        const walletBalance = formatMoney(user?.wallet_balance || 0);
-        const rewardPoints = await getSetting('ad_reward_points', '25');
-        const publishCost = await getSetting('publish_cost_points', '100');
-        const botUsername = ctx.botInfo?.username || 'AqarDZ_bot';
-        const refLink = `https://t.me/${botUsername}?start=ref_${userId}`;
-        const msg =
-          `🎁 <b>محفظة الرصيد والنقاط والمكافآت:</b>\n\n` +
-          `💼 <b>رصيد المحفظة (الشحن المسبق):</b> <b>${walletBalance}</b>\n` +
-          `🪙 <b>رصيد النقاط:</b> <b>${points} نقطة</b>\n` +
-          `📌 <b>تكلفة نشر عقار مجاناً:</b> ${publishCost} نقطة\n\n` +
-          `🎬 <b>الطريقة 1: مشاهدة إعلان (+${rewardPoints} نقطة)</b>\n` +
-          `اضغط على الزر في القائمة السفلية لمشاهدة إعلان الفيديو وربح النقاط فوراً.\n\n` +
-          `👥 <b>الطريقة 2: دعوة الأصدقاء (+50 نقطة لكل صديق)</b>\n` +
-          `شارك رابطك الخاص:\n<code>${refLink}</code>`;
-        const keyboardRows = [['💳 شحن الرصيد (CCP / BaridiMob)']];
-        if (WEBHOOK_DOMAIN) {
-          keyboardRows.push([
-            Markup.button.webApp(`🎬 مشاهدة إعلان الفيديو (+${rewardPoints} نقطة)`, `${WEBHOOK_DOMAIN}/watch-ad?uid=${userId}`)
-          ]);
-        }
-        keyboardRows.push(['🏠 القائمة الرئيسية']);
-        await replyTracked(ctx, userId, msg, { parse_mode: 'HTML', ...Markup.keyboard(keyboardRows).resize() }, true);
-      });
+      return showWalletAndPointsScreen(ctx, userId);
     }
 
-    if (state.step === 'topup_waiting_receipts') {
+    if (state.step === 'topup_waiting_receipt') {
       state.step = 'topup_waiting_amount';
-      state.data = { receipts: [] };
+      state.data = {};
       return replyTracked(
         ctx, userId,
         `💳 <b>اختر أو أدخل مبلغ الشحن المطلوب (بالدينار الجزائري):</b>`,
@@ -1056,35 +1070,7 @@ module.exports = function registerUsers(bot, core) {
 
   bot.hears('🎁 رصيدي وجمع النقاط', async (ctx) => {
     await safeDeleteUserMessage(ctx);
-    const userId = ctx.from.id;
-    const user = await getUserRecord(userId);
-    const points = user ? (user.points || 0) : 0;
-    const walletBalance = formatMoney(user?.wallet_balance || 0);
-    const rewardPoints = await getSetting('ad_reward_points', '25');
-    const publishCost = await getSetting('publish_cost_points', '100');
-
-    const botUsername = ctx.botInfo?.username || 'AqarDZ_bot';
-    const refLink = `https://t.me/${botUsername}?start=ref_${userId}`;
-
-    const msg =
-      `🎁 <b>محفظة الرصيد والنقاط والمكافآت:</b>\n\n` +
-      `💼 <b>رصيد المحفظة (الشحن المسبق):</b> <b>${walletBalance}</b>\n` +
-      `🪙 <b>رصيد النقاط:</b> <b>${points} نقطة</b>\n` +
-      `📌 <b>تكلفة نشر عقار مجاناً:</b> ${publishCost} نقطة\n\n` +
-      `🎬 <b>الطريقة 1: مشاهدة إعلان (+${rewardPoints} نقطة)</b>\n` +
-      `اضغط على الزر في القائمة السفلية لمشاهدة إعلان الفيديو وربح النقاط فوراً.\n\n` +
-      `👥 <b>الطريقة 2: دعوة الأصدقاء (+50 نقطة لكل صديق)</b>\n` +
-      `شارك رابطك الخاص:\n<code>${refLink}</code>`;
-
-    const keyboardRows = [['💳 شحن الرصيد (CCP / BaridiMob)']];
-    if (WEBHOOK_DOMAIN) {
-      keyboardRows.push([
-        Markup.button.webApp(`🎬 مشاهدة إعلان الفيديو (+${rewardPoints} نقطة)`, `${WEBHOOK_DOMAIN}/watch-ad?uid=${userId}`)
-      ]);
-    }
-    keyboardRows.push(['🏠 القائمة الرئيسية']);
-
-    await replyTracked(ctx, userId, msg, { parse_mode: 'HTML', ...Markup.keyboard(keyboardRows).resize() }, true);
+    await showWalletAndPointsScreen(ctx, ctx.from.id);
   });
 
   bot.hears('💳 شحن الرصيد (CCP / BaridiMob)', async (ctx) => {
@@ -1096,15 +1082,15 @@ module.exports = function registerUsers(bot, core) {
 
     userState[userId] = {
       step: 'topup_waiting_amount',
-      data: { receipts: [] },
+      data: {},
       chatId: ctx.chat.id,
       wizardMsgId: null
     };
 
     const text =
-      `💳 <b>شحن الرصيد المسبق (BaridiMob / CCP)</b>\n` +
+      `💳 <b>شحن الرصيد عبر BaridiMob / CCP</b>\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
-      `يرجى تحويل المبلغ المراد شحنه إلى الحساب التالي:${nameLine}\n` +
+      `حوّل المبلغ الذي يناسبك إلى الحساب التالي لتجهيز رصيدك:${nameLine}\n` +
       `📌 <b>رقم الحساب (RIP):</b>\n<code>${escapeHtml(ccpRip)}</code>\n\n` +
       `👇 <b>اختر مبلغاً جاهزاً أو اكتب المبلغ رقمياً بالدينار الجزائري:</b>`;
 
@@ -2380,80 +2366,21 @@ module.exports = function registerUsers(bot, core) {
         );
       }
 
-      state.data = { amount: parsedAmt, receipts: [] };
-      state.step = 'topup_waiting_receipts';
+      state.data = { amount: parsedAmt };
+      state.step = 'topup_waiting_receipt';
 
       return replyTracked(
         ctx, userId,
         `💰 <b>مبلغ الشحن:</b> <b>${formatMoney(parsedAmt)}</b>\n\n` +
-        `📸 <b>أرسل الآن صورة الوصل (أو عدة وصولات واحدة تلو الأخرى)، ثم اضغط "✅ إرسال طلب الشحن":</b>`,
+        `📸 <b>أرسل الآن صورة وصل التحويل (صورة واحدة للعملية الحالية):</b>`,
         {
           parse_mode: 'HTML',
           ...Markup.keyboard([
-            ['✅ إرسال طلب الشحن'],
-            ['🗑️ مسح الوصولات'],
             ['⬅️ رجوع', '🏠 القائمة الرئيسية']
           ]).resize()
         },
         true
       );
-    }
-
-    if (state.step === 'topup_waiting_receipts') {
-      await safeDeleteUserMessage(ctx);
-      const receipts = state.data?.receipts || [];
-      const amount = state.data?.amount || 0;
-
-      if (userText === '🗑️ مسح الوصولات') {
-        state.data.receipts = [];
-        return replyTracked(
-          ctx, userId,
-          `🗑️ <b>تم مسح الوصولات المرفقة.</b> أرسل صورة الوصل مجدداً للمبلغ <b>${formatMoney(amount)}</b>:`,
-          {
-            parse_mode: 'HTML',
-            ...Markup.keyboard([
-              ['✅ إرسال طلب الشحن'],
-              ['🗑️ مسح الوصولات'],
-              ['⬅️ رجوع', '🏠 القائمة الرئيسية']
-            ]).resize()
-          },
-          true
-        );
-      }
-
-      if (userText === '✅ إرسال طلب الشحن') {
-        if (receipts.length === 0) {
-          return replyTracked(
-            ctx, userId,
-            `⚠️ <b>يرجى إرفاق صورة وصل واحد على الأقل قبل إرسال طلب الشحن!</b>`,
-            {
-              parse_mode: 'HTML',
-              ...Markup.keyboard([
-                ['✅ إرسال طلب الشحن'],
-                ['🗑️ مسح الوصولات'],
-                ['⬅️ رجوع', '🏠 القائمة الرئيسية']
-              ]).resize()
-            },
-            true
-          );
-        }
-
-        try {
-          return await submitWalletTopupRequest(ctx, userId, amount, receipts);
-        } catch (err) {
-          console.error('submitWalletTopupRequest error:', err);
-          delete userState[userId];
-          const unreadCount = core.messenger?.getUnreadCount ? await core.messenger.getUnreadCount(userId) : 0;
-          return replyTracked(
-            ctx, userId,
-            `⚠️ <b>تعذر إرسال طلب الشحن:</b> <code>${escapeHtml(err.message || 'خطأ')}</code>`,
-            { parse_mode: 'HTML', ...getMainMenuKeyboard(userId, unreadCount) },
-            true
-          );
-        }
-      }
-
-      return;
     }
 
     if (state.step === 'client_following_up_inquiry') {
@@ -2614,26 +2541,23 @@ module.exports = function registerUsers(bot, core) {
 
     await safeDeleteUserMessage(ctx);
 
-    if (state && state.step === 'topup_waiting_receipts') {
+    if (state && state.step === 'topup_waiting_receipt') {
       const photo = ctx.message.photo[ctx.message.photo.length - 1];
-      state.data.receipts = state.data.receipts || [];
-      state.data.receipts.push({ type: 'photo', file_id: photo.file_id });
-      const count = state.data.receipts.length;
-      const amount = state.data.amount || 0;
+      const amount = state.data?.amount || 0;
+      state.step = 'publishing';
 
-      return replyTracked(
-        ctx, userId,
-        `✅ <b>تم إرفاق الوصل رقم (${count}) لمبلغ ${formatMoney(amount)}.</b>\n\nيمكنك إرفاق وصل إضافي أو الضغط على <b>"✅ إرسال طلب الشحن"</b>:`,
-        {
-          parse_mode: 'HTML',
-          ...Markup.keyboard([
-            ['✅ إرسال طلب الشحن'],
-            ['🗑️ مسح الوصولات'],
-            ['⬅️ رجوع', '🏠 القائمة الرئيسية']
-          ]).resize()
-        },
-        true
-      );
+      try {
+        return await submitWalletTopupRequest(ctx, userId, amount, photo.file_id);
+      } catch (err) {
+        console.error('submitWalletTopupRequest error:', err);
+        delete userState[userId];
+        return replyTracked(
+          ctx, userId,
+          `⚠️ <b>تعذر تسجيل طلب الشحن:</b> <code>${escapeHtml(err.message || 'خطأ')}</code>`,
+          { parse_mode: 'HTML', ...getMainMenuKeyboard(userId, unreadCount) },
+          true
+        );
+      }
     }
 
     if (state && state.step === 'client_following_up_inquiry') {
