@@ -1,277 +1,425 @@
 'use strict';
 // =========================================================================
-// 🚀 SERVER.JS — الملف الرئيسي (الأب) لمنصة عقار الجزائر (Aqar System)
-// يربط Express + Telegraf + Supabase + طبقة الخدمات (service.js) + وحدات البوت
+// ⚙️ SERVICE.JS (SRV) — طبقة الخدمات الكاملة وإعدادات التطبيق (app_settings)
+// يجمع:
+// 1. قراءة وتخزين إعدادات app_settings مع كاش مؤقت وتحديث فوري
+// 2. قراءة المضاعفات والخطوات الديناميكية (topup_step_1, topup_step_2, ...)
+//    وقيمة البداية (topup_default_amount) ومعامل الضرب (topup_multiplier_factor)
+// 3. دوال التنسيق (المبالغ، الأرقام، التواريخ، الهروب من HTML، قص النصوص بأمان)
+// 4. دوال الوسائط والصور والفيديو وحسابات المحفظة والنقاط والتخزين
 // =========================================================================
 
-require('dotenv').config();
-const express = require('express');
-const { Telegraf, Markup } = require('telegraf');
-const { createClient } = require('@supabase/supabase-js');
-const createServiceLayer = require('./service');
-const registerUsers = require('./server_users');
+const SETTINGS_CACHE_TTL_MS = 30 * 1000; // 30 ثانية كاش لتخفيف الحمل على قاعدة البيانات
 
-// تحميل الوحدات الإضافية إن وجدت في المشروع
-let registerAdmin = null;
-let createMessenger = null;
-try { registerAdmin = require('./server_admin'); } catch (_) {}
-try { createMessenger = require('./messenger'); } catch (_) {}
-
-// -------------------------------------------------------------------------
-// 1. التهيئة والمتغيرات البيئية
-// -------------------------------------------------------------------------
-const BOT_TOKEN = process.env.BOT_TOKEN;
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY;
-const PORT = Number(process.env.PORT || 3000);
-const WEBHOOK_DOMAIN = (process.env.WEBHOOK_DOMAIN || process.env.RENDER_EXTERNAL_URL || '').replace(/\/+$/, '');
-const MAX_PROPERTY_IMAGES = Number(process.env.MAX_PROPERTY_IMAGES || 10);
-const WAIT_BTN_TEXT = '⏳ يرجى الانتظار...';
-
-if (!BOT_TOKEN) throw new Error('❌ BOT_TOKEN غير معرف في متغيرات البيئة');
-if (!SUPABASE_URL || !SUPABASE_KEY) throw new Error('❌ SUPABASE_URL أو SUPABASE_KEY غير معرف');
-
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
-const bot = new Telegraf(BOT_TOKEN);
-const app = express();
-
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true }));
-
-// -------------------------------------------------------------------------
-// 2. الجلسات المشتركة في الذاكرة
-// -------------------------------------------------------------------------
-const userState = {};
-const userLang = {};
-const browsingSession = {};
-const supportUserSession = {};
-const trackedBotMessages = new Map(); // userId -> Array<{ chatId, messageId }>
-
-// -------------------------------------------------------------------------
-// 3. إدارة الأدمن (من البيئة ومن جدول app_settings)
-// -------------------------------------------------------------------------
-async function getAdminIds() {
-  const ids = new Set();
-
-  const envAdmins = String(process.env.ADMIN_IDS || process.env.ADMIN_ID || '')
-    .split(',')
-    .map(s => Number(s.trim()))
-    .filter(n => Number.isFinite(n) && n > 0);
-  for (const id of envAdmins) ids.add(id);
-
-  try {
-    const dbAdminVal = await services.getSetting('admin_id', '');
-    const dbAdmins = String(dbAdminVal || '')
-      .split(',')
-      .map(s => Number(s.trim()))
-      .filter(n => Number.isFinite(n) && n > 0);
-    for (const id of dbAdmins) ids.add(id);
-  } catch (_) {}
-
-  return [...ids];
-}
-
-// -------------------------------------------------------------------------
-// 4. إنشاء طبقة الخدمات المشتركة (service.js)
-// -------------------------------------------------------------------------
-const services = createServiceLayer({
+module.exports = function createServiceLayer({
   supabase,
   Markup,
-  MAX_PROPERTY_IMAGES,
-  getAdminIds
-});
+  MAX_PROPERTY_IMAGES = 10,
+  getAdminIds = async () => []
+}) {
+  if (!supabase) {
+    throw new Error('createServiceLayer requires a valid supabase client');
+  }
 
-// -------------------------------------------------------------------------
-// 5. دوال إدارة الرسائل المتتبعة وحذف رسائل المستخدم بأمان
-// -------------------------------------------------------------------------
-function trackBotMessage(userId, chatId, messageId) {
-  if (!userId || !chatId || !messageId) return;
-  const key = String(userId);
-  const list = trackedBotMessages.get(key) || [];
-  list.push({ chatId, messageId });
-  if (list.length > 25) list.splice(0, list.length - 25);
-  trackedBotMessages.set(key, list);
-}
+  const settingsCache = new Map(); // key -> { value, expiresAt }
+  let allSettingsCache = { items: null, expiresAt: 0 };
 
-async function clearTrackedBotMessages(ctx, userId, keepMessageIds = []) {
-  const key = String(userId);
-  const list = trackedBotMessages.get(key) || [];
-  if (!list.length) return;
-
-  const keepSet = new Set((keepMessageIds || []).map(Number));
-  const remaining = [];
-
-  for (const item of list) {
-    if (keepSet.has(Number(item.messageId))) {
-      remaining.push(item);
-      continue;
+  function replacePlaceholders(templateStr = '', vars = {}) {
+    let out = String(templateStr ?? '').replace(/\\n/g, '\n');
+    for (const [k, v] of Object.entries(vars || {})) {
+      out = out.split(`{${k}}`).join(String(v ?? ''));
     }
-    await ctx.telegram.deleteMessage(item.chatId, item.messageId).catch(() => {});
+    return out;
   }
 
-  trackedBotMessages.set(key, remaining);
-}
-
-async function replyTracked(ctx, userId, text, extra = {}, clearPrevious = false) {
-  const sent = await ctx.reply(text, extra).catch(() => null);
-  const keepIds = sent?.message_id ? [sent.message_id] : [];
-  if (sent?.message_id && ctx.chat?.id) {
-    trackBotMessage(userId, ctx.chat.id, sent.message_id);
+  function clearSettingsCache() {
+    settingsCache.clear();
+    allSettingsCache = { items: null, expiresAt: 0 };
   }
-  if (clearPrevious) {
-    await clearTrackedBotMessages(ctx, userId, keepIds);
-  }
-  return sent;
-}
 
-async function safeDeleteUserMessage(ctx) {
-  try {
-    if (ctx.chat?.id && ctx.message?.message_id) {
-      await ctx.telegram.deleteMessage(ctx.chat.id, ctx.message.message_id).catch(() => {});
+  async function getSetting(key, fallback = null, { forceRefresh = false } = {}) {
+    if (!key) return fallback;
+    const now = Date.now();
+
+    if (!forceRefresh) {
+      const cached = settingsCache.get(key);
+      if (cached && cached.expiresAt > now) {
+        return cached.value !== undefined && cached.value !== null ? cached.value : fallback;
+      }
     }
-  } catch (_) {}
-}
 
-// -------------------------------------------------------------------------
-// 6. لوحات المفاتيح الرئيسية وروابط الموقع
-// -------------------------------------------------------------------------
-function getWebsiteUrl() {
-  return String(process.env.WEBSITE_URL || '').trim();
-}
+    try {
+      const { data, error } = await supabase
+        .from('app_settings')
+        .select('value')
+        .eq('key', key)
+        .maybeSingle();
 
-function getAuthKeyboard() {
-  return Markup.keyboard([
-    [Markup.button.contactRequest('📱 مشاركة وتأكيد رقم الهاتف')]
-  ]).resize();
-}
+      if (!error && data && data.value !== undefined && data.value !== null) {
+        settingsCache.set(key, { value: data.value, expiresAt: now + SETTINGS_CACHE_TTL_MS });
+        return data.value;
+      }
+    } catch (err) {
+      console.error(`getSetting error for key "${key}":`, err.message);
+    }
 
-async function getMainMenuKeyboard(userId, unreadCount = 0, unreadRepliesCount = 0) {
-  const supportLabel = unreadRepliesCount > 0
-    ? `📞 الدعم والإدارة (${unreadRepliesCount})`
-    : '📞 الدعم والإدارة';
-
-  const rows = [
-    ['🔍 تصفح العقارات المتاحة', '➕ إضافة عقار جديد'],
-    ['🎁 رصيدي وجمع النقاط', supportLabel],
-    ['🌐 تصفح الموقع الرسمي (البروزر)', 'ℹ️ عن المنصة']
-  ];
-
-  const adminIds = await getAdminIds();
-  if (adminIds.includes(Number(userId))) {
-    rows.push(['⚙️ لوحة الإدارة']);
+    return fallback;
   }
 
-  return Markup.keyboard(rows).resize();
-}
+  async function getTextSetting(key, fallback = '', vars = {}, opts = {}) {
+    const raw = await getSetting(key, fallback, opts);
+    return replacePlaceholders(raw ?? fallback, vars);
+  }
 
-// -------------------------------------------------------------------------
-// 7. كائن النواة المشترك (core) وتمريره إلى الوحدات
-// -------------------------------------------------------------------------
-const core = {
-  bot,
-  app,
-  supabase,
-  Markup,
-  services,
-  WEBHOOK_DOMAIN,
-  MAX_PROPERTY_IMAGES,
-  WAIT_BTN_TEXT,
+  async function setSetting(key, value, description = null) {
+    if (!key) throw new Error('Setting key is required');
+    const payload = {
+      key: String(key).trim(),
+      value: String(value ?? ''),
+      updated_at: new Date().toISOString()
+    };
+    if (description !== null && description !== undefined) {
+      payload.description = String(description);
+    }
 
-  // Sessions
-  userState,
-  userLang,
-  browsingSession,
-  supportUserSession,
+    const { data, error } = await supabase
+      .from('app_settings')
+      .upsert([payload], { onConflict: 'key' })
+      .select()
+      .single();
 
-  // Message tracking & UI helpers
-  trackBotMessage,
-  clearTrackedBotMessages,
-  replyTracked,
-  safeDeleteUserMessage,
-  getMainMenuKeyboard,
-  getAuthKeyboard,
-  getWebsiteUrl,
+    if (error) throw error;
+    clearSettingsCache();
+    return data;
+  }
 
-  // Service shortcuts
-  getSetting: services.getSetting,
-  getTextSetting: services.getTextSetting,
-  setSetting: services.setSetting,
-  clearSettingsCache: services.clearSettingsCache,
-  getTopupAmountsList: services.getTopupAmountsList,
-  getDynamicTopupAmountButtons: services.getDynamicTopupAmountButtons,
-  getAdminIds,
-  getUserRecord: services.getUserRecord,
-  isUserVerified: services.isUserVerified,
-  chunkButtons: services.chunkButtons,
-  sanitizeNumericPrice: services.sanitizeNumericPrice,
-  formatMoney: services.formatMoney,
-  formatDateTime: services.formatDateTime,
-  escapeHtml: services.escapeHtml,
-  fitTelegramText: services.fitTelegramText,
-  normalizeMediaRef: services.normalizeMediaRef,
-  parseMediaListFromField: services.parseMediaListFromField,
-  parseImagesFromImageUrl: services.parseImagesFromImageUrl,
-  buildOrderedBrowsingMedia: services.buildOrderedBrowsingMedia,
-  messenger: null
+  async function getAllSettings({ forceRefresh = false } = {}) {
+    const now = Date.now();
+    if (!forceRefresh && Array.isArray(allSettingsCache.items) && allSettingsCache.expiresAt > now) {
+      return allSettingsCache.items;
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from('app_settings')
+        .select('key, value, description, updated_at')
+        .order('key', { ascending: true });
+
+      if (error) throw error;
+      const list = Array.isArray(data) ? data : [];
+      allSettingsCache = { items: list, expiresAt: now + SETTINGS_CACHE_TTL_MS };
+      for (const row of list) {
+        settingsCache.set(row.key, { value: row.value, expiresAt: now + SETTINGS_CACHE_TTL_MS });
+      }
+      return list;
+    } catch (err) {
+      console.error('getAllSettings error:', err.message);
+      return Array.isArray(allSettingsCache.items) ? allSettingsCache.items : [];
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // 🔢 الأرقام، المبالغ، المضاعفات والخطوات من app_settings
+  // -----------------------------------------------------------------------
+  function chunkButtons(items = [], perRow = 3) {
+    const size = Math.max(1, Number(perRow) || 3);
+    const out = [];
+    for (let i = 0; i < items.length; i += size) {
+      out.push(items.slice(i, i + size));
+    }
+    return out;
+  }
+
+  function sanitizeNumericPrice(val) {
+    if (typeof val === 'number') return Number.isFinite(val) ? Math.max(0, Math.round(val)) : 0;
+    const digits = String(val ?? '').replace(/[^\d]/g, '');
+    const num = parseInt(digits, 10);
+    return Number.isFinite(num) && num > 0 ? num : 0;
+  }
+
+  function formatMoney(amount, currencySuffix = 'دج') {
+    const num = sanitizeNumericPrice(amount);
+    const formatted = num.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+    return currencySuffix ? `${formatted} ${currencySuffix}` : formatted;
+  }
+
+  async function getTopupDefaultAmount({ forceRefresh = false } = {}) {
+    const raw = await getSetting('topup_default_amount', '100', { forceRefresh });
+    return sanitizeNumericPrice(raw);
+  }
+
+  async function getTopupMultiplierFactor({ forceRefresh = false } = {}) {
+    const raw = await getSetting('topup_multiplier_factor', '2', { forceRefresh });
+    const num = sanitizeNumericPrice(raw);
+    return num > 1 ? num : 2;
+  }
+
+  async function getTopupMultipliersFromSettings({ forceRefresh = false } = {}) {
+    try {
+      const { data, error } = await supabase
+        .from('app_settings')
+        .select('key, value')
+        .like('key', 'topup_step_%');
+
+      if (!error && Array.isArray(data) && data.length > 0) {
+        const parsed = data
+          .map(row => {
+            const match = String(row.key || '').match(/^topup_step_(\d+)$/i);
+            const orderNum = match ? Number(match[1]) : 9999;
+            const amount = sanitizeNumericPrice(row.value);
+            return {
+              key: row.key,
+              orderNum,
+              amount,
+              label: `+${amount}`
+            };
+          })
+          .filter(item => item.amount > 0)
+          .sort((a, b) => a.orderNum - b.orderNum);
+
+        if (parsed.length > 0) return parsed;
+      }
+    } catch (err) {
+      console.error('getTopupMultipliersFromSettings error:', err.message);
+    }
+
+    return [
+      { key: 'topup_step_1', orderNum: 1, amount: 100, label: '+100' },
+      { key: 'topup_step_2', orderNum: 2, amount: 500, label: '+500' },
+      { key: 'topup_step_3', orderNum: 3, amount: 1000, label: '+1000' }
+    ];
+  }
+
+  async function getTopupAmountsList({ forceRefresh = false } = {}) {
+    try {
+      const { data, error } = await supabase
+        .from('app_settings')
+        .select('key, value')
+        .like('key', 'topup_amount_%');
+
+      if (!error && Array.isArray(data) && data.length > 0) {
+        return data
+          .map(row => {
+            const match = String(row.key || '').match(/^topup_amount_(\d+)$/i);
+            const orderNum = match ? Number(match[1]) : 9999;
+            const rawValue = String(row.value ?? '').trim();
+            const numericAmount = sanitizeNumericPrice(rawValue);
+            const buttonText = /^\d+(?:[.,]\d+)?$/.test(rawValue) ? `${rawValue} دج` : rawValue;
+            return {
+              key: row.key,
+              orderNum,
+              rawValue,
+              numericAmount,
+              buttonText
+            };
+          })
+          .filter(item => item.numericAmount > 0 && item.buttonText.length > 0)
+          .sort((a, b) => a.orderNum - b.orderNum);
+      }
+    } catch (err) {
+      console.error('getTopupAmountsList error:', err.message);
+    }
+
+    return [
+      { key: 'topup_amount_1', orderNum: 1, rawValue: '1000', numericAmount: 1000, buttonText: '1000 دج' },
+      { key: 'topup_amount_2', orderNum: 2, rawValue: '2000', numericAmount: 2000, buttonText: '2000 دج' },
+      { key: 'topup_amount_3', orderNum: 3, rawValue: '5000', numericAmount: 5000, buttonText: '5000 دج' }
+    ];
+  }
+
+  async function getDynamicTopupAmountButtons(perRow = 3, { forceRefresh = false } = {}) {
+    const list = await getTopupAmountsList({ forceRefresh });
+    const labels = list.map(item => item.buttonText);
+    return chunkButtons(labels.length ? labels : ['1000 دج', '2000 دج', '5000 دج'], perRow);
+  }
+
+  // -----------------------------------------------------------------------
+  // 🗓️ تنسيق النصوص والتواريخ والوسائط
+  // -----------------------------------------------------------------------
+  function escapeHtml(str = '') {
+    return String(str ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function formatDateTime(dateInput, locale = 'ar-DZ') {
+    if (!dateInput) return '';
+    const d = dateInput instanceof Date ? dateInput : new Date(dateInput);
+    if (Number.isNaN(d.getTime())) return String(dateInput);
+    try {
+      return d.toLocaleString(locale, {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false
+      });
+    } catch (_) {
+      return d.toISOString().replace('T', ' ').slice(0, 16);
+    }
+  }
+
+  function fitTelegramText(text = '', isCaption = false) {
+    const limit = isCaption ? 1020 : 4090;
+    const str = String(text ?? '');
+    if (str.length <= limit) return str;
+    return `${str.slice(0, limit - 2)}…`;
+  }
+
+  function normalizeMediaRef(ref) {
+    if (!ref) return null;
+    const clean = String(ref).trim();
+    if (!clean || clean === 'EMPTY' || clean === 'FREE_NO_RECEIPT' || clean === 'null' || clean === 'undefined') {
+      return null;
+    }
+    if (clean.startsWith('tg:')) {
+      return clean.slice(3).trim() || null;
+    }
+    return clean;
+  }
+
+  function parseMediaListFromField(fieldVal) {
+    if (!fieldVal) return [];
+    if (Array.isArray(fieldVal)) {
+      return fieldVal.map(normalizeMediaRef).filter(Boolean);
+    }
+    return String(fieldVal)
+      .split('|')
+      .map(normalizeMediaRef)
+      .filter(Boolean);
+  }
+
+  function parseImagesFromImageUrl(imageUrlField) {
+    return parseMediaListFromField(imageUrlField).slice(0, MAX_PROPERTY_IMAGES);
+  }
+
+  function buildOrderedBrowsingMedia(record = {}) {
+    const out = [];
+    const photos = parseImagesFromImageUrl(record.image_url);
+    for (const p of photos) {
+      out.push({ type: 'photo', ref: p });
+    }
+    const videos = parseMediaListFromField(record.video_url);
+    for (const v of videos) {
+      out.push({ type: 'video', ref: v });
+    }
+    return out;
+  }
+
+  // -----------------------------------------------------------------------
+  // 👤 خدمات المستخدم والرصيد والنقاط والشحن والتخزين
+  // -----------------------------------------------------------------------
+  async function getUserRecord(userId) {
+    if (!userId) return null;
+    try {
+      const { data, error } = await supabase
+        .from('users')
+        .select('*')
+        .eq('id', Number(userId))
+        .maybeSingle();
+
+      if (error) return null;
+      return data;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  async function isUserVerified(userId) {
+    const user = await getUserRecord(userId);
+    return Boolean(user && user.phone_number);
+  }
+
+  async function addUserPoints(userId, deltaPoints) {
+    const user = await getUserRecord(userId);
+    if (!user) return null;
+    const current = Number(user.points || 0);
+    const nextPoints = Math.max(0, current + Number(deltaPoints || 0));
+    const { data, error } = await supabase
+      .from('users')
+      .update({ points: nextPoints })
+      .eq('id', Number(userId))
+      .select()
+      .single();
+
+    if (error) throw error;
+    return data;
+  }
+
+  async function addUserWalletBalance(userId, deltaAmount) {
+    const user = await getUserRecord(userId);
+    if (!user) return null;
+    const current = sanitizeNumericPrice(user.wallet_balance || 0);
+    const nextBalance = Math.max(0, current + sanitizeNumericPrice(deltaAmount));
+    const { data, error } = await supabase
+      .from('users')
+      .update({ wallet_balance: nextBalance })
+      .eq('id', Number(userId))
+      .select()
+      .single();
+
+    if (error) throw error;
+    return data;
+  }
+
+  async function uploadBufferToStorage(buffer, fileName, contentType = 'image/jpeg') {
+    const { error } = await supabase.storage
+      .from('test_media')
+      .upload(fileName, buffer, { contentType, upsert: true });
+
+    if (error) throw error;
+    const { data: pubUrl } = supabase.storage.from('test_media').getPublicUrl(fileName);
+    return pubUrl?.publicUrl || null;
+  }
+
+  async function notifyAdminsHtml(botOrTelegram, htmlText, extra = {}) {
+    const telegram = botOrTelegram?.telegram || botOrTelegram;
+    if (!telegram) return;
+    const adminIds = await getAdminIds();
+    for (const adminId of adminIds) {
+      await telegram.sendMessage(adminId, fitTelegramText(htmlText, false), {
+        parse_mode: 'HTML',
+        ...extra
+      }).catch(() => {});
+    }
+  }
+
+  return {
+    // Settings & Dynamic Topup / Multipliers
+    getSetting,
+    getTextSetting,
+    setSetting,
+    getAllSettings,
+    clearSettingsCache,
+    replacePlaceholders,
+    getTopupDefaultAmount,
+    getTopupMultiplierFactor,
+    getTopupMultipliersFromSettings,
+    getTopupAmountsList,
+    getDynamicTopupAmountButtons,
+
+    // Formatting & Media Helpers
+    chunkButtons,
+    sanitizeNumericPrice,
+    formatMoney,
+    formatDateTime,
+    escapeHtml,
+    fitTelegramText,
+    normalizeMediaRef,
+    parseMediaListFromField,
+    parseImagesFromImageUrl,
+    buildOrderedBrowsingMedia,
+
+    // User, Wallet, Points & Storage Services
+    getUserRecord,
+    isUserVerified,
+    addUserPoints,
+    addUserWalletBalance,
+    uploadBufferToStorage,
+    notifyAdminsHtml,
+    Markup
+  };
 };
-
-// تهيئة نظام المراسلة بين المالك والمشتري إن وجد
-if (typeof createMessenger === 'function') {
-  core.messenger = createMessenger(bot, core);
-}
-
-// تسجيل وحدة الإدارة أولاً (حتى تلتقط أوامر الإدارة قبل تنبيهات الأزرار العامة للمستخدم)
-let adminModule = null;
-if (typeof registerAdmin === 'function') {
-  adminModule = registerAdmin(bot, core);
-}
-
-// تسجيل وحدة المستخدمين
-const usersModule = registerUsers(bot, core);
-core.users = usersModule;
-core.admin = adminModule;
-
-// -------------------------------------------------------------------------
-// 8. مسارات الصحة والويب هوك وتشغيل الخادم
-// -------------------------------------------------------------------------
-app.get('/', (req, res) => {
-  res.status(200).json({
-    ok: true,
-    service: 'Aqar DZ Telegram Bot Server',
-    timestamp: new Date().toISOString()
-  });
-});
-
-app.get('/health', (req, res) => {
-  res.status(200).send('OK');
-});
-
-// معالجة الأخطاء غير المتوقعة في Telegraf لمنع توقف السيرفر
-bot.catch((err, ctx) => {
-  console.error(`Telegraf error for ${ctx.updateType}:`, err);
-});
-
-async function startServer() {
-  if (WEBHOOK_DOMAIN) {
-    const secretPath = `/telegraf/${bot.secretPathComponent()}`;
-    app.use(bot.webhookCallback(secretPath));
-    await bot.telegram.setWebhook(`${WEBHOOK_DOMAIN}${secretPath}`);
-    app.listen(PORT, () => {
-      console.log(`🚀 Server running on port ${PORT} with Webhook: ${WEBHOOK_DOMAIN}${secretPath}`);
-    });
-  } else {
-    app.listen(PORT, () => {
-      console.log(`🚀 Express running on port ${PORT}`);
-    });
-    await bot.launch();
-    console.log('🤖 Bot launched in Long-Polling mode');
-  }
-}
-
-startServer().catch(err => {
-  console.error('❌ Failed to start server:', err);
-  process.exit(1);
-});
-
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
