@@ -1,7 +1,7 @@
 'use strict';
 // =========================================================================
 // 🛡️ SERVER ADMIN — لوحة تحكم الإدارة
-// - تصفح صور وفيديوهات الإعلانات بنفس أسلوب التصفح السلس
+// - تصفح صور وفيديوهات الإعلانات بنفس أسلوب التصفح السلس مع فصل الوصل عن صور العقار
 // - زر مباشر لمعاينة الوصل متى كان موجوداً + تصفية مباشرة لإعلانات بريدي موب المعلقة ذات الوصل
 // - التنقل بين الإعلانات (المعلقة / بريدي موب المعلقة / المنشورة / المرفوضة / البحث)
 // - تصفح طلبات الشحن (wallet_topups) والموافقة أو الرفض أو المراسلة
@@ -132,7 +132,10 @@ module.exports = function registerAdmin(bot, core) {
     return Markup.keyboard(rows).resize();
   }
 
-  function getAdminBrowsingKeyboard(idx, total, filterType, currentItem = null, mediaIdx = 0, totalMedia = 0, hasReceiptSlide = false) {
+  function getAdminBrowsingKeyboard(
+    idx, total, filterType, currentItem = null,
+    mediaIdx = 0, totalMedia = 0, hasReceiptSlide = false, currentMedia = null
+  ) {
     const rows = [];
 
     if (totalMedia > 1) {
@@ -143,7 +146,7 @@ module.exports = function registerAdmin(bot, core) {
       rows.push(mediaRow);
     }
 
-    if (hasReceiptSlide && mediaIdx !== 0) {
+    if (hasReceiptSlide && currentMedia && currentMedia.kind !== 'receipt') {
       rows.push(['🧾 معاينة الوصل']);
     }
 
@@ -1213,7 +1216,7 @@ module.exports = function registerAdmin(bot, core) {
   }
 
   // =========================================================================
-  // 🏠 تصفح الإعلانات والبحث
+  // 🏠 تصفح الإعلانات والبحث (مع عزل الوصل عن صور وفيديوهات العقار)
   // =========================================================================
   function hasValidReceipt(row) {
     if (!row || !row.receipt_url) return false;
@@ -1359,6 +1362,7 @@ module.exports = function registerAdmin(bot, core) {
     return rows.length > 0 ? Markup.inlineKeyboard(rows) : undefined;
   }
 
+  // فصل وصل الدفع عن صور وفيديوهات العقار ومنع تكراره
   function buildAdMediaSlides(item, cardFilter) {
     const receiptRef = cardFilter !== 'published' ? normalizeMediaRef(item.receipt_url) : null;
     const orderedMedia = buildOrderedBrowsingMedia(item);
@@ -1374,9 +1378,13 @@ module.exports = function registerAdmin(bot, core) {
     }
 
     for (const m of orderedMedia) {
-      if (!slides.some(existing => existing.ref === m.ref)) {
+      const cleanRef = normalizeMediaRef(m.ref);
+      if (!cleanRef) continue;
+      if (receiptRef && cleanRef === receiptRef) continue;
+      if (!slides.some(existing => existing.ref === cleanRef && existing.type === m.type)) {
         slides.push({
           ...m,
+          ref: cleanRef,
           kind: m.type === 'video' ? 'video' : 'property_photo',
           label: m.type === 'video' ? '🎥 فيديو العقار' : '🖼 صورة العقار'
         });
@@ -1435,7 +1443,7 @@ module.exports = function registerAdmin(bot, core) {
       (ownerId ? `👤 <b>المعلن:</b> <code>${ownerId}</code>\n` : '') +
       `🏠 <b>العقار:</b> ${escapeHtml(item.property_type || '')} — 📍 <b>${escapeHtml(item.state_name || '')}</b>\n` +
       `💰 <b>السعر:</b> ${formatMoney(item.price)} — 📞 <code>${escapeHtml(item.phone || '')}</code>\n` +
-      `🖼 <b>الصور:</b> ${photosCount} | 🎥 <b>الفيديو:</b> ${videosCount}${mediaLine}\n` +
+      `🖼 <b>صور العقار:</b> ${photosCount} | 🎥 <b>فيديو العقار:</b> ${videosCount}${mediaLine}\n` +
       `📝 <b>التفاصيل:</b> ${escapeHtml(desc.length > 240 ? desc.slice(0, 240) + '…' : desc)}`;
 
     return fitTelegramText(rawCap, !!currentMedia);
@@ -1510,7 +1518,7 @@ module.exports = function registerAdmin(bot, core) {
     );
     const inlineKb = buildAdInlineButtons(item, cardFilter);
     const controlKb = getAdminBrowsingKeyboard(
-      safeIdx, st.items.length, filterType, item, safeMediaIdx, totalMedia, hasReceiptSlide
+      safeIdx, st.items.length, filterType, item, safeMediaIdx, totalMedia, hasReceiptSlide, currentMedia
     );
 
     const cardExtra = inlineKb ? { caption, parse_mode: 'HTML', ...inlineKb } : { caption, parse_mode: 'HTML' };
