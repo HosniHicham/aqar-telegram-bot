@@ -2,7 +2,8 @@
 // =========================================================================
 // 🛡️ SERVER ADMIN — لوحة تحكم الإدارة
 // - تصفح صور وفيديوهات الإعلانات بنفس أسلوب التصفح السلس
-// - التنقل بين الإعلانات (المعلقة / المنشورة / المرفوضة / البحث)
+// - زر مباشر لمعاينة الوصل متى كان موجوداً + تصفية مباشرة لإعلانات بريدي موب المعلقة ذات الوصل
+// - التنقل بين الإعلانات (المعلقة / بريدي موب المعلقة / المنشورة / المرفوضة / البحث)
 // - تصفح طلبات الشحن (wallet_topups) والموافقة أو الرفض أو المراسلة
 // - إدارة ومعاينة استعلامات المستخدمين (user_inquiries) وسجل الردود (inquiry_replies)
 // - قراءة ومعاينة جدول التقييمات والنجوم (platform_reviews) والتنقل بينها والرد عليها في جدول الردود وإشعار المستخدم
@@ -121,7 +122,8 @@ module.exports = function registerAdmin(bot, core) {
 
   function getAdminMenuKeyboard() {
     const rows = [
-      ['⏳ المعلقة', '✅ المنشورة', '❌ المرفوضة'],
+      ['⏳ المعلقة', '🧾 بريدي موب المعلقة'],
+      ['✅ المنشورة', '❌ المرفوضة'],
       ['💳 طلبات الشحن', '📩 الاستعلامات', '⭐ التقييمات والنجوم'],
       ['🔎 بحث سريع', '📊 الإحصائيات', '👁 معاينة المنصة كمستخدم']
     ];
@@ -153,6 +155,12 @@ module.exports = function registerAdmin(bot, core) {
 
     if (currentItem && currentItem.id && (currentItem.user_id || currentItem._resolvedUserId)) {
       rows.push([`✉️ مراسلة بخصوص #${currentItem.id}`]);
+    }
+
+    if (filterType !== 'baridimob_pending') {
+      rows.push(['🧾 بريدي موب المعلقة', '⏳ المعلقة']);
+    } else {
+      rows.push(['⏳ المعلقة', '✅ المنشورة']);
     }
 
     rows.push(['📩 الاستعلامات', '🔎 بحث سريع', '🎛 لوحة الإدارة']);
@@ -1207,6 +1215,12 @@ module.exports = function registerAdmin(bot, core) {
   // =========================================================================
   // 🏠 تصفح الإعلانات والبحث
   // =========================================================================
+  function hasValidReceipt(row) {
+    if (!row || !row.receipt_url) return false;
+    if (row.receipt_url === 'FREE_NO_RECEIPT') return false;
+    return Boolean(normalizeMediaRef(row.receipt_url));
+  }
+
   async function fetchAdminAdsByFilter(filterType) {
     if (filterType === 'published') {
       const { data, error } = await supabase
@@ -1216,6 +1230,19 @@ module.exports = function registerAdmin(bot, core) {
         .limit(100);
       if (error || !data) return [];
       return data.map(row => ({ ...row, _filterType: 'published' }));
+    }
+
+    if (filterType === 'baridimob_pending') {
+      const { data, error } = await supabase
+        .from('pending_properties')
+        .select('*')
+        .eq('status', 'pending')
+        .order('id', { ascending: false })
+        .limit(150);
+      if (error || !data) return [];
+      return data
+        .filter(row => hasValidReceipt(row))
+        .map(row => ({ ...row, _filterType: 'pending' }));
     }
 
     const statusVal = filterType === 'rejected' ? 'rejected' : 'pending';
@@ -1366,16 +1393,16 @@ module.exports = function registerAdmin(bot, core) {
     item, idx, total, filterType, stats, searchQuery = '',
     currentMedia = null, mediaIdx = 0, totalMedia = 0, hasReceiptSlide = false
   ) {
-    const effectiveFilter = filterType || item._filterType || 'pending';
+    const effectiveFilter = (filterType === 'baridimob_pending' ? 'pending' : filterType) || item._filterType || 'pending';
     const titleMap = {
-      pending: '⏳ <b>قيد المراجعة</b>',
+      pending: filterType === 'baridimob_pending' ? '🧾 <b>بريدي موب — معلق بوصل</b>' : '⏳ <b>قيد المراجعة</b>',
       published: '✅ <b>منشور</b>',
       rejected: '❌ <b>مرفوض</b>'
     };
     const isFree = item.receipt_url === 'FREE_NO_RECEIPT';
     const typeBadge = effectiveFilter === 'published'
       ? '🌐 عرض عام'
-      : (isFree ? '🆓 باقة مجانية' : '💳 مدفوع بوصل');
+      : (isFree ? '🆓 باقة مجانية' : '💳 BaridiMob / CCP (مدفوع بوصل)');
 
     const photosCount = parseImagesFromImageUrl(item.image_url).length;
     const videosCount = parseMediaListFromField(item.video_url).length;
@@ -1445,6 +1472,7 @@ module.exports = function registerAdmin(bot, core) {
       delete adminBrowseState[adminId];
       const emptyLabels = {
         pending: 'لا توجد إعلانات بانتظار المراجعة حالياً',
+        baridimob_pending: 'لا توجد إعلانات معلقة خاصة ببريدي موب مع وصل حالياً',
         published: 'لا توجد إعلانات منشورة حالياً',
         rejected: 'لا توجد إعلانات مرفوضة حالياً',
         search: `لا توجد نتائج مطابقة${queryNote}`
@@ -1466,7 +1494,7 @@ module.exports = function registerAdmin(bot, core) {
     const item = st.items[safeIdx];
     await resolveAdOwnerUserId(item);
 
-    const cardFilter = item._filterType || (filterType === 'search' ? 'pending' : filterType);
+    const cardFilter = item._filterType || (filterType === 'baridimob_pending' ? 'pending' : (filterType === 'search' ? 'pending' : filterType));
     const { slides: mediaList, hasReceiptSlide } = buildAdMediaSlides(item, cardFilter);
 
     const totalMedia = mediaList.length;
@@ -1477,7 +1505,7 @@ module.exports = function registerAdmin(bot, core) {
 
     const currentMedia = totalMedia > 0 ? mediaList[safeMediaIdx] : null;
     const caption = formatAdminAdCaption(
-      item, safeIdx, st.items.length, cardFilter, stats, st.query || '',
+      item, safeIdx, st.items.length, filterType, stats, st.query || '',
       currentMedia, safeMediaIdx, totalMedia, hasReceiptSlide
     );
     const inlineKb = buildAdInlineButtons(item, cardFilter);
@@ -1737,6 +1765,11 @@ module.exports = function registerAdmin(bot, core) {
   bot.hears(['⏳ المعلقة', '📥 الطلبات المعلقة'], async (ctx) => {
     await safeDeleteUserMessage(ctx);
     await renderAdminAdAt(ctx, ctx.from.id, 'pending', 0, true, 0);
+  });
+
+  bot.hears('🧾 بريدي موب المعلقة', async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    await renderAdminAdAt(ctx, ctx.from.id, 'baridimob_pending', 0, true, 0);
   });
 
   bot.hears('✅ المنشورة', async (ctx) => {
