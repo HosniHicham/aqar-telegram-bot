@@ -2,8 +2,8 @@
 // =========================================================================
 // 🛡️ SERVER ADMIN — لوحة تحكم الإدارة
 // - تصفح صور وفيديوهات الإعلانات بنفس أسلوب التصفح السلس مع فصل الوصل عن صور العقار
-// - زر مباشر لمعاينة الوصل متى كان موجوداً + تصفية مباشرة لإعلانات بريدي موب المعلقة ذات الوصل
-// - التنقل بين الإعلانات (المعلقة / بريدي موب المعلقة / المنشورة / المرفوضة / البحث)
+// - زر مباشر لمعاينة الوصل متى كان موجوداً في الإعلانات المعلقة فقط
+// - التنقل بين الإعلانات (المعلقة / المنشورة / المرفوضة / البحث)
 // - تصفح طلبات الشحن (wallet_topups) والموافقة أو الرفض أو المراسلة
 // - إدارة ومعاينة استعلامات المستخدمين (user_inquiries) وسجل الردود (inquiry_replies)
 // - قراءة ومعاينة جدول التقييمات والنجوم (platform_reviews) والتنقل بينها والرد عليها في جدول الردود وإشعار المستخدم
@@ -122,8 +122,7 @@ module.exports = function registerAdmin(bot, core) {
 
   function getAdminMenuKeyboard() {
     const rows = [
-      ['⏳ المعلقة', '🧾 بريدي موب المعلقة'],
-      ['✅ المنشورة', '❌ المرفوضة'],
+      ['⏳ المعلقة', '✅ المنشورة', '❌ المرفوضة'],
       ['💳 طلبات الشحن', '📩 الاستعلامات', '⭐ التقييمات والنجوم'],
       ['🔎 بحث سريع', '📊 الإحصائيات', '👁 معاينة المنصة كمستخدم']
     ];
@@ -134,7 +133,7 @@ module.exports = function registerAdmin(bot, core) {
 
   function getAdminBrowsingKeyboard(
     idx, total, filterType, currentItem = null,
-    mediaIdx = 0, totalMedia = 0, hasReceiptSlide = false, currentMedia = null
+    mediaIdx = 0, totalMedia = 0, hasReceiptSlide = false, currentMedia = null, isPendingAd = false
   ) {
     const rows = [];
 
@@ -146,7 +145,7 @@ module.exports = function registerAdmin(bot, core) {
       rows.push(mediaRow);
     }
 
-    if (hasReceiptSlide && currentMedia && currentMedia.kind !== 'receipt') {
+    if (isPendingAd && hasReceiptSlide && currentMedia && currentMedia.kind !== 'receipt') {
       rows.push(['🧾 معاينة الوصل']);
     }
 
@@ -160,10 +159,10 @@ module.exports = function registerAdmin(bot, core) {
       rows.push([`✉️ مراسلة بخصوص #${currentItem.id}`]);
     }
 
-    if (filterType !== 'baridimob_pending') {
-      rows.push(['🧾 بريدي موب المعلقة', '⏳ المعلقة']);
-    } else {
+    if (filterType !== 'pending') {
       rows.push(['⏳ المعلقة', '✅ المنشورة']);
+    } else {
+      rows.push(['✅ المنشورة', '❌ المرفوضة']);
     }
 
     rows.push(['📩 الاستعلامات', '🔎 بحث سريع', '🎛 لوحة الإدارة']);
@@ -1218,12 +1217,6 @@ module.exports = function registerAdmin(bot, core) {
   // =========================================================================
   // 🏠 تصفح الإعلانات والبحث (مع عزل الوصل عن صور وفيديوهات العقار)
   // =========================================================================
-  function hasValidReceipt(row) {
-    if (!row || !row.receipt_url) return false;
-    if (row.receipt_url === 'FREE_NO_RECEIPT') return false;
-    return Boolean(normalizeMediaRef(row.receipt_url));
-  }
-
   async function fetchAdminAdsByFilter(filterType) {
     if (filterType === 'published') {
       const { data, error } = await supabase
@@ -1233,19 +1226,6 @@ module.exports = function registerAdmin(bot, core) {
         .limit(100);
       if (error || !data) return [];
       return data.map(row => ({ ...row, _filterType: 'published' }));
-    }
-
-    if (filterType === 'baridimob_pending') {
-      const { data, error } = await supabase
-        .from('pending_properties')
-        .select('*')
-        .eq('status', 'pending')
-        .order('id', { ascending: false })
-        .limit(150);
-      if (error || !data) return [];
-      return data
-        .filter(row => hasValidReceipt(row))
-        .map(row => ({ ...row, _filterType: 'pending' }));
     }
 
     const statusVal = filterType === 'rejected' ? 'rejected' : 'pending';
@@ -1364,7 +1344,7 @@ module.exports = function registerAdmin(bot, core) {
 
   // فصل وصل الدفع عن صور وفيديوهات العقار ومنع تكراره
   function buildAdMediaSlides(item, cardFilter) {
-    const receiptRef = cardFilter !== 'published' ? normalizeMediaRef(item.receipt_url) : null;
+    const receiptRef = cardFilter === 'pending' ? normalizeMediaRef(item.receipt_url) : null;
     const orderedMedia = buildOrderedBrowsingMedia(item);
     const slides = [];
 
@@ -1399,11 +1379,11 @@ module.exports = function registerAdmin(bot, core) {
 
   function formatAdminAdCaption(
     item, idx, total, filterType, stats, searchQuery = '',
-    currentMedia = null, mediaIdx = 0, totalMedia = 0, hasReceiptSlide = false
+    currentMedia = null, mediaIdx = 0, totalMedia = 0, hasReceiptSlide = false, isPendingAd = false
   ) {
-    const effectiveFilter = (filterType === 'baridimob_pending' ? 'pending' : filterType) || item._filterType || 'pending';
+    const effectiveFilter = filterType === 'search' ? (item._filterType || 'pending') : filterType;
     const titleMap = {
-      pending: filterType === 'baridimob_pending' ? '🧾 <b>بريدي موب — معلق بوصل</b>' : '⏳ <b>قيد المراجعة</b>',
+      pending: '⏳ <b>قيد المراجعة</b>',
       published: '✅ <b>منشور</b>',
       rejected: '❌ <b>مرفوض</b>'
     };
@@ -1419,7 +1399,7 @@ module.exports = function registerAdmin(bot, core) {
     const searchLine = searchQuery ? `🔎 <b>نتيجة البحث:</b> <code>${escapeHtml(searchQuery)}</code>\n` : '';
 
     let receiptStatusLine = '';
-    if (effectiveFilter === 'pending') {
+    if (isPendingAd) {
       if (isFree) {
         receiptStatusLine = `🧾 <b>الوصل:</b> 🆓 غير مطلوب (باقة مجانية)\n`;
       } else if (hasReceiptSlide) {
@@ -1480,7 +1460,6 @@ module.exports = function registerAdmin(bot, core) {
       delete adminBrowseState[adminId];
       const emptyLabels = {
         pending: 'لا توجد إعلانات بانتظار المراجعة حالياً',
-        baridimob_pending: 'لا توجد إعلانات معلقة خاصة ببريدي موب مع وصل حالياً',
         published: 'لا توجد إعلانات منشورة حالياً',
         rejected: 'لا توجد إعلانات مرفوضة حالياً',
         search: `لا توجد نتائج مطابقة${queryNote}`
@@ -1502,7 +1481,8 @@ module.exports = function registerAdmin(bot, core) {
     const item = st.items[safeIdx];
     await resolveAdOwnerUserId(item);
 
-    const cardFilter = item._filterType || (filterType === 'baridimob_pending' ? 'pending' : (filterType === 'search' ? 'pending' : filterType));
+    const cardFilter = item._filterType || (filterType === 'search' ? 'pending' : filterType);
+    const isPendingAd = cardFilter === 'pending';
     const { slides: mediaList, hasReceiptSlide } = buildAdMediaSlides(item, cardFilter);
 
     const totalMedia = mediaList.length;
@@ -1514,11 +1494,11 @@ module.exports = function registerAdmin(bot, core) {
     const currentMedia = totalMedia > 0 ? mediaList[safeMediaIdx] : null;
     const caption = formatAdminAdCaption(
       item, safeIdx, st.items.length, filterType, stats, st.query || '',
-      currentMedia, safeMediaIdx, totalMedia, hasReceiptSlide
+      currentMedia, safeMediaIdx, totalMedia, hasReceiptSlide, isPendingAd
     );
     const inlineKb = buildAdInlineButtons(item, cardFilter);
     const controlKb = getAdminBrowsingKeyboard(
-      safeIdx, st.items.length, filterType, item, safeMediaIdx, totalMedia, hasReceiptSlide, currentMedia
+      safeIdx, st.items.length, filterType, item, safeMediaIdx, totalMedia, hasReceiptSlide, currentMedia, isPendingAd
     );
 
     const cardExtra = inlineKb ? { caption, parse_mode: 'HTML', ...inlineKb } : { caption, parse_mode: 'HTML' };
@@ -1775,11 +1755,6 @@ module.exports = function registerAdmin(bot, core) {
     await renderAdminAdAt(ctx, ctx.from.id, 'pending', 0, true, 0);
   });
 
-  bot.hears('🧾 بريدي موب المعلقة', async (ctx) => {
-    await safeDeleteUserMessage(ctx);
-    await renderAdminAdAt(ctx, ctx.from.id, 'baridimob_pending', 0, true, 0);
-  });
-
   bot.hears('✅ المنشورة', async (ctx) => {
     await safeDeleteUserMessage(ctx);
     await renderAdminAdAt(ctx, ctx.from.id, 'published', 0, true, 0);
@@ -1795,6 +1770,11 @@ module.exports = function registerAdmin(bot, core) {
     const adminId = ctx.from.id;
     const st = adminBrowseState[adminId];
     if (!st) return openAdminHome(ctx);
+    const item = st.items?.[st.index || 0];
+    const cardFilter = item?._filterType || (st.filter === 'search' ? 'pending' : st.filter);
+    if (cardFilter !== 'pending') {
+      return renderAdminAdAt(ctx, adminId, st.filter, st.index || 0, false, st.mediaIndex || 0);
+    }
     await renderAdminAdAt(ctx, adminId, st.filter, st.index || 0, false, 0);
   });
 
