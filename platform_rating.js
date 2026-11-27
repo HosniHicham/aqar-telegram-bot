@@ -1,7 +1,7 @@
 'use strict';
 // =========================================================================
 // ⭐ PLATFORM RATING MODULE — خاصية تقييم المنصة وإرسال التقييم وعرض الإحصائيات
-// يعرض الاسم الكامل للمُقيّم ومجموع النجوم المتحصلة بأسلوب عرض منسّق.
+// يعرض كل تقييم/تعليق في فقاعة واحدة متكاملة، ويعرض التعليق السابق مع التقييم.
 // =========================================================================
 
 const LINE = '▬▬▬▬▬▬▬▬▬▬▬▬';
@@ -177,18 +177,22 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
     }
   }
 
-  function formatSingleReviewItem(review, index) {
+  // فقاعة واحدة كاملة تضم الاسم الكامل + التقييم + التاريخ + التعليق
+  function formatSingleReviewBubble(review, index) {
     const dt = formatDateTime(review.updated_at || review.created_at);
     const fullName = escapeHtml(review.reviewer_full_name || 'مستخدم المنصة');
     const stars = formatStarsVisual(review.rating);
-    const commentLine = review.comment
-      ? `\n<blockquote>💬 ${escapeHtml(review.comment)}</blockquote>`
-      : `\n<blockquote><i>تقييم بالنجوم فقط</i></blockquote>`;
+    const commentPart = review.comment
+      ? `\n💬 ${escapeHtml(review.comment)}`
+      : `\n<i>تقييم بالنجوم فقط</i>`;
+    const timePart = dt ? `\n🕒 <i>${escapeHtml(dt)}</i>` : '';
 
     return (
-      `<b>${index + 1}. 👤 ${fullName}</b> • <b>${stars}</b>` +
-      (dt ? `\n🕒 <i>${escapeHtml(dt)}</i>` : '') +
-      commentLine
+      `<blockquote>` +
+      `<b>${index + 1}. 👤 ${fullName} • ${stars}</b>` +
+      timePart +
+      commentPart +
+      `</blockquote>`
     );
   }
 
@@ -202,17 +206,19 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
       const fullName = escapeHtml(resolvedName || 'مستخدم');
       const nowText = formatDateTime(new Date());
       const titleBadge = isUpdate ? '✏️ تحديث تقييم للمنصة' : '⭐ تقييم جديد للمنصة';
-      const commentBlock = comment
-        ? `\n<blockquote>💬 ${escapeHtml(comment)}</blockquote>`
-        : `\n<blockquote><i>تقييم بالنجوم فقط</i></blockquote>`;
+      const commentLine = comment
+        ? `\n💬 ${escapeHtml(comment)}`
+        : `\n<i>تقييم بالنجوم فقط</i>`;
 
       const adminMsg = fitTelegramText(
         `<b>${titleBadge}</b>\n` +
         `${LINE}\n` +
-        `👤 <b>المستخدم:</b> <b>${fullName}</b> (<code>${userId}</code>)\n` +
-        `🌟 <b>التقييم:</b> <b>${formatStarsVisual(rating)}</b>\n` +
+        `<blockquote>` +
+        `👤 <b>${fullName}</b> (<code>${userId}</code>)\n` +
+        `🌟 <b>${formatStarsVisual(rating)}</b>\n` +
         `🕒 <i>${escapeHtml(nowText)}</i>` +
-        commentBlock,
+        commentLine +
+        `</blockquote>`,
         false
       );
 
@@ -253,7 +259,7 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
 
       if (stats.recentComments.length > 0) {
         ratingBlock += `\n\n💬 <b>أحدث آراء المستخدمين:</b>\n\n` +
-          stats.recentComments.map((c, i) => formatSingleReviewItem(c, i)).join('\n\n');
+          stats.recentComments.map((c, i) => formatSingleReviewBubble(c, i)).join('\n');
       }
     }
 
@@ -290,16 +296,20 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
     const prevRating = prevReview && Object.prototype.hasOwnProperty.call(STAR_CHOICES, Number(prevReview.rating))
       ? Number(prevReview.rating)
       : null;
+    const prevComment = prevReview?.comment ? String(prevReview.comment).trim() : '';
 
     userState[userId] = {
       step: 'rating_platform_stars',
-      data: { rating: prevRating, isUpdate: Boolean(prevReview) },
+      data: { rating: prevRating, comment: prevComment, isUpdate: Boolean(prevReview) },
       chatId: ctx.chat.id,
       wizardMsgId: null
     };
 
     const prevNote = prevRating !== null
-      ? `\n📌 <b>تقييمك السابق:</b> <b>${formatStarsVisual(prevRating)}</b>\n`
+      ? `\n<blockquote>` +
+        `📌 <b>تقييمك السابق:</b> <b>${formatStarsVisual(prevRating)}</b>` +
+        (prevComment ? `\n💬 <b>تعليقك السابق:</b> ${escapeHtml(prevComment)}` : `\n<i>بدون تعليق نصي سابق</i>`) +
+        `</blockquote>\n`
       : '';
 
     await replyTracked(
@@ -327,7 +337,7 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
       return showAboutPlatformScreen(ctx, userId);
     }
 
-    const lines = stats.allReviews.slice(0, 15).map((r, idx) => formatSingleReviewItem(r, idx));
+    const lines = stats.allReviews.slice(0, 15).map((r, idx) => formatSingleReviewBubble(r, idx));
 
     const sent = await ctx.reply(
       fitTelegramText(
@@ -335,7 +345,7 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
         `${LINE}\n` +
         `⭐ <b>مجموع النجوم:</b> <b>${stats.totalStars}</b>  •  📈 <b>المتوسط:</b> <b>${stats.average}</b>  •  👥 <b>الإجمالي:</b> <b>${stats.total}</b>\n` +
         `${LINE}\n\n` +
-        `${lines.join('\n\n')}`,
+        `${lines.join('\n')}`,
         false
       ),
       {
