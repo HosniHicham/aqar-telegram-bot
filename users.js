@@ -5,10 +5,12 @@
 // المرفق في استعلام العميل مدمج داخل نفس رسالة البطاقة بدون رسائل منفصلة.
 // يدعم الشحن عبر BaridiMob / CCP (وصل واحد لكل عملية شحن،
 // مع حفظ أرشيف كامل لجميع عمليات الشحن المتتالية في جدول wallet_topups).
+// يدعم المفضلة أثناء تصفح العقارات وعرض قائمة المفضلات الخاصة بالعميل.
 // =========================================================================
 
 const BTN_CONTACT_OWNER = '📞 اتصل بالمالك';
 const BTN_RATE_PLATFORM = '⭐ تقييم المنصة';
+const BTN_FAVORITES_MENU = '⭐ مفضلاتي';
 const registerPlatformRating = require('./platform_rating');
 
 module.exports = function registerUsers(bot, core) {
@@ -81,6 +83,106 @@ module.exports = function registerUsers(bot, core) {
     }
   }
 
+  // =========================================================================
+  // ⭐ دوال المفضلة (Favorites Helpers)
+  // =========================================================================
+  async function isPropertyFavorited(userId, propertyId, propertySource = 'test_messages') {
+    try {
+      const { data, error } = await supabase
+        .from('user_favorites')
+        .select('id')
+        .eq('user_id', Number(userId))
+        .eq('property_id', Number(propertyId))
+        .eq('property_source', String(propertySource || 'test_messages'))
+        .limit(1);
+
+      if (error) return false;
+      return Array.isArray(data) && data.length > 0;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  async function toggleFavoriteProperty(userId, propertyId, propertySource = 'test_messages') {
+    const cleanUserId = Number(userId);
+    const cleanPropId = Number(propertyId);
+    const cleanSource = String(propertySource || 'test_messages');
+
+    const exists = await isPropertyFavorited(cleanUserId, cleanPropId, cleanSource);
+
+    if (exists) {
+      const { error } = await supabase
+        .from('user_favorites')
+        .delete()
+        .eq('user_id', cleanUserId)
+        .eq('property_id', cleanPropId)
+        .eq('property_source', cleanSource);
+      if (error) throw error;
+      return { favorited: false };
+    }
+
+    const { error } = await supabase
+      .from('user_favorites')
+      .insert([{
+        user_id: cleanUserId,
+        property_id: cleanPropId,
+        property_source: cleanSource
+      }]);
+    if (error) throw error;
+    return { favorited: true };
+  }
+
+  async function fetchUserFavoriteProperties(userId) {
+    try {
+      const { data: favRows, error } = await supabase
+        .from('user_favorites')
+        .select('id, property_id, property_source, created_at')
+        .eq('user_id', Number(userId))
+        .order('id', { ascending: false });
+
+      if (error || !Array.isArray(favRows) || favRows.length === 0) return [];
+
+      const propIds = [...new Set(favRows.map(f => Number(f.property_id)).filter(n => Number.isFinite(n) && n > 0))];
+      if (propIds.length === 0) return [];
+
+      const { data: props, error: propErr } = await supabase
+        .from('test_messages')
+        .select('*')
+        .in('id', propIds);
+
+      if (propErr || !Array.isArray(props)) return [];
+
+      const byId = new Map(props.map(p => [Number(p.id), p]));
+      const ordered = [];
+      for (const fav of favRows) {
+        const found = byId.get(Number(fav.property_id));
+        if (found) {
+          ordered.push({
+            ...found,
+            _fav_id: fav.id,
+            _fav_source: fav.property_source || 'test_messages'
+          });
+        }
+      }
+      return ordered;
+    } catch (e) {
+      console.error('fetchUserFavoriteProperties error:', e.message);
+      return [];
+    }
+  }
+
+  function buildPropertyInlineKeyboard(item, canContactOwner, isFavorited) {
+    const rows = [];
+    const favLabel = isFavorited ? '💔 إزالة من المفضلة' : '⭐ إضافة للمفضلة';
+    const favRow = [Markup.button.callback(favLabel, `toggle_fav_test_messages_${item.id}`)];
+
+    if (canContactOwner) {
+      favRow.push(Markup.button.callback('💬 مراسلة المالك', `msg_prop:${item.id}:${item.user_id}`));
+    }
+    rows.push(favRow);
+    return Markup.inlineKeyboard(rows);
+  }
+
   const CLIENT_INQUIRY_STATUS = {
     open: '🆕 مفتوح (بانتظار الرد)',
     in_progress: '⏳ قيد المعالجة',
@@ -147,8 +249,8 @@ module.exports = function registerUsers(bot, core) {
       : Markup.keyboard([
           ['🔍 تصفح العقارات المتاحة', '➕ إضافة عقار جديد'],
           ['🎁 رصيدي وجمع النقاط', getSupportButtonLabel(unreadRepliesCount)],
-          ['🌐 تصفح الموقع الرسمي (البروزر)', 'ℹ️ عن المنصة'],
-          [BTN_RATE_PLATFORM]
+          [BTN_FAVORITES_MENU, 'ℹ️ عن المنصة'],
+          ['🌐 تصفح الموقع الرسمي (البروزر)', BTN_RATE_PLATFORM]
         ]).resize();
 
     return applySupportBadgeToKeyboard(baseKb, unreadRepliesCount);
@@ -895,7 +997,7 @@ module.exports = function registerUsers(bot, core) {
     }
   }
 
-  function getBrowsingKeyboard(currentIndex, totalCount, mediaIdx = 0, totalMedia = 0, canContactOwner = false) {
+  function getBrowsingKeyboard(currentIndex, totalCount, mediaIdx = 0, totalMedia = 0, canContactOwner = false, isFavorited = false) {
     const rows = [];
     if (totalMedia > 1) {
       const mediaRow = [];
@@ -909,10 +1011,14 @@ module.exports = function registerUsers(bot, core) {
     navRow.push(`📄 ${currentIndex + 1} / ${totalCount}`);
     if (currentIndex < totalCount - 1) navRow.push('التالي ➡️');
     rows.push(navRow);
+
+    const actionRow = [isFavorited ? '💔 إزالة من المفضلة' : '⭐ إضافة للمفضلة'];
     if (canContactOwner) {
-      rows.push([BTN_CONTACT_OWNER]);
+      actionRow.push(BTN_CONTACT_OWNER);
     }
-    rows.push(['📍 تغيير الولاية', '🏠 القائمة الرئيسية']);
+    rows.push(actionRow);
+    rows.push([BTN_FAVORITES_MENU, '📍 تغيير الولاية']);
+    rows.push(['🏠 القائمة الرئيسية']);
     return Markup.keyboard(rows).resize();
   }
 
@@ -1369,7 +1475,7 @@ module.exports = function registerUsers(bot, core) {
 
   bot.use(async (ctx, next) => {
     if (ctx.message && ctx.message.text && ctx.message.text.startsWith('/')) return next();
-    if (ctx.from && ctx.message && (ctx.message.text?.includes('تصفح') || ctx.message.text?.includes('إضافة') || ctx.message.text?.includes('رصيدي'))) {
+    if (ctx.from && ctx.message && (ctx.message.text?.includes('تصفح') || ctx.message.text?.includes('إضافة') || ctx.message.text?.includes('رصيدي') || ctx.message.text?.includes('مفضلاتي'))) {
       const verified = await isUserVerified(ctx.from.id);
       if (!verified) {
         return replyTracked(ctx, ctx.from.id, '⚠️ عذراً، يجب عليك تأكيد رقم هاتفك أولاً عبر الزر أدناه:', getAuthKeyboard());
@@ -1506,7 +1612,7 @@ module.exports = function registerUsers(bot, core) {
       const uniqueStates = [...new Set(data.map(item => item.state_name).filter(Boolean))];
       const stateButtons = uniqueStates.map(state => `📍 ${state}`);
       const chunkedStates = chunkButtons(stateButtons, 4);
-      chunkedStates.push(['🌐 الكل'], ['🏠 القائمة الرئيسية']);
+      chunkedStates.push(['🌐 الكل', BTN_FAVORITES_MENU], ['🏠 القائمة الرئيسية']);
 
       const browseTitle = await getSetting('browse_title', '🔍 <b>اختر الولاية المطلوبة لعرض العقارات من الأزرار أسفل الشاشة:</b>');
       await replyTracked(ctx, userId, browseTitle, { parse_mode: 'HTML', ...Markup.keyboard(chunkedStates).resize() }, true);
@@ -1561,6 +1667,15 @@ module.exports = function registerUsers(bot, core) {
     renderPropertyPage(ctx, userId, 0, 0);
   });
 
+  bot.hears(/^⭐ مفضلاتي(?:\s*\(\d+\))?$/, async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    const userId = ctx.from.id;
+    delete supportUserSession[userId];
+    if (core.messenger?.messengerSession) delete core.messenger.messengerSession[userId];
+    browsingSession[userId] = { state: 'FAVORITES', page: 0, photoIndex: 0 };
+    return renderPropertyPage(ctx, userId, 0, 0);
+  });
+
   async function renderPropertyPage(ctx, userId, pageIndex, mediaIndex = 0) {
     const session = browsingSession[userId];
     if (!session) return;
@@ -1570,13 +1685,29 @@ module.exports = function registerUsers(bot, core) {
     const mainKb = await buildUserMainKeyboard(userId, unreadCount);
 
     try {
-      let query = supabase.from('test_messages').select('*').order('id', { ascending: false });
-      if (session.state !== 'ALL') query = query.eq('state_name', session.state);
+      let data = [];
+      if (session.state === 'FAVORITES') {
+        data = await fetchUserFavoriteProperties(userId);
+        if (!data || data.length === 0) {
+          delete browsingSession[userId];
+          return replyTracked(
+            ctx,
+            userId,
+            `⭐ <b>قائمة مفضلاتك فارغة حالياً.</b>\nاضغط على زر <b>"⭐ إضافة للمفضلة"</b> أثناء تصفح أي عقار لحفظه هنا.`,
+            { parse_mode: 'HTML', ...mainKb },
+            true
+          );
+        }
+      } else {
+        let query = supabase.from('test_messages').select('*').order('id', { ascending: false });
+        if (session.state !== 'ALL') query = query.eq('state_name', session.state);
 
-      const { data, error } = await query;
-      if (error) throw error;
-      if (!data || data.length === 0) {
-        return replyTracked(ctx, userId, '📭 عذراً، لا توجد عقارات مسجلة.', mainKb, true);
+        const res = await query;
+        if (res.error) throw res.error;
+        data = res.data || [];
+        if (data.length === 0) {
+          return replyTracked(ctx, userId, '📭 عذراً، لا توجد عقارات مسجلة.', mainKb, true);
+        }
       }
 
       if (pageIndex < 0) pageIndex = 0;
@@ -1585,6 +1716,9 @@ module.exports = function registerUsers(bot, core) {
 
       const item = data[pageIndex];
       const canContactOwner = Boolean(item.user_id && Number(item.user_id) !== Number(userId));
+      const isFavorited = session.state === 'FAVORITES'
+        ? true
+        : await isPropertyFavorited(userId, item.id, 'test_messages');
       session.currentProperty = item;
 
       const orderedMedia = buildOrderedBrowsingMedia(item);
@@ -1599,9 +1733,12 @@ module.exports = function registerUsers(bot, core) {
       const mediaTypeLabel = currentMedia ? (currentMedia.type === 'video' ? '🎥 فيديو' : '🖼 صورة') : '';
       const mediaLine = totalMedia > 0 ? `\n${mediaTypeLabel}: <b>${safeMediaIndex + 1} / ${totalMedia}</b>` : '';
       const publishedAtText = item.created_at ? formatDateTime(item.created_at) : 'غير مسجل';
+      const scopeLabel = session.state === 'FAVORITES'
+        ? `⭐ المفضلة (${escapeHtml(item.state_name || '')})`
+        : escapeHtml(item.state_name || '');
 
       const rawCaption =
-        `🏛 <b>الولاية:</b> ${escapeHtml(item.state_name || '')} (${pageIndex + 1}/${data.length})\n\n` +
+        `🏛 <b>الولاية:</b> ${scopeLabel} (${pageIndex + 1}/${data.length})\n\n` +
         `🏠 <b>العقار:</b> ${escapeHtml(item.property_type || '')}\n` +
         `💰 <b>السعر:</b> ${formatMoney(item.price)}\n` +
         `📞 <b>هاتف المالك:</b> <code>${escapeHtml(item.phone || '')}</code>\n` +
@@ -1609,17 +1746,13 @@ module.exports = function registerUsers(bot, core) {
         `📝 <b>الوصف:</b> ${escapeHtml(item.description || item.message || '')}`;
 
       const caption = fitTelegramText(rawCaption, !!currentMedia);
-      const replyKb = getBrowsingKeyboard(pageIndex, data.length, safeMediaIndex, totalMedia, canContactOwner);
-      const msgInlineKb = canContactOwner
-        ? Markup.inlineKeyboard([
-            [Markup.button.callback('💬 مراسلة المالك', `msg_prop:${item.id}:${item.user_id}`)]
-          ])
-        : undefined;
+      const replyKb = getBrowsingKeyboard(pageIndex, data.length, safeMediaIndex, totalMedia, canContactOwner, isFavorited);
+      const msgInlineKb = buildPropertyInlineKeyboard(item, canContactOwner, isFavorited);
 
       const cardExtra = {
         caption,
         parse_mode: 'HTML',
-        ...(msgInlineKb || {}),
+        ...msgInlineKb,
         ...replyKb
       };
 
@@ -1643,6 +1776,113 @@ module.exports = function registerUsers(bot, core) {
     }
   }
 
+  bot.action(/^toggle_fav_([a-zA-Z0-9_]+)_(\d+)$/, async (ctx) => {
+    const userId = ctx.from?.id;
+    if (!userId) return ctx.answerCbQuery().catch(() => {});
+
+    const propSource = ctx.match[1];
+    const propId = Number(ctx.match[2]);
+
+    try {
+      const { favorited } = await toggleFavoriteProperty(userId, propId, propSource);
+
+      await ctx.answerCbQuery(
+        favorited ? '⭐ تمت إضافة العقار إلى مفضلتك' : '💔 تمت إزالة العقار من مفضلتك',
+        { show_alert: false }
+      ).catch(() => {});
+
+      const session = browsingSession[userId];
+      if (session && session.state === 'FAVORITES' && !favorited) {
+        return renderPropertyPage(ctx, userId, session.page || 0, session.photoIndex || 0);
+      }
+
+      const currentProp = session?.currentProperty;
+      const canContactOwner = Boolean(currentProp && Number(currentProp.id) === propId && currentProp.user_id && Number(currentProp.user_id) !== Number(userId));
+      const updatedInlineKb = buildPropertyInlineKeyboard({ id: propId, user_id: currentProp?.user_id }, canContactOwner, favorited);
+
+      await ctx.editMessageReplyMarkup(updatedInlineKb.reply_markup).catch(() => {});
+
+      if (session) {
+        let totalCount = 1;
+        if (session.state !== 'ALL') {
+          const { data } = await supabase.from('test_messages').select('id').eq('state_name', session.state);
+          totalCount = (data || []).length || 1;
+        } else {
+          const { data } = await supabase.from('test_messages').select('id');
+          totalCount = (data || []).length || 1;
+        }
+        const replyKb = getBrowsingKeyboard(session.page || 0, totalCount, session.photoIndex || 0, 0, canContactOwner, favorited);
+        await ctx.reply(
+          favorited ? '⭐ <b>تم الحفظ في المفضلة.</b>' : '💔 <b>تمت الإزالة من المفضلة.</b>',
+          { parse_mode: 'HTML', ...replyKb }
+        ).then(m => trackBotMessage(userId, ctx.chat.id, m.message_id)).catch(() => {});
+      }
+    } catch (e) {
+      console.error('toggle_fav error:', e.message);
+      await ctx.answerCbQuery('⚠️ حدث خطأ أثناء تحديث المفضلة').catch(() => {});
+    }
+  });
+
+  bot.hears(/^(?:⭐ إضافة للمفضلة|💔 إزالة من المفضلة)$/, async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    const userId = ctx.from.id;
+    const session = browsingSession[userId];
+    let prop = session?.currentProperty || null;
+
+    if (!prop && session) {
+      if (session.state === 'FAVORITES') {
+        const favList = await fetchUserFavoriteProperties(userId);
+        prop = favList[Math.min(Math.max(0, Number(session.page) || 0), Math.max(0, favList.length - 1))] || null;
+      } else {
+        let query = supabase.from('test_messages').select('*').order('id', { ascending: false });
+        if (session.state !== 'ALL') query = query.eq('state_name', session.state);
+        const { data } = await query;
+        if (Array.isArray(data) && data.length > 0) {
+          prop = data[Math.min(Math.max(0, Number(session.page) || 0), data.length - 1)];
+        }
+      }
+    }
+
+    if (!prop?.id) {
+      return replyTracked(ctx, userId, '⚠️ <b>تعذر تحديد العقار الحالي.</b>', { parse_mode: 'HTML' }, true);
+    }
+
+    try {
+      const { favorited } = await toggleFavoriteProperty(userId, prop.id, 'test_messages');
+      if (session && session.state === 'FAVORITES' && !favorited) {
+        return renderPropertyPage(ctx, userId, session.page || 0, session.photoIndex || 0);
+      }
+
+      const canContactOwner = Boolean(prop.user_id && Number(prop.user_id) !== Number(userId));
+      let totalCount = 1;
+      if (session) {
+        if (session.state === 'FAVORITES') {
+          const favs = await fetchUserFavoriteProperties(userId);
+          totalCount = favs.length || 1;
+        } else {
+          let q = supabase.from('test_messages').select('id');
+          if (session.state !== 'ALL') q = q.eq('state_name', session.state);
+          const { data } = await q;
+          totalCount = (data || []).length || 1;
+        }
+      }
+
+      const replyKb = getBrowsingKeyboard(session?.page || 0, totalCount, session?.photoIndex || 0, 0, canContactOwner, favorited);
+      await replyTracked(
+        ctx,
+        userId,
+        favorited
+          ? `⭐ <b>تمت إضافة العقار <code>#${prop.id}</code> إلى مفضلتك.</b>`
+          : `💔 <b>تمت إزالة العقار <code>#${prop.id}</code> من مفضلتك.</b>`,
+        { parse_mode: 'HTML', ...replyKb },
+        true
+      );
+    } catch (e) {
+      console.error('fav button error:', e.message);
+      await replyTracked(ctx, userId, '⚠️ حدث خطأ أثناء تحديث المفضلة.', { parse_mode: 'HTML' }, true);
+    }
+  });
+
   bot.hears(BTN_CONTACT_OWNER, async (ctx) => {
     await safeDeleteUserMessage(ctx);
     const userId = ctx.from.id;
@@ -1652,7 +1892,7 @@ module.exports = function registerUsers(bot, core) {
     if (!prop && session) {
       try {
         let query = supabase.from('test_messages').select('*').order('id', { ascending: false });
-        if (session.state !== 'ALL') query = query.eq('state_name', session.state);
+        if (session.state !== 'ALL' && session.state !== 'FAVORITES') query = query.eq('state_name', session.state);
         const { data } = await query;
         if (Array.isArray(data) && data.length > 0) {
           const safeIdx = Math.min(Math.max(0, Number(session.page) || 0), data.length - 1);
@@ -1728,10 +1968,16 @@ module.exports = function registerUsers(bot, core) {
     const session = browsingSession[userId];
     if (!session) return;
 
-    let query = supabase.from('test_messages').select('*').order('id', { ascending: false });
-    if (session.state !== 'ALL') query = query.eq('state_name', session.state);
-    const { data } = await query;
-    const totalCount = data ? data.length : 0;
+    let totalCount = 0;
+    if (session.state === 'FAVORITES') {
+      const favs = await fetchUserFavoriteProperties(userId);
+      totalCount = favs.length;
+    } else {
+      let query = supabase.from('test_messages').select('*').order('id', { ascending: false });
+      if (session.state !== 'ALL') query = query.eq('state_name', session.state);
+      const { data } = await query;
+      totalCount = data ? data.length : 0;
+    }
     if (totalCount === 0) return;
 
     session.selectingPage = true;
@@ -2075,8 +2321,9 @@ module.exports = function registerUsers(bot, core) {
   function getSupportHubKeyboard(unreadRepliesCount = 0) {
     return Markup.keyboard([
       [getInquiriesMenuLabel(unreadRepliesCount), '📋 إعلاناتي وحالتها'],
-      ['👤 ملفي الشخصي ورصيدي', '🗂 تصفح إعلاناتي الخاصة'],
-      ['💬 دعم واقتراحات وشكر', '🏠 القائمة الرئيسية']
+      [BTN_FAVORITES_MENU, '👤 ملفي الشخصي ورصيدي'],
+      ['🗂 تصفح إعلاناتي الخاصة', '💬 دعم واقتراحات وشكر'],
+      ['🏠 القائمة الرئيسية']
     ]).resize();
   }
 
@@ -2165,6 +2412,7 @@ module.exports = function registerUsers(bot, core) {
   async function openSupportDashboard(ctx, userId) {
     const dbUser = await getUserRecord(userId);
     const allAds = await fetchUserOwnedAds(userId);
+    const favAds = await fetchUserFavoriteProperties(userId);
     const {
       inquiries: myInquiries,
       unreadRepliesCount,
@@ -2194,6 +2442,7 @@ module.exports = function registerUsers(bot, core) {
       `👋 أهلاً بك يا <b>${name}</b>\n` +
       `💼 <b>رصيد المحفظة:</b> <b>${walletBalance}</b>\n` +
       `🪙 <b>رصيد النقاط:</b> <b>${points} نقطة</b>\n` +
+      `⭐ <b>المفضلة:</b> <b>${favAds.length} عقار</b>\n` +
       `📨 <b>استعلاماتك:</b> الكل <b>${myInquiries.length}</b> | 🔔 غير مقروءة: <b>${unreadInquiriesCount}</b> | 📖 مقروءة: <b>${readInquiriesCount}</b> | 💬 ردود جديدة: <b>(${unreadRepliesCount})</b>\n` +
       `📊 <b>إعلاناتك:</b> إجمالي <b>${allAds.length}</b> | ⏳ معلق: <b>${pendingCount}</b> | ✅ مقبول: <b>${approvedCount}</b> | ❌ مرفوض: <b>${rejectedCount}</b>` +
       alertLine +
@@ -2950,10 +3199,25 @@ module.exports = function registerUsers(bot, core) {
       await safeDeleteUserMessage(ctx);
       const parentId = state.data?.parentInquiryId;
 
+      let followSubject = parentId ? `متابعة للاستعلام #${parentId}` : 'متابعة استفسار';
+      if (parentId) {
+        try {
+          const { data: parentRow } = await supabase
+            .from('user_inquiries')
+            .select('inquiry_type')
+            .eq('id', Number(parentId))
+            .limit(1);
+          const pType = (Array.isArray(parentRow) ? parentRow[0] : parentRow)?.inquiry_type;
+          if (pType === 'rating') {
+            followSubject = `رد على التقييم (#${parentId})`;
+          }
+        } catch (_) {}
+      }
+
       const savedFollow = await sendStructuredTicketToAdmins(
         ctx,
         userId,
-        parentId ? `متابعة للاستعلام #${parentId}` : 'متابعة استفسار',
+        followSubject,
         userText,
         null,
         'text',
