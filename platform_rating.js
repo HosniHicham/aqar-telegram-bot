@@ -7,7 +7,7 @@
 
 const LINE = '▬▬▬▬▬▬▬▬▬▬▬▬';
 const NAME_CACHE_TTL = 60 * 60 * 1000;
-const SUPPORT_BTN_TEXT = '💬 الردود والاستفسار';
+const SUPPORT_BTN_TEXT = '📞 الدعم والإدارة';
 
 const STAR_CHOICES = {
   0: '☆☆☆☆☆',
@@ -46,11 +46,43 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
     formatDateTime, escapeHtml, fitTelegramText
   } = core;
 
-  const { registerFreeTextStep } = helpers;
+  const { registerFreeTextStep } = helpers || {};
   const nameCache = new Map();
 
   if (typeof registerFreeTextStep === 'function') {
     registerFreeTextStep('rating_platform_comment');
+  }
+
+  function getSupportDashboardFn() {
+    if (typeof helpers?.openSupportDashboard === 'function') return helpers.openSupportDashboard;
+    if (typeof core?.openSupportDashboard === 'function') return core.openSupportDashboard;
+    return null;
+  }
+
+  function getClientInquiryFn() {
+    if (typeof helpers?.renderClientInquiryAt === 'function') return helpers.renderClientInquiryAt;
+    if (typeof core?.renderClientInquiryAt === 'function') return core.renderClientInquiryAt;
+    return null;
+  }
+
+  async function openSupportFromRating(ctx, userId) {
+    const dashboardFn = getSupportDashboardFn();
+    if (dashboardFn) {
+      return dashboardFn(ctx, userId);
+    }
+
+    const inquiryFn = getClientInquiryFn();
+    if (inquiryFn) {
+      return inquiryFn(ctx, userId, 0, true, 'all');
+    }
+
+    return replyTracked(
+      ctx,
+      userId,
+      `📞 <b>الردود والاستفسار</b>\n\nاضغط على زر <b>"${SUPPORT_BTN_TEXT}"</b> من القائمة لفتح مركز الدعم والردود.`,
+      { parse_mode: 'HTML' },
+      true
+    );
   }
 
   function getTelegramClient(ctx) {
@@ -428,6 +460,11 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
     await clearTrackedBotMessages(ctx, userId, keepIds);
   });
 
+  bot.hears(/^📞 الدعم والإدارة(?:\s*\(\d+\))?$/, async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    return openSupportFromRating(ctx, ctx.from.id);
+  });
+
   async function submitPlatformReview(ctx, userId, chosenRating, rawComment = null, isUpdate = false) {
     const cleanUserId = Number(userId);
     const cleanRating = Math.min(6, Math.max(0, Number(chosenRating)));
@@ -437,7 +474,7 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
     const nowIso = new Date().toISOString();
     const nameParts = await resolveNamePartsForSubmission(ctx, cleanUserId);
 
-    const { data, error } = await supabase
+    const { error } = await supabase
       .from('platform_reviews')
       .upsert(
         [
@@ -469,7 +506,7 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
 
     delete userState[cleanUserId];
 
-    // توجيه صاحب التقييم الأقل من 3 نجوم إلى زر الردود والاستفسار لتسجيل استفساره أو شكواه
+    // توجيه صاحب التقييم الأقل من 3 نجوم إلى قسم الردود والاستفسار لتسجيل استفساره أو شكواه
     if (cleanRating < 3) {
       const sent = await ctx.reply(
         `📌 <b>تم حفظ تقييمك (<b>${formatStarsVisual(cleanRating)}</b>).</b>\n` +
@@ -511,7 +548,7 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
     const userText = ctx.message?.text ? ctx.message.text.trim() : '';
     if (!userText || userText.startsWith('/')) return next();
 
-    if (['⬅️ رجوع', '🏠 القائمة الرئيسية', '❌ إلغاء العملية والعودة', SUPPORT_BTN_TEXT].includes(userText)) {
+    if (['⬅️ رجوع', '🏠 القائمة الرئيسية', '❌ إلغاء العملية والعودة'].includes(userText) || /^📞 الدعم والإدارة(?:\s*\(\d+\))?$/.test(userText)) {
       return next();
     }
 
