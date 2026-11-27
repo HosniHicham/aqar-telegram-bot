@@ -104,6 +104,50 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
     ]).resize();
   }
 
+  function buildRatingReplyInlineKeyboard(latestInquiryId = null) {
+    const cbData = `rate_reply_start_${latestInquiryId || 0}`;
+    return Markup.inlineKeyboard([
+      [Markup.button.callback('💬 رد على التقييم الآن', cbData)]
+    ]);
+  }
+
+  async function enterRatingReplyMode(ctx, userId, latestInquiryId = null) {
+    const cleanUserId = Number(userId);
+    let resolvedInquiryId = latestInquiryId || userState[cleanUserId]?.data?.latestInquiryId || null;
+
+    if (!resolvedInquiryId) {
+      const fetched = await fetchAllRatingAdminReplies(cleanUserId);
+      resolvedInquiryId = fetched.latestInquiryId;
+    }
+
+    userState[cleanUserId] = {
+      step: 'rating_user_replying',
+      data: { latestInquiryId: resolvedInquiryId },
+      chatId: ctx.chat.id,
+      wizardMsgId: null
+    };
+
+    const refLine = resolvedInquiryId ? ` <code>#${resolvedInquiryId}</code>` : '';
+    const msg =
+      `💬 <b>رد على التقييم${refLine}</b>\n` +
+      `${LINE}\n` +
+      `📍 <b>المسار:</b> <code>تقييم المنصة ← رد على التقييم</code>\n` +
+      `✍️ اكتب ردك الآن أو أرفق صورة/فيديو وسيصل مباشرة إلى الإدارة دون حذف رسالتك:`;
+
+    await replyTracked(
+      ctx,
+      cleanUserId,
+      msg,
+      {
+        parse_mode: 'HTML',
+        ...Markup.keyboard([
+          ['⬅️ رجوع', '🏠 القائمة الرئيسية']
+        ]).resize()
+      },
+      true
+    );
+  }
+
   async function openSupportAndImprovementsFlow(ctx, userId, chosenRating = null) {
     const cleanUserId = Number(userId);
 
@@ -481,9 +525,9 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
 
       const inlineRows = [];
       if (savedRecord?.id) {
-        inlineRows.push([Markup.button.callback(`💬 الرد على الاستعلام (#${savedRecord.id})`, `inq_reply_${savedRecord.id}`)][span_2](start_span)[span_2](end_span)[span_3](start_span)[span_3](end_span));
+        inlineRows.push([Markup.button.callback(`💬 الرد على الاستعلام (#${savedRecord.id})`, `inq_reply_${savedRecord.id}`)]);
       }
-      inlineRows.push([Markup.button.callback(`✉️ رد على العميل (${cleanUserId})`, `support_reply_${cleanUserId}`)][span_4](start_span)[span_4](end_span)[span_5](start_span)[span_5](end_span));
+      inlineRows.push([Markup.button.callback(`✉️ رد على العميل (${cleanUserId})`, `support_reply_${cleanUserId}`)]);
       const kb = Markup.inlineKeyboard(inlineRows);
 
       for (const adminId of adminIds) {
@@ -751,14 +795,17 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
 
     const repliesBlock = formatRatingAdminRepliesBlock(adminReplies);
 
+    const routeHint = adminReplies.length > 0
+      ? `\n📍 <b>المسار:</b> اضغط زر <b>"💬 رد على التقييم"</b> بالأسفل أو الزر التفاعلي للرد على الإدارة، أو اختر النجوم لتحديث التقييم.`
+      : '';
+
     const replyBtnRow = adminReplies.length > 0
       ? [['💬 رد على التقييم']]
       : [];
 
-    await replyTracked(
-      ctx, userId,
+    const sent = await ctx.reply(
       fitTelegramText(
-        `⭐ <b>تقييم منصة عقار الجزائر</b>\n${LINE}${prevNote}${repliesBlock}\n👇 <i>اختر تقييمك من الأزرار في الأسفل</i>`,
+        `⭐ <b>تقييم منصة عقار الجزائر</b>\n${LINE}${prevNote}${repliesBlock}${routeHint}\n👇 <i>اختر تقييمك من الأزرار في الأسفل</i>`,
         false
       ),
       {
@@ -770,40 +817,36 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
           ...replyBtnRow,
           ['⬅️ رجوع', '🏠 القائمة الرئيسية']
         ]).resize()
-      },
-      true
-    );
+      }
+    ).catch(() => null);
+
+    if (sent?.message_id) {
+      trackBotMessage(userId, ctx.chat.id, sent.message_id);
+      await clearTrackedBotMessages(ctx, userId, [sent.message_id]);
+    }
+
+    if (adminReplies.length > 0) {
+      const inlineSent = await ctx.reply(
+        `👇 <b>إجراء سريع للرد على الإدارة:</b>`,
+        {
+          parse_mode: 'HTML',
+          ...buildRatingReplyInlineKeyboard(latestInquiryId)
+        }
+      ).catch(() => null);
+      if (inlineSent?.message_id) {
+        trackBotMessage(userId, ctx.chat.id, inlineSent.message_id);
+      }
+    }
+  });
+
+  bot.action(/^rate_reply_start_(\d+)$/, async (ctx) => {
+    await ctx.answerCbQuery().catch(() => {});
+    const inquiryId = Number(ctx.match[1]) || null;
+    return enterRatingReplyMode(ctx, ctx.from.id, inquiryId);
   });
 
   bot.hears('💬 رد على التقييم', async (ctx) => {
-    await safeDeleteUserMessage(ctx);
-    const userId = ctx.from.id;
-    let latestInquiryId = userState[userId]?.data?.latestInquiryId || null;
-
-    if (!latestInquiryId) {
-      const fetched = await fetchAllRatingAdminReplies(userId);
-      latestInquiryId = fetched.latestInquiryId;
-    }
-
-    userState[userId] = {
-      step: 'rating_user_replying',
-      data: { latestInquiryId },
-      chatId: ctx.chat.id,
-      wizardMsgId: null
-    };
-
-    const refLine = latestInquiryId ? ` <code>#${latestInquiryId}</code>` : '';
-    await replyTracked(
-      ctx, userId,
-      `💬 <b>رد على التقييم${refLine}</b>\n\nاكتب ردك على الإدارة بخصوص تقييمك الآن أو أرفق صورة/فيديو:`,
-      {
-        parse_mode: 'HTML',
-        ...Markup.keyboard([
-          ['⬅️ رجوع', '🏠 القائمة الرئيسية']
-        ]).resize()
-      },
-      true
-    );
+    return enterRatingReplyMode(ctx, ctx.from.id, userState[ctx.from.id]?.data?.latestInquiryId || null);
   });
 
   bot.hears(/^💬 عرض كل الآراء \(\d+\)$/, async (ctx) => {
@@ -926,7 +969,6 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
     }
 
     if (state.step === 'rating_user_replying') {
-      await safeDeleteUserMessage(ctx);
       return saveAndSendRatingReplyToAdmins(ctx, userId, { text: userText });
     }
 
@@ -990,7 +1032,6 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
   bot.on('photo', async (ctx, next) => {
     const userId = ctx.from?.id;
     if (!userId || userState[userId]?.step !== 'rating_user_replying') return next();
-    await safeDeleteUserMessage(ctx);
     const photo = ctx.message.photo[ctx.message.photo.length - 1];
     return saveAndSendRatingReplyToAdmins(ctx, userId, {
       mediaType: 'photo',
@@ -1002,7 +1043,6 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
   bot.on('video', async (ctx, next) => {
     const userId = ctx.from?.id;
     if (!userId || userState[userId]?.step !== 'rating_user_replying') return next();
-    await safeDeleteUserMessage(ctx);
     return saveAndSendRatingReplyToAdmins(ctx, userId, {
       mediaType: 'video',
       fileId: ctx.message.video.file_id,
