@@ -5,9 +5,37 @@
 // - التنقل بين الإعلانات (المعلقة / المنشورة / المرفوضة / البحث)
 // - تصفح طلبات الشحن (wallet_topups) والموافقة أو الرفض أو المراسلة
 // - إدارة ومعاينة استعلامات المستخدمين (user_inquiries) وسجل الردود (inquiry_replies)
+// - قراءة ومعاينة جدول التقييمات والنجوم (platform_reviews) والتنقل بينها والرد عليها في جدول الردود وإشعار المستخدم
 // - المرفق في الاستعلام والرد مدمج داخل نفس الرسالة (caption) بدون رسائل مرفق منفصلة
 // - مراسلة ناشر الإعلان أو صاحب طلب الشحن (#ID) مباشرة
 // =========================================================================
+
+const RATING_STAR_LABELS = {
+  0: '☆☆☆☆☆',
+  1: '⭐☆☆☆☆',
+  2: '⭐⭐☆☆☆',
+  3: '⭐⭐⭐☆☆',
+  4: '⭐⭐⭐⭐☆',
+  5: '⭐⭐⭐⭐⭐',
+  6: '🌟'
+};
+
+function formatRatingStars(rating) {
+  const n = Number(rating);
+  if (Object.prototype.hasOwnProperty.call(RATING_STAR_LABELS, n)) {
+    return RATING_STAR_LABELS[n];
+  }
+  const safeN = Math.min(5, Math.max(0, n || 5));
+  return '⭐'.repeat(safeN) + '☆'.repeat(5 - safeN);
+}
+
+function joinReviewerName(firstName = '', lastName = '') {
+  return [firstName, lastName]
+    .map((v) => String(v || '').trim())
+    .filter(Boolean)
+    .join(' ')
+    .trim();
+}
 
 module.exports = function registerAdmin(bot, core) {
   const {
@@ -22,6 +50,7 @@ module.exports = function registerAdmin(bot, core) {
   const adminBrowseState = {};
   const adminInquiryState = {};
   const adminTopupState = {};
+  const adminRatingState = {};
   const lastAdminButtonHintAt = {};
   const adminHintTimers = {};
 
@@ -29,6 +58,7 @@ module.exports = function registerAdmin(bot, core) {
   const ADMIN_FREE_TEXT_STEPS = new Set([
     'searching_admin_ads',
     'replying_to_inquiry',
+    'replying_to_rating',
     'replying_to_support_user'
   ]);
 
@@ -40,7 +70,6 @@ module.exports = function registerAdmin(bot, core) {
   async function notifyAdminUseButtonsHint(ctx, adminId) {
     if (isAdminFreeTextAllowed(adminId)) return;
 
-    // مسح الرسالة المرسلة فوراً حتى لا تبقى في المحادثة
     await safeDeleteUserMessage(ctx);
 
     const now = Date.now();
@@ -93,8 +122,8 @@ module.exports = function registerAdmin(bot, core) {
   function getAdminMenuKeyboard() {
     const rows = [
       ['⏳ المعلقة', '✅ المنشورة', '❌ المرفوضة'],
-      ['💳 طلبات الشحن', '📩 الاستعلامات', '🔎 بحث سريع'],
-      ['📊 الإحصائيات', '👁 معاينة المنصة كمستخدم']
+      ['💳 طلبات الشحن', '📩 الاستعلامات', '⭐ التقييمات والنجوم'],
+      ['🔎 بحث سريع', '📊 الإحصائيات', '👁 معاينة المنصة كمستخدم']
     ];
     const webBtn = getWebsiteButton();
     if (webBtn) rows.push([webBtn]);
@@ -169,6 +198,25 @@ module.exports = function registerAdmin(bot, core) {
     return Markup.keyboard(rows).resize();
   }
 
+  function getAdminRatingsKeyboard(idx, total, currentRatingItem = null) {
+    const rows = [];
+
+    const navRow = [];
+    if (idx > 0) navRow.push('⬅️ التقييم السابق');
+    navRow.push(`⭐ ${idx + 1} / ${total}`);
+    if (idx < total - 1) navRow.push('التقييم التالي ➡️');
+    if (navRow.length > 0) rows.push(navRow);
+
+    if (currentRatingItem && currentRatingItem.id) {
+      rows.push([`💬 الرد على التقييم #${currentRatingItem.id}`]);
+    }
+
+    rows.push(['🌟/5⭐ نجوم', '4⭐ نجوم', '3⭐ نجوم', '⚠️ أقل من 3⭐']);
+    rows.push(['📂 كل التقييمات', '🎛 لوحة الإدارة', '👁 معاينة المنصة كمستخدم']);
+
+    return Markup.keyboard(rows).resize();
+  }
+
   function getAdminSearchKeyboard() {
     return Markup.keyboard([
       ['🎛 لوحة الإدارة', '👁 معاينة المنصة كمستخدم']
@@ -189,15 +237,61 @@ module.exports = function registerAdmin(bot, core) {
     }
   }
 
+  async function getRatingsSummaryForAdmin() {
+    try {
+      const { data, error } = await supabase
+        .from('platform_reviews')
+        .select('id, user_id, first_name, last_name, rating, comment, created_at, updated_at')
+        .eq('is_visible', true)
+        .order('id', { ascending: false });
+
+      if (error || !Array.isArray(data) || data.length === 0) {
+        return {
+          total: 0,
+          totalStars: 0,
+          average: '0.0',
+          counts: { 6: 0, 5: 0, 4: 0, 3: 0, 2: 0, 1: 0, 0: 0 }
+        };
+      }
+
+      const counts = { 6: 0, 5: 0, 4: 0, 3: 0, 2: 0, 1: 0, 0: 0 };
+      let totalStars = 0;
+
+      for (const row of data) {
+        const raw = Number(row.rating);
+        const r = Object.prototype.hasOwnProperty.call(RATING_STAR_LABELS, raw)
+          ? raw
+          : Math.min(5, Math.max(0, raw || 5));
+        counts[r] = (counts[r] || 0) + 1;
+        totalStars += r;
+      }
+
+      return {
+        total: data.length,
+        totalStars,
+        average: (totalStars / data.length).toFixed(1),
+        counts
+      };
+    } catch (e) {
+      return {
+        total: 0,
+        totalStars: 0,
+        average: '0.0',
+        counts: { 6: 0, 5: 0, 4: 0, 3: 0, 2: 0, 1: 0, 0: 0 }
+      };
+    }
+  }
+
   async function getFullAdminStats() {
-    const [pending, published, rejected, usersCount, openInquiries, inProgressInquiries, pendingTopups] = await Promise.all([
+    const [pending, published, rejected, usersCount, openInquiries, inProgressInquiries, pendingTopups, ratingsSummary] = await Promise.all([
       countRows('pending_properties', ['status', 'pending']),
       countRows('test_messages'),
       countRows('pending_properties', ['status', 'rejected']),
       countRows('users'),
       countRows('user_inquiries', ['status', 'open']),
       countRows('user_inquiries', ['status', 'in_progress']),
-      countRows('wallet_topups', ['status', 'pending'])
+      countRows('wallet_topups', ['status', 'pending']),
+      getRatingsSummaryForAdmin()
     ]);
     return {
       pending,
@@ -207,7 +301,8 @@ module.exports = function registerAdmin(bot, core) {
       activeInquiries: openInquiries + inProgressInquiries,
       openInquiries,
       inProgressInquiries,
-      pendingTopups
+      pendingTopups,
+      ratingsSummary
     };
   }
 
@@ -247,6 +342,7 @@ module.exports = function registerAdmin(bot, core) {
     delete adminBrowseState[adminId];
     delete adminInquiryState[adminId];
     delete adminTopupState[adminId];
+    delete adminRatingState[adminId];
     core.resetSessions(adminId);
 
     const stats = typeof runSingleKnockWithSmartWake === 'function'
@@ -257,6 +353,8 @@ module.exports = function registerAdmin(bot, core) {
       : await getFullAdminStats();
 
     const name = escapeHtml(ctx.from.first_name || 'المدير');
+    const rs = stats.ratingsSummary || { total: 0, totalStars: 0, average: '0.0', counts: {} };
+    const lowRatingCount = (rs.counts?.[0] || 0) + (rs.counts?.[1] || 0) + (rs.counts?.[2] || 0);
 
     const text =
       `🛡 <b>لوحة تحكم الإدارة</b>${showStatsNotice ? ' • <b>تقرير الإحصائيات</b>' : ''}\n` +
@@ -267,11 +365,421 @@ module.exports = function registerAdmin(bot, core) {
       `❌ <b>إعلانات مرفوضة:</b> <b>${stats.rejected}</b>\n` +
       `💳 <b>طلبات شحن معلقة:</b> <b>${stats.pendingTopups}</b>\n` +
       `📩 <b>استعلامات نشطة:</b> <b>${stats.activeInquiries}</b> (🆕 ${stats.openInquiries} | ⏳ ${stats.inProgressInquiries})\n` +
+      `⭐ <b>تقييمات المنصة:</b> <b>${rs.total}</b> (مجموع النجوم: <b>${rs.totalStars}</b> • المتوسط: <b>${rs.average}</b> • أقل من 3⭐: <b>${lowRatingCount}</b>)\n` +
       `👥 <b>الأعضاء المسجلون:</b> <b>${stats.usersCount}</b>`;
 
     await replyTracked(ctx, adminId, text, { parse_mode: 'HTML', ...getAdminMenuKeyboard() }, true);
   }
 
+  // =========================================================================
+  // ⭐ قراءة ومعاينة جدول النجوم والرد عليها في جدول الردود
+  // =========================================================================
+  async function fetchAdminRatings(ratingFilter = 'all') {
+    try {
+      const { data, error } = await supabase
+        .from('platform_reviews')
+        .select('*')
+        .eq('is_visible', true)
+        .order('id', { ascending: false })
+        .limit(150);
+
+      if (error || !Array.isArray(data)) return [];
+
+      return data.filter((row) => {
+        const r = Number(row.rating);
+        if (ratingFilter === 'top') return r >= 5;
+        if (ratingFilter === '4') return r === 4;
+        if (ratingFilter === '3') return r === 3;
+        if (ratingFilter === 'low') return r < 3;
+        return true;
+      });
+    } catch (e) {
+      console.error('fetchAdminRatings error:', e);
+      return [];
+    }
+  }
+
+  async function findOrCreateRatingInquiryId(reviewRow, adminId) {
+    const targetUserId = Number(reviewRow.user_id);
+    const markerSubject = `تقييم المنصة #${reviewRow.id}`;
+
+    try {
+      const { data: existing } = await supabase
+        .from('user_inquiries')
+        .select('id')
+        .eq('user_id', targetUserId)
+        .eq('subject', markerSubject)
+        .order('id', { ascending: false })
+        .limit(1);
+
+      if (Array.isArray(existing) && existing.length > 0 && existing[0].id) {
+        return Number(existing[0].id);
+      }
+
+      const starsText = formatRatingStars(reviewRow.rating);
+      const commentText = reviewRow.comment ? String(reviewRow.comment).trim() : 'تقييم بالنجوم فقط';
+      const { data: created, error } = await supabase
+        .from('user_inquiries')
+        .insert([{
+          user_id: targetUserId,
+          target_role: 'general_support',
+          subject: markerSubject,
+          message: `تقييم المنصة (${starsText}): ${commentText}`,
+          status: 'in_progress'
+        }])
+        .select('id')
+        .single();
+
+      if (!error && created?.id) {
+        return Number(created.id);
+      }
+    } catch (e) {
+      console.error('findOrCreateRatingInquiryId error:', e);
+    }
+
+    // في حال عدم وجود سجل استعلام، نبحث عن أحدث استعلام للمستخدم لربط الرد في inquiry_replies
+    try {
+      const { data: fallbackInq } = await supabase
+        .from('user_inquiries')
+        .select('id')
+        .eq('user_id', targetUserId)
+        .order('id', { ascending: false })
+        .limit(1);
+
+      if (Array.isArray(fallbackInq) && fallbackInq.length > 0 && fallbackInq[0].id) {
+        return Number(fallbackInq[0].id);
+      }
+    } catch (_) {}
+
+    return null;
+  }
+
+  async function fetchRatingReplies(reviewRow) {
+    try {
+      const targetUserId = Number(reviewRow.user_id);
+      const markerSubject = `تقييم المنصة #${reviewRow.id}`;
+      const { data: inqRows } = await supabase
+        .from('user_inquiries')
+        .select('id')
+        .eq('user_id', targetUserId)
+        .eq('subject', markerSubject)
+        .order('id', { ascending: false })
+        .limit(1);
+
+      const inqId = Array.isArray(inqRows) && inqRows[0]?.id ? inqRows[0].id : null;
+      if (!inqId) return [];
+
+      const { data: replies } = await supabase
+        .from('inquiry_replies')
+        .select('*')
+        .eq('inquiry_id', inqId)
+        .order('id', { ascending: true });
+
+      return Array.isArray(replies) ? replies : [];
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function buildRatingInlineButtons(reviewRow) {
+    return Markup.inlineKeyboard([
+      [Markup.button.callback(`💬 الرد على التقييم (#${reviewRow.id})`, `rate_reply_${reviewRow.id}`)]
+    ]);
+  }
+
+  function formatRatingCardText(reviewRow, replies, idx, total, ratingFilter, summary) {
+    const filterTitles = {
+      all: '📂 كل التقييمات',
+      top: '🌟 / 5⭐ أعلى التقييمات',
+      '4': '4⭐ تقييمات 4 نجوم',
+      '3': '3⭐ تقييمات 3 نجوم',
+      low: '⚠️ تقييمات أقل من 3 نجوم'
+    };
+
+    const fullName = joinReviewerName(reviewRow.first_name, reviewRow.last_name) || 'مستخدم';
+    const starsVisual = formatRatingStars(reviewRow.rating);
+    const commentText = reviewRow.comment
+      ? escapeHtml(String(reviewRow.comment).trim())
+      : '<i>تقييم بالنجوم فقط بدون تعليق نصي</i>';
+
+    let repliesBlock = `\n💬 <b>الردود المسجلة (${replies.length}):</b>\n`;
+    if (!replies || replies.length === 0) {
+      repliesBlock += `<i>— لا توجد ردود مسجلة لهذا التقييم بعد —</i>`;
+    } else {
+      repliesBlock += replies.map((r, rIdx) => {
+        const rTime = formatDateTime(r.created_at);
+        const rMsg = escapeHtml(
+          r.reply_message ||
+          (r.media_type === 'photo' ? '🖼 صورة مرفقة' : r.media_type === 'video' ? '🎥 فيديو مرفق' : '')
+        );
+        return `${rIdx + 1}. (<code>${escapeHtml(rTime)}</code>): ${rMsg}`;
+      }).join('\n');
+    }
+
+    const fullText =
+      `⭐ <b>جدول التقييمات والنجوم</b> • ${filterTitles[ratingFilter] || 'الكل'} • <code>#${reviewRow.id}</code> (${idx + 1}/${total})\n` +
+      `📊 <b>إجمالي التقييمات:</b> <b>${summary.total}</b> | ⭐ <b>مجموع النجوم:</b> <b>${summary.totalStars}</b> | 📈 <b>المتوسط:</b> <b>${summary.average}</b>\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `👤 <b>المقيّم:</b> <b>${escapeHtml(fullName)}</b> (<code>${reviewRow.user_id}</code>)\n` +
+      `🌟 <b>التقييم:</b> <b>${starsVisual}</b>\n` +
+      `🕒 <b>التاريخ:</b> <code>${escapeHtml(formatDateTime(reviewRow.updated_at || reviewRow.created_at))}</code>\n` +
+      `💬 <b>التعليق:</b> ${commentText}` +
+      repliesBlock;
+
+    return fitTelegramText(fullText, false);
+  }
+
+  async function renderAdminRatingAt(ctx, adminId, ratingFilter = 'all', index = 0, refreshList = false) {
+    delete adminBrowseState[adminId];
+    delete adminInquiryState[adminId];
+    delete adminTopupState[adminId];
+
+    let st = adminRatingState[adminId];
+    if (!st || st.ratingFilter !== ratingFilter || refreshList) {
+      const items = typeof runSingleKnockWithSmartWake === 'function'
+        ? await runSingleKnockWithSmartWake(ctx, adminId, () => fetchAdminRatings(ratingFilter), {
+            connectingText: '⏳ <b>لحظات من فضلك، جاري تحميل جدول التقييمات...</b>',
+            backLabel: '🎛 لوحة الإدارة'
+          })
+        : await fetchAdminRatings(ratingFilter);
+      st = { ratingFilter, items, index: 0 };
+      adminRatingState[adminId] = st;
+    }
+
+    const summary = await getRatingsSummaryForAdmin();
+
+    if (!st.items || st.items.length === 0) {
+      delete adminRatingState[adminId];
+      return replyTracked(
+        ctx, adminId,
+        `📭 <b>لا توجد تقييمات في هذه الفئة حالياً.</b>\n` +
+        `📊 <b>إجمالي التقييمات:</b> <b>${summary.total}</b> | ⭐ <b>مجموع النجوم:</b> <b>${summary.totalStars}</b> | 📈 <b>المتوسط:</b> <b>${summary.average}</b>`,
+        {
+          parse_mode: 'HTML',
+          ...Markup.keyboard([
+            ['🌟/5⭐ نجوم', '4⭐ نجوم', '3⭐ نجوم', '⚠️ أقل من 3⭐'],
+            ['📂 كل التقييمات', '🎛 لوحة الإدارة']
+          ]).resize()
+        },
+        true
+      );
+    }
+
+    let safeIdx = Number(index) || 0;
+    if (safeIdx < 0) safeIdx = 0;
+    if (safeIdx >= st.items.length) safeIdx = st.items.length - 1;
+    st.index = safeIdx;
+
+    const currentReview = st.items[safeIdx];
+    const replies = await fetchRatingReplies(currentReview);
+    const cardText = formatRatingCardText(currentReview, replies, safeIdx, st.items.length, ratingFilter, summary);
+    const inlineKb = buildRatingInlineButtons(currentReview);
+    const bottomKb = getAdminRatingsKeyboard(safeIdx, st.items.length, currentReview);
+
+    const sentCard = await ctx.reply(cardText, { parse_mode: 'HTML', ...inlineKb }).catch(() => null);
+    const ctrlMsg = await ctx.reply(`🧭 <b>تقييم ${safeIdx + 1} / ${st.items.length}</b>`, {
+      parse_mode: 'HTML',
+      ...bottomKb
+    }).catch(() => null);
+
+    const keepIds = [];
+    if (sentCard?.message_id) {
+      keepIds.push(sentCard.message_id);
+      trackBotMessage(adminId, ctx.chat.id, sentCard.message_id);
+    }
+    if (ctrlMsg?.message_id) {
+      keepIds.push(ctrlMsg.message_id);
+      trackBotMessage(adminId, ctx.chat.id, ctrlMsg.message_id);
+    }
+
+    await clearTrackedBotMessages(ctx, adminId, keepIds);
+  }
+
+  async function saveRatingReplyAndNotifyUser(ctx, adminId, reviewId, payloadType, content) {
+    const { data: reviewRow, error: revErr } = await supabase
+      .from('platform_reviews')
+      .select('*')
+      .eq('id', reviewId)
+      .single();
+
+    if (revErr || !reviewRow) {
+      delete userState[adminId];
+      return replyTracked(ctx, adminId, `⚠️ التقييم <code>#${reviewId}</code> غير موجود.`, {
+        parse_mode: 'HTML', ...getAdminMenuKeyboard()
+      }, true);
+    }
+
+    const inquiryId = await findOrCreateRatingInquiryId(reviewRow, adminId);
+    if (!inquiryId) {
+      delete userState[adminId];
+      return replyTracked(ctx, adminId, `⚠️ تعذر إنشاء أو العثور على سجل الاستعلام لربط الرد في جدول الردود.`, {
+        parse_mode: 'HTML', ...getAdminMenuKeyboard()
+      }, true);
+    }
+
+    const rawCaption = payloadType === 'text' ? content.text : (content.caption || '');
+    const replyText = rawCaption || (payloadType === 'photo' ? '🖼 صورة مرفقة' : payloadType === 'video' ? '🎥 فيديو مرفق' : '');
+    const attachmentUrl = payloadType === 'text' ? null : `tg:${content.fileId}`;
+
+    const { error: insertReplyErr } = await supabase.from('inquiry_replies').insert([{
+      inquiry_id: inquiryId,
+      admin_id: adminId,
+      admin_role: 'general_support',
+      reply_message: replyText || null,
+      media_type: payloadType,
+      attachment_url: attachmentUrl
+    }]);
+
+    if (insertReplyErr) {
+      console.error('saveRatingReplyAndNotifyUser insert error:', insertReplyErr);
+      delete userState[adminId];
+      return replyTracked(ctx, adminId,
+        `⚠️ تعذر حفظ الرد في جدول الردود: <code>${escapeHtml(insertReplyErr.message)}</code>`,
+        { parse_mode: 'HTML', ...getAdminMenuKeyboard() }, true);
+    }
+
+    const targetUserId = Number(reviewRow.user_id);
+    const starsVisual = formatRatingStars(reviewRow.rating);
+    const userHeader =
+      `📩 <b>رد من إدارة عقار الجزائر على تقييمك للمنصة (#${reviewId} • ${starsVisual})</b>\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n`;
+
+    let delivered = true;
+    let deliverErrorReason = '';
+    try {
+      if (payloadType === 'photo') {
+        const cap = fitTelegramText(
+          userHeader + (rawCaption ? escapeHtml(rawCaption) : '🖼 <i>صورة مرفقة من الإدارة</i>'),
+          true
+        );
+        await ctx.telegram.sendPhoto(targetUserId, content.fileId, { caption: cap, parse_mode: 'HTML' });
+      } else if (payloadType === 'video') {
+        const cap = fitTelegramText(
+          userHeader + (rawCaption ? escapeHtml(rawCaption) : '🎥 <i>فيديو مرفق من الإدارة</i>'),
+          true
+        );
+        await ctx.telegram.sendVideo(targetUserId, content.fileId, { caption: cap, parse_mode: 'HTML' });
+      } else {
+        await ctx.telegram.sendMessage(
+          targetUserId,
+          fitTelegramText(userHeader + escapeHtml(replyText), false),
+          { parse_mode: 'HTML' }
+        );
+      }
+    } catch (e) {
+      delivered = false;
+      deliverErrorReason = e?.message || 'خطأ في الإرسال';
+      console.error('deliver rating reply to user failed:', deliverErrorReason);
+    }
+
+    delete userState[adminId];
+    const deliveryNote = delivered
+      ? `✅ <b>تم تسجيل الرد في جدول الردود (<code>#${inquiryId}</code>) وإرسال الإشعار للمستخدم بنجاح.</b>`
+      : `✅ <b>تم تسجيل الرد في جدول الردود (<code>#${inquiryId}</code>)</b> (⚠️ تعذر الإرسال المباشر للمستخدم: <code>${escapeHtml(deliverErrorReason)}</code>).`;
+
+    await ctx.reply(deliveryNote, { parse_mode: 'HTML' }).catch(() => {});
+
+    const st = adminRatingState[adminId];
+    return renderAdminRatingAt(ctx, adminId, st?.ratingFilter || 'all', st?.index || 0, true);
+  }
+
+  bot.hears(['⭐ التقييمات والنجوم', '📂 كل التقييمات'], async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    await renderAdminRatingAt(ctx, ctx.from.id, 'all', 0, true);
+  });
+
+  bot.hears('🌟/5⭐ نجوم', async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    await renderAdminRatingAt(ctx, ctx.from.id, 'top', 0, true);
+  });
+
+  bot.hears('4⭐ نجوم', async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    await renderAdminRatingAt(ctx, ctx.from.id, '4', 0, true);
+  });
+
+  bot.hears('3⭐ نجوم', async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    await renderAdminRatingAt(ctx, ctx.from.id, '3', 0, true);
+  });
+
+  bot.hears('⚠️ أقل من 3⭐', async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    await renderAdminRatingAt(ctx, ctx.from.id, 'low', 0, true);
+  });
+
+  bot.hears('⬅️ التقييم السابق', async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    const adminId = ctx.from.id;
+    const st = adminRatingState[adminId];
+    if (!st) return renderAdminRatingAt(ctx, adminId, 'all', 0, true);
+    await renderAdminRatingAt(ctx, adminId, st.ratingFilter, Math.max((st.index || 0) - 1, 0), false);
+  });
+
+  bot.hears('التقييم التالي ➡️', async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    const adminId = ctx.from.id;
+    const st = adminRatingState[adminId];
+    if (!st) return renderAdminRatingAt(ctx, adminId, 'all', 0, true);
+    await renderAdminRatingAt(ctx, adminId, st.ratingFilter, (st.index || 0) + 1, false);
+  });
+
+  bot.hears(/^⭐ \d+ \/ \d+$/, async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    const adminId = ctx.from.id;
+    const st = adminRatingState[adminId];
+    if (!st) return renderAdminRatingAt(ctx, adminId, 'all', 0, true);
+    await renderAdminRatingAt(ctx, adminId, st.ratingFilter, st.index || 0, true);
+  });
+
+  bot.hears(/^💬 الرد على التقييم #(\d+)$/, async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    const adminId = ctx.from.id;
+    const reviewId = Number(ctx.match[1]);
+
+    userState[adminId] = {
+      step: 'replying_to_rating',
+      data: { reviewId },
+      chatId: ctx.chat.id,
+      wizardMsgId: null
+    };
+
+    await replyTracked(
+      ctx, adminId,
+      `💬 <b>الرد على التقييم</b> <code>#${reviewId}</code>\n\nاكتب ردك أو أرفق صورة/فيديو ليُسجّل في جدول الردود ويُرسل إشعار للمستخدم:`,
+      { parse_mode: 'HTML', ...Markup.keyboard([['⭐ التقييمات والنجوم', '🎛 لوحة الإدارة']]).resize() },
+      true
+    );
+  });
+
+  bot.action(/^rate_reply_(\d+)$/, async (ctx) => {
+    const adminId = ctx.from.id;
+    const reviewId = Number(ctx.match[1]);
+
+    const adminIds = await getAdminIds();
+    if (!adminIds.includes(adminId)) {
+      return ctx.answerCbQuery('⛔ هذا الإجراء مخصص للإدارة فقط.', { show_alert: true });
+    }
+    await ctx.answerCbQuery();
+
+    userState[adminId] = {
+      step: 'replying_to_rating',
+      data: { reviewId },
+      chatId: ctx.chat.id,
+      wizardMsgId: null
+    };
+
+    await replyTracked(
+      ctx, adminId,
+      `💬 <b>الرد على التقييم</b> <code>#${reviewId}</code>\n\nاكتب ردك أو أرفق صورة/فيديو ليُسجّل في جدول الردود ويُرسل إشعار للمستخدم:`,
+      { parse_mode: 'HTML', ...Markup.keyboard([['⭐ التقييمات والنجوم', '🎛 لوحة الإدارة']]).resize() },
+      true
+    );
+  });
+
+  // =========================================================================
+  // 💳 طلبات الشحن
+  // =========================================================================
   async function fetchAdminTopups(statusFilter = 'pending') {
     try {
       let q = supabase
@@ -343,6 +851,7 @@ module.exports = function registerAdmin(bot, core) {
   async function renderAdminTopupAt(ctx, adminId, statusFilter = 'pending', index = 0, refreshList = false) {
     delete adminBrowseState[adminId];
     delete adminInquiryState[adminId];
+    delete adminRatingState[adminId];
 
     let st = adminTopupState[adminId];
     if (!st || st.statusFilter !== statusFilter || refreshList) {
@@ -415,6 +924,9 @@ module.exports = function registerAdmin(bot, core) {
     await clearTrackedBotMessages(ctx, adminId, keepIds);
   }
 
+  // =========================================================================
+  // 📩 الاستعلامات وسجل الردود
+  // =========================================================================
   async function fetchAdminInquiries(statusFilter = 'all') {
     try {
       let q = supabase
@@ -521,6 +1033,7 @@ module.exports = function registerAdmin(bot, core) {
   async function renderAdminInquiryAt(ctx, adminId, statusFilter = 'all', index = 0, refreshList = false) {
     delete adminBrowseState[adminId];
     delete adminTopupState[adminId];
+    delete adminRatingState[adminId];
     let st = adminInquiryState[adminId];
 
     if (!st || st.statusFilter !== statusFilter || refreshList) {
@@ -688,6 +1201,9 @@ module.exports = function registerAdmin(bot, core) {
     return renderAdminInquiryAt(ctx, adminId, st?.statusFilter || 'all', st?.index || 0, true);
   }
 
+  // =========================================================================
+  // 🏠 تصفح الإعلانات والبحث
+  // =========================================================================
   async function fetchAdminAdsByFilter(filterType) {
     if (filterType === 'published') {
       const { data, error } = await supabase
@@ -852,6 +1368,7 @@ module.exports = function registerAdmin(bot, core) {
   async function renderAdminAdAt(ctx, adminId, filterType, index = 0, refreshList = false, mediaIndex = 0) {
     delete adminInquiryState[adminId];
     delete adminTopupState[adminId];
+    delete adminRatingState[adminId];
     const stats = await getFullAdminStats();
     let st = adminBrowseState[adminId];
 
@@ -1360,6 +1877,16 @@ module.exports = function registerAdmin(bot, core) {
       return renderAdminAdAt(ctx, adminId, 'search', 0, false, 0);
     }
 
+    if (state && state.step === 'replying_to_rating') {
+      await safeDeleteUserMessage(ctx);
+      const reviewId = state.data?.reviewId;
+      if (!reviewId) {
+        delete userState[adminId];
+        return openAdminHome(ctx);
+      }
+      return saveRatingReplyAndNotifyUser(ctx, adminId, reviewId, 'text', { text });
+    }
+
     if (state && state.step === 'replying_to_inquiry') {
       await safeDeleteUserMessage(ctx);
       const inquiryId = state.data?.inquiryId;
@@ -1387,6 +1914,13 @@ module.exports = function registerAdmin(bot, core) {
   bot.on('photo', async (ctx, next) => {
     const adminId = ctx.from.id;
     const state = userState[adminId];
+    if (state && state.step === 'replying_to_rating') {
+      await safeDeleteUserMessage(ctx);
+      const photo = ctx.message.photo[ctx.message.photo.length - 1];
+      return saveRatingReplyAndNotifyUser(ctx, adminId, state.data.reviewId, 'photo', {
+        fileId: photo.file_id, caption: ctx.message.caption || ''
+      });
+    }
     if (state && state.step === 'replying_to_inquiry') {
       await safeDeleteUserMessage(ctx);
       const photo = ctx.message.photo[ctx.message.photo.length - 1];
@@ -1408,6 +1942,12 @@ module.exports = function registerAdmin(bot, core) {
   bot.on('video', async (ctx, next) => {
     const adminId = ctx.from.id;
     const state = userState[adminId];
+    if (state && state.step === 'replying_to_rating') {
+      await safeDeleteUserMessage(ctx);
+      return saveRatingReplyAndNotifyUser(ctx, adminId, state.data.reviewId, 'video', {
+        fileId: ctx.message.video.file_id, caption: ctx.message.caption || ''
+      });
+    }
     if (state && state.step === 'replying_to_inquiry') {
       await safeDeleteUserMessage(ctx);
       return saveInquiryReplyAndNotifyUser(ctx, adminId, state.data.inquiryId, 'video', {
