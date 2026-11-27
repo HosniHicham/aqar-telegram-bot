@@ -54,7 +54,6 @@ module.exports = function registerUsers(bot, core) {
   async function notifyUseButtonsHint(ctx, userId) {
     if (isFreeTextInputAllowed(userId, ctx.message?.text ? ctx.message.text.trim() : '')) return;
 
-    // حذف رسالة المستخدم نفسها فوراً حتى لا تبقى معلّقة في المحادثة
     await safeDeleteUserMessage(ctx);
 
     const now = Date.now();
@@ -181,6 +180,26 @@ module.exports = function registerUsers(bot, core) {
     }
     rows.push(favRow);
     return Markup.inlineKeyboard(rows);
+  }
+
+  function formatPropertyCardCaption(item, pageIndex, totalCount, sessionState, safeMediaIndex, totalMedia, currentMedia, isFavorited) {
+    const mediaTypeLabel = currentMedia ? (currentMedia.type === 'video' ? '🎥 فيديو' : '🖼 صورة') : '';
+    const mediaLine = totalMedia > 0 ? `\n${mediaTypeLabel}: <b>${safeMediaIndex + 1} / ${totalMedia}</b>` : '';
+    const publishedAtText = item.created_at ? formatDateTime(item.created_at) : 'غير مسجل';
+    const scopeLabel = sessionState === 'FAVORITES'
+      ? `⭐ المفضلة (${escapeHtml(item.state_name || '')})`
+      : escapeHtml(item.state_name || '');
+    const favStarBadge = isFavorited ? ' ⭐' : '';
+
+    const rawCaption =
+      `🏛 <b>الولاية:</b> ${scopeLabel} (${pageIndex + 1}/${totalCount})\n\n` +
+      `🏠 <b>العقار:</b> ${escapeHtml(item.property_type || '')}${favStarBadge}\n` +
+      `💰 <b>السعر:</b> ${formatMoney(item.price)}\n` +
+      `📞 <b>هاتف المالك:</b> <code>${escapeHtml(item.phone || '')}</code>\n` +
+      `🕒 <b>تاريخ ووقت النشر:</b> <code>${escapeHtml(publishedAtText)}</code>${mediaLine}\n` +
+      `📝 <b>الوصف:</b> ${escapeHtml(item.description || item.message || '')}`;
+
+    return fitTelegramText(rawCaption, !!currentMedia);
   }
 
   const CLIENT_INQUIRY_STATUS = {
@@ -1713,12 +1732,11 @@ module.exports = function registerUsers(bot, core) {
       if (pageIndex < 0) pageIndex = 0;
       if (pageIndex >= data.length) pageIndex = data.length - 1;
       session.page = pageIndex;
+      session.totalCount = data.length;
 
       const item = data[pageIndex];
       const canContactOwner = Boolean(item.user_id && Number(item.user_id) !== Number(userId));
-      const isFavorited = session.state === 'FAVORITES'
-        ? true
-        : await isPropertyFavorited(userId, item.id, 'test_messages');
+      const isFavorited = await isPropertyFavorited(userId, item.id, 'test_messages');
       session.currentProperty = item;
 
       const orderedMedia = buildOrderedBrowsingMedia(item);
@@ -1728,24 +1746,12 @@ module.exports = function registerUsers(bot, core) {
       if (safeMediaIndex < 0) safeMediaIndex = 0;
       if (totalMedia > 0 && safeMediaIndex >= totalMedia) safeMediaIndex = totalMedia - 1;
       session.photoIndex = safeMediaIndex;
+      session.totalMedia = totalMedia;
 
       const currentMedia = totalMedia > 0 ? orderedMedia[safeMediaIndex] : null;
-      const mediaTypeLabel = currentMedia ? (currentMedia.type === 'video' ? '🎥 فيديو' : '🖼 صورة') : '';
-      const mediaLine = totalMedia > 0 ? `\n${mediaTypeLabel}: <b>${safeMediaIndex + 1} / ${totalMedia}</b>` : '';
-      const publishedAtText = item.created_at ? formatDateTime(item.created_at) : 'غير مسجل';
-      const scopeLabel = session.state === 'FAVORITES'
-        ? `⭐ المفضلة (${escapeHtml(item.state_name || '')})`
-        : escapeHtml(item.state_name || '');
-
-      const rawCaption =
-        `🏛 <b>الولاية:</b> ${scopeLabel} (${pageIndex + 1}/${data.length})\n\n` +
-        `🏠 <b>العقار:</b> ${escapeHtml(item.property_type || '')}\n` +
-        `💰 <b>السعر:</b> ${formatMoney(item.price)}\n` +
-        `📞 <b>هاتف المالك:</b> <code>${escapeHtml(item.phone || '')}</code>\n` +
-        `🕒 <b>تاريخ ووقت النشر:</b> <code>${escapeHtml(publishedAtText)}</code>${mediaLine}\n` +
-        `📝 <b>الوصف:</b> ${escapeHtml(item.description || item.message || '')}`;
-
-      const caption = fitTelegramText(rawCaption, !!currentMedia);
+      const caption = formatPropertyCardCaption(
+        item, pageIndex, data.length, session.state, safeMediaIndex, totalMedia, currentMedia, isFavorited
+      );
       const replyKb = getBrowsingKeyboard(pageIndex, data.length, safeMediaIndex, totalMedia, canContactOwner, isFavorited);
       const msgInlineKb = buildPropertyInlineKeyboard(item, canContactOwner, isFavorited);
 
@@ -1776,6 +1782,61 @@ module.exports = function registerUsers(bot, core) {
     }
   }
 
+  async function refreshCurrentCardFavoriteState(ctx, userId, propId, favorited) {
+    const session = browsingSession[userId];
+    const prop = session?.currentProperty;
+    const canContactOwner = Boolean(prop && Number(prop.id) === Number(propId) && prop.user_id && Number(prop.user_id) !== Number(userId));
+    const updatedInlineKb = buildPropertyInlineKeyboard({ id: propId, user_id: prop?.user_id }, canContactOwner, favorited);
+
+    await ctx.editMessageReplyMarkup(updatedInlineKb.reply_markup).catch(() => {});
+
+    if (prop && Number(prop.id) === Number(propId)) {
+      const orderedMedia = buildOrderedBrowsingMedia(prop);
+      const totalMedia = orderedMedia.length;
+      const safeMediaIndex = session.photoIndex || 0;
+      const currentMedia = totalMedia > 0 ? orderedMedia[safeMediaIndex] : null;
+      const pageIndex = session.page || 0;
+      const totalCount = session.totalCount || 1;
+
+      const updatedCaption = formatPropertyCardCaption(
+        prop, pageIndex, totalCount, session.state || 'ALL', safeMediaIndex, totalMedia, currentMedia, favorited
+      );
+
+      if (currentMedia) {
+        await ctx.editMessageCaption(updatedCaption, {
+          parse_mode: 'HTML',
+          ...updatedInlineKb
+        }).catch(() => {});
+      } else {
+        await ctx.editMessageText(updatedCaption, {
+          parse_mode: 'HTML',
+          ...updatedInlineKb
+        }).catch(() => {});
+      }
+    }
+
+    if (session) {
+      const totalCount = session.totalCount || 1;
+      const replyKb = getBrowsingKeyboard(
+        session.page || 0,
+        totalCount,
+        session.photoIndex || 0,
+        session.totalMedia || 0,
+        canContactOwner,
+        favorited
+      );
+      const syncMsg = await ctx.reply(
+        favorited ? '⭐ العقار محفوظ في مفضلتك' : '💔 تمت إزالة العقار من مفضلتك',
+        { ...replyKb }
+      ).catch(() => null);
+      if (syncMsg?.message_id) {
+        setTimeout(() => {
+          ctx.telegram.deleteMessage(ctx.chat.id, syncMsg.message_id).catch(() => {});
+        }, 1800);
+      }
+    }
+  }
+
   bot.action(/^toggle_fav_([a-zA-Z0-9_]+)_(\d+)$/, async (ctx) => {
     const userId = ctx.from?.id;
     if (!userId) return ctx.answerCbQuery().catch(() => {});
@@ -1787,36 +1848,11 @@ module.exports = function registerUsers(bot, core) {
       const { favorited } = await toggleFavoriteProperty(userId, propId, propSource);
 
       await ctx.answerCbQuery(
-        favorited ? '⭐ تمت إضافة العقار إلى مفضلتك' : '💔 تمت إزالة العقار من مفضلتك',
+        favorited ? '⭐ تمت الإضافة إلى المفضلة' : '💔 تمت الإزالة من المفضلة',
         { show_alert: false }
       ).catch(() => {});
 
-      const session = browsingSession[userId];
-      if (session && session.state === 'FAVORITES' && !favorited) {
-        return renderPropertyPage(ctx, userId, session.page || 0, session.photoIndex || 0);
-      }
-
-      const currentProp = session?.currentProperty;
-      const canContactOwner = Boolean(currentProp && Number(currentProp.id) === propId && currentProp.user_id && Number(currentProp.user_id) !== Number(userId));
-      const updatedInlineKb = buildPropertyInlineKeyboard({ id: propId, user_id: currentProp?.user_id }, canContactOwner, favorited);
-
-      await ctx.editMessageReplyMarkup(updatedInlineKb.reply_markup).catch(() => {});
-
-      if (session) {
-        let totalCount = 1;
-        if (session.state !== 'ALL') {
-          const { data } = await supabase.from('test_messages').select('id').eq('state_name', session.state);
-          totalCount = (data || []).length || 1;
-        } else {
-          const { data } = await supabase.from('test_messages').select('id');
-          totalCount = (data || []).length || 1;
-        }
-        const replyKb = getBrowsingKeyboard(session.page || 0, totalCount, session.photoIndex || 0, 0, canContactOwner, favorited);
-        await ctx.reply(
-          favorited ? '⭐ <b>تم الحفظ في المفضلة.</b>' : '💔 <b>تمت الإزالة من المفضلة.</b>',
-          { parse_mode: 'HTML', ...replyKb }
-        ).then(m => trackBotMessage(userId, ctx.chat.id, m.message_id)).catch(() => {});
-      }
+      await refreshCurrentCardFavoriteState(ctx, userId, propId, favorited);
     } catch (e) {
       console.error('toggle_fav error:', e.message);
       await ctx.answerCbQuery('⚠️ حدث خطأ أثناء تحديث المفضلة').catch(() => {});
@@ -1844,42 +1880,34 @@ module.exports = function registerUsers(bot, core) {
     }
 
     if (!prop?.id) {
-      return replyTracked(ctx, userId, '⚠️ <b>تعذر تحديد العقار الحالي.</b>', { parse_mode: 'HTML' }, true);
+      return;
     }
 
     try {
       const { favorited } = await toggleFavoriteProperty(userId, prop.id, 'test_messages');
-      if (session && session.state === 'FAVORITES' && !favorited) {
-        return renderPropertyPage(ctx, userId, session.page || 0, session.photoIndex || 0);
-      }
-
       const canContactOwner = Boolean(prop.user_id && Number(prop.user_id) !== Number(userId));
-      let totalCount = 1;
-      if (session) {
-        if (session.state === 'FAVORITES') {
-          const favs = await fetchUserFavoriteProperties(userId);
-          totalCount = favs.length || 1;
-        } else {
-          let q = supabase.from('test_messages').select('id');
-          if (session.state !== 'ALL') q = q.eq('state_name', session.state);
-          const { data } = await q;
-          totalCount = (data || []).length || 1;
-        }
-      }
-
-      const replyKb = getBrowsingKeyboard(session?.page || 0, totalCount, session?.photoIndex || 0, 0, canContactOwner, favorited);
-      await replyTracked(
-        ctx,
-        userId,
+      const totalCount = session?.totalCount || 1;
+      const replyKb = getBrowsingKeyboard(
+        session?.page || 0,
+        totalCount,
+        session?.photoIndex || 0,
+        session?.totalMedia || 0,
+        canContactOwner,
         favorited
-          ? `⭐ <b>تمت إضافة العقار <code>#${prop.id}</code> إلى مفضلتك.</b>`
-          : `💔 <b>تمت إزالة العقار <code>#${prop.id}</code> من مفضلتك.</b>`,
-        { parse_mode: 'HTML', ...replyKb },
-        true
       );
+
+      const statusText = favorited
+        ? `⭐ <b>العقار <code>#${prop.id}</code> مضاف إلى مفضلتك.</b>`
+        : `💔 <b>تم إلغاء العقار <code>#${prop.id}</code> من مفضلتك.</b>`;
+
+      const tempMsg = await ctx.reply(statusText, { parse_mode: 'HTML', ...replyKb }).catch(() => null);
+      if (tempMsg?.message_id) {
+        setTimeout(() => {
+          ctx.telegram.deleteMessage(ctx.chat.id, tempMsg.message_id).catch(() => {});
+        }, 2000);
+      }
     } catch (e) {
       console.error('fav button error:', e.message);
-      await replyTracked(ctx, userId, '⚠️ حدث خطأ أثناء تحديث المفضلة.', { parse_mode: 'HTML' }, true);
     }
   });
 
