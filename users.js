@@ -8,6 +8,8 @@
 // =========================================================================
 
 const BTN_CONTACT_OWNER = '📞 اتصل بالمالك';
+const BTN_RATE_PLATFORM = '⭐ تقييم المنصة';
+const registerPlatformRating = require('./platform_rating');
 
 module.exports = function registerUsers(bot, core) {
   const {
@@ -30,6 +32,10 @@ module.exports = function registerUsers(bot, core) {
     'topup_waiting_amount',
     'client_following_up_inquiry'
   ]);
+
+  function registerFreeTextStep(stepName) {
+    if (stepName) FREE_TEXT_STEPS.add(stepName);
+  }
 
   function isFreeTextInputAllowed(userId, userText) {
     if (/^\d+$/.test(userText)) {
@@ -141,11 +147,17 @@ module.exports = function registerUsers(bot, core) {
       : Markup.keyboard([
           ['🔍 تصفح العقارات المتاحة', '➕ إضافة عقار جديد'],
           ['🎁 رصيدي وجمع النقاط', getSupportButtonLabel(unreadRepliesCount)],
-          ['🌐 تصفح الموقع الرسمي (البروزر)', 'ℹ️ عن المنصة']
+          ['🌐 تصفح الموقع الرسمي (البروزر)', 'ℹ️ عن المنصة'],
+          [BTN_RATE_PLATFORM]
         ]).resize();
 
     return applySupportBadgeToKeyboard(baseKb, unreadRepliesCount);
   }
+
+  const platformRating = registerPlatformRating(bot, core, {
+    buildUserMainKeyboard,
+    registerFreeTextStep
+  });
 
   async function uploadSingleReceiptToStorage(ctx, fileId, userId) {
     try {
@@ -1439,15 +1451,6 @@ module.exports = function registerUsers(bot, core) {
       ...Markup.inlineKeyboard([[Markup.button.url('🌐 فتح الموقع الرسمي', getWebsiteUrl())]])
     }, true);
     await ctx.reply('👇', { ...mainKb }).then(m => trackBotMessage(userId, ctx.chat.id, m.message_id)).catch(() => {});
-  });
-
-  bot.hears('ℹ️ عن المنصة', async (ctx) => {
-    await safeDeleteUserMessage(ctx);
-    const userId = ctx.from.id;
-    const unreadCount = core.messenger?.getUnreadCount ? await core.messenger.getUnreadCount(userId) : 0;
-    const mainKb = await buildUserMainKeyboard(userId, unreadCount);
-    const aboutMsg = await getSetting('about_text', '🏛 <b>عن منصة عقار الجزائر (Aqar System):</b>\n\nنظام رقمي ذكي ومتطور لإدارة المعاملات العقارية.');
-    await replyTracked(ctx, userId, aboutMsg, { parse_mode: 'HTML', ...mainKb }, true);
   });
 
   async function showStatesMenu(ctx) {
@@ -3323,5 +3326,5 @@ module.exports = function registerUsers(bot, core) {
     }
   });
 
-  return { openUserHome };
+  return { openUserHome, platformRating };
 };
