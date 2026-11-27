@@ -1,6 +1,7 @@
 'use strict';
 // =========================================================================
 // ⭐ PLATFORM RATING MODULE — خاصية تقييم المنصة وإرسال التقييم وعرض الإحصائيات
+// ملف مستقل لتسهيل التعديل والصيانة دون التأثير على باقي ملفات المستخدم.
 // يعرض الاسم الأول للمُقيّم لزيادة المصداقية مع حماية الخصوصية.
 // =========================================================================
 
@@ -291,35 +292,49 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
     await clearTrackedBotMessages(ctx, userId, keepIds);
   });
 
-  async function submitPlatformReview(ctx, userId, chosenRating, cleanComment, isUpdate = false) {
-    const { error } = await supabase
+  async function submitPlatformReview(ctx, userId, chosenRating, rawComment = null, isUpdate = false) {
+    const cleanUserId = Number(userId);
+    const cleanRating = Math.min(6, Math.max(1, Number(chosenRating) || 5));
+    const cleanComment = rawComment && String(rawComment).trim().length > 0
+      ? String(rawComment).trim().slice(0, 400)
+      : null;
+    const nowIso = new Date().toISOString();
+
+    const { data, error } = await supabase
       .from('platform_reviews')
-      .upsert([{
-        user_id: Number(userId),
-        rating: chosenRating,
-        comment: cleanComment,
-        is_visible: true,
-        updated_at: new Date().toISOString()
-      }], { onConflict: 'user_id' });
+      .upsert(
+        [
+          {
+            user_id: cleanUserId,
+            rating: cleanRating,
+            comment: cleanComment,
+            is_visible: true,
+            updated_at: nowIso
+          }
+        ],
+        { onConflict: 'user_id' }
+      )
+      .select('id, user_id, rating, comment, created_at, updated_at')
+      .single();
 
     if (error) {
       console.error('submitPlatformReview error:', error.message);
       await ctx.reply(
-        `⚠️ <b>تعذر حفظ تقييمك حالياً، يرجى المحاولة مرة أخرى.</b>`,
+        `⚠️ <b>تعذر حفظ تقييمك حالياً:</b>\n<code>${escapeHtml(error.message || 'خطأ غير معروف')}</code>`,
         { parse_mode: 'HTML' }
       ).catch(() => {});
-      return showAboutPlatformScreen(ctx, userId);
+      return showAboutPlatformScreen(ctx, cleanUserId);
     }
 
-    await notifyAdminsOnPlatformReview(ctx, userId, chosenRating, cleanComment, isUpdate);
+    await notifyAdminsOnPlatformReview(ctx, cleanUserId, cleanRating, cleanComment, isUpdate);
 
-    delete userState[userId];
+    delete userState[cleanUserId];
     await ctx.reply(
-      `🎉 <b>شكراً لك! تم حفظ تقييمك للمنصة (<b>${formatStarsVisual(chosenRating)}</b>).</b>`,
+      `🎉 <b>شكراً لك! تم حفظ تقييمك للمنصة (<b>${formatStarsVisual(cleanRating)}</b>).</b>`,
       { parse_mode: 'HTML' }
     ).catch(() => {});
 
-    return showAboutPlatformScreen(ctx, userId);
+    return showAboutPlatformScreen(ctx, cleanUserId);
   }
 
   async function handlePlatformRatingText(ctx, next) {
