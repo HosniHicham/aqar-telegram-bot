@@ -1,7 +1,7 @@
 'use strict';
 // =========================================================================
 // ⭐ PLATFORM RATING MODULE — خاصية تقييم المنصة وإرسال التقييم وعرض الإحصائيات
-// يجلب الاسم الحقيقي للمستخدم من جدول users حسب id مباشرة.
+// يجلب الاسم الحقيقي من جدول users عبر id ويعرض كل تقييم في فقاعة واحدة متناسقة.
 // =========================================================================
 
 const LINE = '▬▬▬▬▬▬▬▬▬▬▬▬';
@@ -17,10 +17,12 @@ const STAR_CHOICES = {
 };
 
 function extractNameFromUserRow(row) {
-  if (!row) return '';
-  const full = [row.first_name, row.last_name].filter(Boolean).join(' ').trim();
-  if (full) return full;
-  if (row.username) return String(row.username).trim();
+  if (!row || typeof row !== 'object') return '';
+  const combined = [row.first_name, row.last_name].filter(Boolean).join(' ').trim();
+  if (combined) return combined;
+  if (row.full_name && String(row.full_name).trim()) return String(row.full_name).trim();
+  if (row.name && String(row.name).trim()) return String(row.name).trim();
+  if (row.username && String(row.username).trim()) return String(row.username).trim();
   return '';
 }
 
@@ -70,12 +72,13 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
   }
 
   async function fetchRealNameByUserId(userId, ctx = null) {
-    const id = Number(userId);
-    if (!id) return '';
+    const rawId = String(userId || '').trim();
+    const numId = Number(userId);
+    if (!rawId) return '';
 
     if (typeof getUserRecord === 'function') {
       try {
-        const rec = await getUserRecord(id);
+        const rec = await getUserRecord(numId || rawId);
         const fromRec = extractNameFromUserRow(rec);
         if (fromRec) return fromRec;
       } catch (_) {}
@@ -84,15 +87,15 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
     try {
       const { data } = await supabase
         .from('users')
-        .select('id, first_name, last_name, username')
-        .eq('id', id)
+        .select('*')
+        .eq('id', numId || rawId)
         .limit(1);
       const row = Array.isArray(data) ? data[0] : data;
       const fromDb = extractNameFromUserRow(row);
       if (fromDb) return fromDb;
     } catch (_) {}
 
-    if (ctx && Number(ctx.from?.id) === id) {
+    if (ctx && String(ctx.from?.id) === rawId) {
       return extractNameFromUserRow(ctx.from);
     }
 
@@ -101,29 +104,44 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
 
   async function enrichReviewsWithRealNames(reviews = []) {
     if (!Array.isArray(reviews) || reviews.length === 0) return [];
-    const userIds = [...new Set(reviews.map((r) => Number(r.user_id)).filter(Boolean))];
+
+    const uniqueIds = [...new Set(
+      reviews.map((r) => String(r.user_id || '').trim()).filter(Boolean)
+    )];
     const namesMap = {};
 
-    if (userIds.length > 0) {
+    if (uniqueIds.length > 0) {
       try {
-        const { data: usersRows } = await supabase
-          .from('users')
-          .select('id, first_name, last_name, username')
-          .in('id', userIds);
+        const numIds = uniqueIds.map((x) => Number(x)).filter((n) => !Number.isNaN(n));
+        const { data: rowsByNum } = numIds.length
+          ? await supabase.from('users').select('*').in('id', numIds)
+          : { data: [] };
 
-        if (Array.isArray(usersRows)) {
-          for (const u of usersRows) {
+        if (Array.isArray(rowsByNum)) {
+          for (const u of rowsByNum) {
             const name = extractNameFromUserRow(u);
-            if (name) namesMap[Number(u.id)] = name;
+            if (name && u.id !== undefined && u.id !== null) {
+              namesMap[String(u.id)] = name;
+            }
           }
         }
       } catch (_) {}
+
+      for (const idStr of uniqueIds) {
+        if (!namesMap[idStr]) {
+          const singleName = await fetchRealNameByUserId(idStr);
+          if (singleName) namesMap[idStr] = singleName;
+        }
+      }
     }
 
-    return reviews.map((r) => ({
-      ...r,
-      reviewer_full_name: namesMap[Number(r.user_id)] || ''
-    }));
+    return reviews.map((r) => {
+      const key = String(r.user_id || '').trim();
+      return {
+        ...r,
+        reviewer_full_name: namesMap[key] || ''
+      };
+    });
   }
 
   async function getPlatformRatingsSummary() {
@@ -184,21 +202,23 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
     }
   }
 
+  // فقاعة واحدة كاملة تضم الاسم الحقيقي + النجوم + التاريخ + التعليق
   function formatSingleReviewBubble(review, index) {
     const dt = formatDateTime(review.updated_at || review.created_at);
-    const nameLine = review.reviewer_full_name
-      ? `<b>${index + 1}. 👤 ${escapeHtml(review.reviewer_full_name)} • ${formatStarsVisual(review.rating)}</b>`
-      : `<b>${index + 1}. ${formatStarsVisual(review.rating)}</b>`;
-    const commentPart = review.comment
+    const stars = formatStarsVisual(review.rating);
+    const displayName = review.reviewer_full_name
+      ? `👤 <b>${escapeHtml(review.reviewer_full_name)}</b>`
+      : `👤 <b>مستخدم</b>`;
+    const commentLine = review.comment
       ? `\n💬 ${escapeHtml(review.comment)}`
       : `\n<i>تقييم بالنجوم فقط</i>`;
-    const timePart = dt ? `\n🕒 <i>${escapeHtml(dt)}</i>` : '';
+    const timeLine = dt ? `\n🕒 <i>${escapeHtml(dt)}</i>` : '';
 
     return (
       `<blockquote>` +
-      nameLine +
-      timePart +
-      commentPart +
+      `<b>${index + 1}.</b> ${displayName} • <b>${stars}</b>` +
+      timeLine +
+      commentLine +
       `</blockquote>`
     );
   }
@@ -248,7 +268,7 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
     );
 
     const stats = await getPlatformRatingsSummary();
-    const existingReview = stats.allReviews.find((r) => Number(r.user_id) === Number(userId)) || null;
+    const existingReview = stats.allReviews.find((r) => String(r.user_id) === String(userId)) || null;
 
     let ratingBlock = `\n\n${LINE}\n📊 <b>تقييم المنصة من المستخدمين</b>\n${LINE}\n`;
     if (stats.total === 0) {
