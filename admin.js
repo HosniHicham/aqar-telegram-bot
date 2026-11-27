@@ -1,6 +1,7 @@
 'use strict';
 // =========================================================================
 // 🛡️ SERVER ADMIN — لوحة تحكم الإدارة
+// - استعادة وإبقاء أزرار تصفح صور وفيديوهات العقار (السابق / التالي / عداد العنصر)
 // - فصل صورة الوصل عن صور وفيديوهات العقار ومنع تكرارها
 // - زر مباشر لمعاينة الوصل للإعلانات المعلقة فقط متى كان موجوداً مع أزرار الموافقة/الرفض والرجوع للعقار
 // - التنقل بين الإعلانات (المعلقة / المنشورة / المرفوضة / البحث)
@@ -1217,7 +1218,7 @@ module.exports = function registerAdmin(bot, core) {
   }
 
   // =========================================================================
-  // 🏠 تصفح الإعلانات والبحث (فصل صورة الوصل عن صور وفيديوهات العقار)
+  // 🏠 تصفح الإعلانات والبحث (أزرار تصفح صور وفيديوهات العقار + فصل الوصل)
   // =========================================================================
   function separateAdReceiptAndPropertyMedia(item, isPendingAd) {
     const receiptRef = isPendingAd ? normalizeMediaRef(item.receipt_url) : null;
@@ -1845,6 +1846,7 @@ module.exports = function registerAdmin(bot, core) {
     await handleAdminAction({ ...ctx, match: [null, String(adId)] }, 'reject');
   });
 
+  // أزرار تصفح صور وفيديوهات العقار
   bot.hears('الصورة التالية 🖼', async (ctx) => {
     await safeDeleteUserMessage(ctx);
     const adminId = ctx.from.id;
