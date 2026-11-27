@@ -1,8 +1,7 @@
 'use strict';
 // =========================================================================
 // 🛡️ SERVER ADMIN — لوحة تحكم الإدارة
-// - تصفح صور وفيديوهات الإعلانات بنفس أسلوب التصفح السلس مع فصل الوصل عن صور العقار
-// - زر مباشر لمعاينة الوصل متى كان موجوداً في الإعلانات المعلقة فقط
+// - تصفح صور وفيديوهات الإعلانات بنفس أسلوب التصفح السلس
 // - التنقل بين الإعلانات (المعلقة / المنشورة / المرفوضة / البحث)
 // - تصفح طلبات الشحن (wallet_topups) والموافقة أو الرفض أو المراسلة
 // - إدارة ومعاينة استعلامات المستخدمين (user_inquiries) وسجل الردود (inquiry_replies)
@@ -131,10 +130,7 @@ module.exports = function registerAdmin(bot, core) {
     return Markup.keyboard(rows).resize();
   }
 
-  function getAdminBrowsingKeyboard(
-    idx, total, filterType, currentItem = null,
-    mediaIdx = 0, totalMedia = 0, hasReceiptSlide = false, currentMedia = null, isPendingAd = false
-  ) {
+  function getAdminBrowsingKeyboard(idx, total, filterType, currentItem = null, mediaIdx = 0, totalMedia = 0) {
     const rows = [];
 
     if (totalMedia > 1) {
@@ -145,10 +141,6 @@ module.exports = function registerAdmin(bot, core) {
       rows.push(mediaRow);
     }
 
-    if (isPendingAd && hasReceiptSlide && currentMedia && currentMedia.kind !== 'receipt') {
-      rows.push(['🧾 معاينة الوصل']);
-    }
-
     const navRow = [];
     if (idx > 0) navRow.push('⬅️ السابق');
     navRow.push(`📄 ${idx + 1} / ${total}`);
@@ -157,12 +149,6 @@ module.exports = function registerAdmin(bot, core) {
 
     if (currentItem && currentItem.id && (currentItem.user_id || currentItem._resolvedUserId)) {
       rows.push([`✉️ مراسلة بخصوص #${currentItem.id}`]);
-    }
-
-    if (filterType !== 'pending') {
-      rows.push(['⏳ المعلقة', '✅ المنشورة']);
-    } else {
-      rows.push(['✅ المنشورة', '❌ المرفوضة']);
     }
 
     rows.push(['📩 الاستعلامات', '🔎 بحث سريع', '🎛 لوحة الإدارة']);
@@ -451,6 +437,7 @@ module.exports = function registerAdmin(bot, core) {
       console.error('findOrCreateRatingInquiryId error:', e);
     }
 
+    // في حال عدم وجود سجل استعلام، نبحث عن أحدث استعلام للمستخدم لربط الرد في inquiry_replies
     try {
       const { data: fallbackInq } = await supabase
         .from('user_inquiries')
@@ -1215,7 +1202,7 @@ module.exports = function registerAdmin(bot, core) {
   }
 
   // =========================================================================
-  // 🏠 تصفح الإعلانات والبحث (مع عزل الوصل عن صور وفيديوهات العقار)
+  // 🏠 تصفح الإعلانات والبحث
   // =========================================================================
   async function fetchAdminAdsByFilter(filterType) {
     if (filterType === 'published') {
@@ -1342,46 +1329,8 @@ module.exports = function registerAdmin(bot, core) {
     return rows.length > 0 ? Markup.inlineKeyboard(rows) : undefined;
   }
 
-  // فصل وصل الدفع عن صور وفيديوهات العقار ومنع تكراره
-  function buildAdMediaSlides(item, cardFilter) {
-    const receiptRef = cardFilter === 'pending' ? normalizeMediaRef(item.receipt_url) : null;
-    const orderedMedia = buildOrderedBrowsingMedia(item);
-    const slides = [];
-
-    if (receiptRef) {
-      slides.push({
-        type: 'photo',
-        ref: receiptRef,
-        kind: 'receipt',
-        label: '🧾 وصل الدفع (Reçu)'
-      });
-    }
-
-    for (const m of orderedMedia) {
-      const cleanRef = normalizeMediaRef(m.ref);
-      if (!cleanRef) continue;
-      if (receiptRef && cleanRef === receiptRef) continue;
-      if (!slides.some(existing => existing.ref === cleanRef && existing.type === m.type)) {
-        slides.push({
-          ...m,
-          ref: cleanRef,
-          kind: m.type === 'video' ? 'video' : 'property_photo',
-          label: m.type === 'video' ? '🎥 فيديو العقار' : '🖼 صورة العقار'
-        });
-      }
-    }
-
-    return {
-      slides,
-      hasReceiptSlide: Boolean(receiptRef)
-    };
-  }
-
-  function formatAdminAdCaption(
-    item, idx, total, filterType, stats, searchQuery = '',
-    currentMedia = null, mediaIdx = 0, totalMedia = 0, hasReceiptSlide = false, isPendingAd = false
-  ) {
-    const effectiveFilter = filterType === 'search' ? (item._filterType || 'pending') : filterType;
+  function formatAdminAdCaption(item, idx, total, filterType, stats, searchQuery = '', currentMedia = null, mediaIdx = 0, totalMedia = 0) {
+    const effectiveFilter = filterType || item._filterType || 'pending';
     const titleMap = {
       pending: '⏳ <b>قيد المراجعة</b>',
       published: '✅ <b>منشور</b>',
@@ -1390,27 +1339,15 @@ module.exports = function registerAdmin(bot, core) {
     const isFree = item.receipt_url === 'FREE_NO_RECEIPT';
     const typeBadge = effectiveFilter === 'published'
       ? '🌐 عرض عام'
-      : (isFree ? '🆓 باقة مجانية' : '💳 BaridiMob / CCP (مدفوع بوصل)');
+      : (isFree ? '🆓 باقة مجانية' : '💳 مدفوع بوصل');
 
     const photosCount = parseImagesFromImageUrl(item.image_url).length;
     const videosCount = parseMediaListFromField(item.video_url).length;
     const ownerId = item.user_id || item._resolvedUserId || '';
     const desc = String(item.description || item.message || '');
     const searchLine = searchQuery ? `🔎 <b>نتيجة البحث:</b> <code>${escapeHtml(searchQuery)}</code>\n` : '';
-
-    let receiptStatusLine = '';
-    if (isPendingAd) {
-      if (isFree) {
-        receiptStatusLine = `🧾 <b>الوصل:</b> 🆓 غير مطلوب (باقة مجانية)\n`;
-      } else if (hasReceiptSlide) {
-        receiptStatusLine = `🧾 <b>الوصل:</b> ✅ مرفق (العنصر 1 — تحقق منه قبل القبول)\n`;
-      } else {
-        receiptStatusLine = `🧾 <b>الوصل:</b> ⚠️ مفقود أو غير صالح (راجع قبل القبول!)\n`;
-      }
-    }
-
     const mediaLine = totalMedia > 0
-      ? `\n${currentMedia?.label || (currentMedia?.type === 'video' ? '🎥 فيديو' : '🖼 صورة')}: <b>${mediaIdx + 1} / ${totalMedia}</b>`
+      ? `\n${currentMedia?.type === 'video' ? '🎥 فيديو' : '🖼 صورة'}: <b>${mediaIdx + 1} / ${totalMedia}</b>`
       : '';
 
     const rawCap =
@@ -1418,13 +1355,12 @@ module.exports = function registerAdmin(bot, core) {
       `📊 معلق: <b>${stats.pending}</b> | منشور: <b>${stats.published}</b> | مرفوض: <b>${stats.rejected}</b>\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
       `🏷 <b>التصنيف:</b> ${typeBadge}\n` +
-      receiptStatusLine +
       `🕒 <b>التاريخ:</b> <code>${escapeHtml(formatDateTime(item.created_at))}</code>\n` +
       (ownerId ? `👤 <b>المعلن:</b> <code>${ownerId}</code>\n` : '') +
       `🏠 <b>العقار:</b> ${escapeHtml(item.property_type || '')} — 📍 <b>${escapeHtml(item.state_name || '')}</b>\n` +
       `💰 <b>السعر:</b> ${formatMoney(item.price)} — 📞 <code>${escapeHtml(item.phone || '')}</code>\n` +
-      `🖼 <b>صور العقار:</b> ${photosCount} | 🎥 <b>فيديو العقار:</b> ${videosCount}${mediaLine}\n` +
-      `📝 <b>التفاصيل:</b> ${escapeHtml(desc.length > 240 ? desc.slice(0, 240) + '…' : desc)}`;
+      `🖼 <b>الصور:</b> ${photosCount} | 🎥 <b>الفيديو:</b> ${videosCount}${mediaLine}\n` +
+      `📝 <b>التفاصيل:</b> ${escapeHtml(desc.length > 260 ? desc.slice(0, 260) + '…' : desc)}`;
 
     return fitTelegramText(rawCap, !!currentMedia);
   }
@@ -1482,8 +1418,18 @@ module.exports = function registerAdmin(bot, core) {
     await resolveAdOwnerUserId(item);
 
     const cardFilter = item._filterType || (filterType === 'search' ? 'pending' : filterType);
-    const isPendingAd = cardFilter === 'pending';
-    const { slides: mediaList, hasReceiptSlide } = buildAdMediaSlides(item, cardFilter);
+
+    const receiptRef = normalizeMediaRef(item.receipt_url);
+    const orderedMedia = buildOrderedBrowsingMedia(item);
+    const mediaList = [];
+    if (receiptRef && cardFilter !== 'published') {
+      mediaList.push({ type: 'photo', ref: receiptRef });
+    }
+    for (const m of orderedMedia) {
+      if (!mediaList.some(existing => existing.ref === m.ref)) {
+        mediaList.push(m);
+      }
+    }
 
     const totalMedia = mediaList.length;
     let safeMediaIdx = Number(mediaIndex) || 0;
@@ -1493,13 +1439,11 @@ module.exports = function registerAdmin(bot, core) {
 
     const currentMedia = totalMedia > 0 ? mediaList[safeMediaIdx] : null;
     const caption = formatAdminAdCaption(
-      item, safeIdx, st.items.length, filterType, stats, st.query || '',
-      currentMedia, safeMediaIdx, totalMedia, hasReceiptSlide, isPendingAd
+      item, safeIdx, st.items.length, cardFilter, stats, st.query || '',
+      currentMedia, safeMediaIdx, totalMedia
     );
     const inlineKb = buildAdInlineButtons(item, cardFilter);
-    const controlKb = getAdminBrowsingKeyboard(
-      safeIdx, st.items.length, filterType, item, safeMediaIdx, totalMedia, hasReceiptSlide, currentMedia, isPendingAd
-    );
+    const controlKb = getAdminBrowsingKeyboard(safeIdx, st.items.length, filterType, item, safeMediaIdx, totalMedia);
 
     const cardExtra = inlineKb ? { caption, parse_mode: 'HTML', ...inlineKb } : { caption, parse_mode: 'HTML' };
 
@@ -1513,11 +1457,7 @@ module.exports = function registerAdmin(bot, core) {
         sentCard = await ctx.reply(caption, cardExtra);
       }
     } catch (e) {
-      const fallbackCap = fitTelegramText(
-        caption + (currentMedia ? '\n\n⚠️ <i>تعذر تحميل صورة/فيديو هذا العنصر من التخزين.</i>' : ''),
-        false
-      );
-      sentCard = await ctx.reply(fallbackCap, inlineKb ? { parse_mode: 'HTML', ...inlineKb } : { parse_mode: 'HTML' }).catch(() => null);
+      sentCard = await ctx.reply(caption, cardExtra).catch(() => null);
     }
 
     const ctrlMsg = await ctx.reply(`🧭 <b>${safeIdx + 1} / ${st.items.length}</b>`, {
@@ -1763,19 +1703,6 @@ module.exports = function registerAdmin(bot, core) {
   bot.hears('❌ المرفوضة', async (ctx) => {
     await safeDeleteUserMessage(ctx);
     await renderAdminAdAt(ctx, ctx.from.id, 'rejected', 0, true, 0);
-  });
-
-  bot.hears('🧾 معاينة الوصل', async (ctx) => {
-    await safeDeleteUserMessage(ctx);
-    const adminId = ctx.from.id;
-    const st = adminBrowseState[adminId];
-    if (!st) return openAdminHome(ctx);
-    const item = st.items?.[st.index || 0];
-    const cardFilter = item?._filterType || (st.filter === 'search' ? 'pending' : st.filter);
-    if (cardFilter !== 'pending') {
-      return renderAdminAdAt(ctx, adminId, st.filter, st.index || 0, false, st.mediaIndex || 0);
-    }
-    await renderAdminAdAt(ctx, adminId, st.filter, st.index || 0, false, 0);
   });
 
   bot.hears('الصورة التالية 🖼', async (ctx) => {
@@ -2261,3 +2188,4 @@ module.exports = function registerAdmin(bot, core) {
 
   return { openAdminHome };
 };
+
