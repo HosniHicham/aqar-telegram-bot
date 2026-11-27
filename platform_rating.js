@@ -1,7 +1,7 @@
 'use strict';
 // =========================================================================
 // ⭐ PLATFORM RATING MODULE — خاصية تقييم المنصة وإرسال التقييم وعرض الإحصائيات
-// يعرض كل تقييم/تعليق في فقاعة واحدة متكاملة، ويعرض التعليق السابق مع التقييم.
+// يجلب الاسم الحقيقي للمستخدم من جدول users عبر id ويعرض كل تقييم في فقاعة واحدة.
 // =========================================================================
 
 const LINE = '▬▬▬▬▬▬▬▬▬▬▬▬';
@@ -74,14 +74,11 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
     return null;
   }
 
-  async function resolveFullReviewerName(userId, ctx = null) {
+  async function fetchRealNameByUserId(userId, ctx = null) {
     const id = Number(userId);
-    if (ctx && Number(ctx.from?.id) === id) {
-      const fromCtx = buildFullNameFromRecord(ctx.from);
-      if (fromCtx) return fromCtx;
-    }
+    if (!id) return 'مستخدم';
 
-    if (typeof getUserRecord === 'function' && id) {
+    if (typeof getUserRecord === 'function') {
       try {
         const rec = await getUserRecord(id);
         const fromRec = buildFullNameFromRecord(rec);
@@ -89,10 +86,26 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
       } catch (_) {}
     }
 
-    return '';
+    try {
+      const { data } = await supabase
+        .from('users')
+        .select('id, first_name, last_name, username')
+        .eq('id', id)
+        .limit(1);
+      const row = Array.isArray(data) ? data[0] : data;
+      const fromDb = buildFullNameFromRecord(row);
+      if (fromDb) return fromDb;
+    } catch (_) {}
+
+    if (ctx && Number(ctx.from?.id) === id) {
+      const fromCtx = buildFullNameFromRecord(ctx.from);
+      if (fromCtx) return fromCtx;
+    }
+
+    return 'مستخدم';
   }
 
-  async function enrichReviewsWithFullNames(reviews = []) {
+  async function enrichReviewsWithRealNames(reviews = []) {
     if (!Array.isArray(reviews) || reviews.length === 0) return [];
     const userIds = [...new Set(reviews.map((r) => Number(r.user_id)).filter(Boolean))];
     const namesMap = {};
@@ -115,7 +128,7 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
 
     return reviews.map((r) => ({
       ...r,
-      reviewer_full_name: namesMap[Number(r.user_id)] || 'مستخدم المنصة'
+      reviewer_full_name: namesMap[Number(r.user_id)] || 'مستخدم'
     }));
   }
 
@@ -138,7 +151,7 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
         };
       }
 
-      const enrichedReviews = await enrichReviewsWithFullNames(data);
+      const enrichedReviews = await enrichReviewsWithRealNames(data);
 
       const counts = { 6: 0, 5: 0, 4: 0, 3: 0, 2: 0, 1: 0, 0: 0 };
       let totalStars = 0;
@@ -177,10 +190,10 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
     }
   }
 
-  // فقاعة واحدة كاملة تضم الاسم الكامل + التقييم + التاريخ + التعليق
+  // فقاعة واحدة كاملة تضم الاسم الحقيقي + التقييم + التاريخ + التعليق
   function formatSingleReviewBubble(review, index) {
     const dt = formatDateTime(review.updated_at || review.created_at);
-    const fullName = escapeHtml(review.reviewer_full_name || 'مستخدم المنصة');
+    const fullName = escapeHtml(review.reviewer_full_name || 'مستخدم');
     const stars = formatStarsVisual(review.rating);
     const commentPart = review.comment
       ? `\n💬 ${escapeHtml(review.comment)}`
@@ -202,7 +215,7 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
       const adminIds = await getAdminIds();
       if (!Array.isArray(adminIds) || adminIds.length === 0) return;
 
-      const resolvedName = await resolveFullReviewerName(userId, ctx);
+      const resolvedName = await fetchRealNameByUserId(userId, ctx);
       const fullName = escapeHtml(resolvedName || 'مستخدم');
       const nowText = formatDateTime(new Date());
       const titleBadge = isUpdate ? '✏️ تحديث تقييم للمنصة' : '⭐ تقييم جديد للمنصة';
