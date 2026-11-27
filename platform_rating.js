@@ -1,9 +1,10 @@
 'use strict';
 // =========================================================================
 // ⭐ PLATFORM RATING MODULE — خاصية تقييم المنصة وإرسال التقييم وعرض الإحصائيات
-// يدعم من 0 إلى 5 نجوم + النجمة البيضاء (🌟)، ويعرض (الحرف الأول. الاسم التالي)
-// أو الاسم الكامل عند توفر اسم واحد فقط، مع عرض أنيق ومنسّق.
+// يعرض الاسم الكامل للمُقيّم ومجموع النجوم المتحصلة بأسلوب عرض منسّق.
 // =========================================================================
+
+const LINE = '▬▬▬▬▬▬▬▬▬▬▬▬';
 
 const STAR_CHOICES = {
   0: '☆☆☆☆☆',
@@ -14,6 +15,19 @@ const STAR_CHOICES = {
   5: '⭐⭐⭐⭐⭐',
   6: '🌟'
 };
+
+function isBadName(name) {
+  const n = String(name || '').trim();
+  return !n || /^مستخدم\s*\d*$/i.test(n) || /^user\s*\d*$/i.test(n) || /^\d+$/.test(n);
+}
+
+function buildFullNameFromRecord(obj) {
+  if (!obj) return '';
+  const full = [obj.first_name, obj.last_name].filter(Boolean).join(' ').trim();
+  if (!isBadName(full)) return full;
+  if (!isBadName(obj.username)) return String(obj.username).trim();
+  return '';
+}
 
 module.exports = function registerPlatformRating(bot, core, helpers) {
   const {
@@ -60,47 +74,48 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
     return null;
   }
 
-  // صيغة الاسم لزيادة المصداقية:
-  // - إذا وُجد اسم أول واسم تالٍ: "ه. حسني"
-  // - إذا وُجد اسم واحد فقط: "هشام"
-  function formatCredibleReviewerName(rawName = '') {
-    const clean = String(rawName || '').trim().replace(/\s+/g, ' ');
-    if (!clean) return 'مستخدم موثق';
-
-    const parts = clean.split(' ').filter(Boolean);
-    if (parts.length >= 2) {
-      const firstChar = Array.from(parts[0])[0] || '';
-      const nextPart = parts.slice(1).join(' ');
-      const formatted = firstChar ? `${firstChar}. ${nextPart}` : nextPart;
-      return formatted.slice(0, 32);
+  async function resolveFullReviewerName(userId, ctx = null) {
+    const id = Number(userId);
+    if (ctx && Number(ctx.from?.id) === id) {
+      const fromCtx = buildFullNameFromRecord(ctx.from);
+      if (fromCtx) return fromCtx;
     }
 
-    return parts[0].slice(0, 24);
+    if (typeof getUserRecord === 'function' && id) {
+      try {
+        const rec = await getUserRecord(id);
+        const fromRec = buildFullNameFromRecord(rec);
+        if (fromRec) return fromRec;
+      } catch (_) {}
+    }
+
+    return '';
   }
 
-  async function enrichReviewsWithNames(reviews = []) {
+  async function enrichReviewsWithFullNames(reviews = []) {
     if (!Array.isArray(reviews) || reviews.length === 0) return [];
-    const userIds = [...new Set(reviews.map(r => Number(r.user_id)).filter(Boolean))];
+    const userIds = [...new Set(reviews.map((r) => Number(r.user_id)).filter(Boolean))];
     const namesMap = {};
 
     if (userIds.length > 0) {
       try {
         const { data: usersRows } = await supabase
           .from('users')
-          .select('id, first_name')
+          .select('id, first_name, last_name, username')
           .in('id', userIds);
 
         if (Array.isArray(usersRows)) {
           for (const u of usersRows) {
-            namesMap[Number(u.id)] = formatCredibleReviewerName(u.first_name);
+            const full = buildFullNameFromRecord(u);
+            if (full) namesMap[Number(u.id)] = full;
           }
         }
-      } catch (e) {}
+      } catch (_) {}
     }
 
-    return reviews.map(r => ({
+    return reviews.map((r) => ({
       ...r,
-      reviewer_name: namesMap[Number(r.user_id)] || 'مستخدم موثق'
+      reviewer_full_name: namesMap[Number(r.user_id)] || 'مستخدم المنصة'
     }));
   }
 
@@ -115,6 +130,7 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
       if (error || !Array.isArray(data) || data.length === 0) {
         return {
           total: 0,
+          totalStars: 0,
           average: '0.0',
           counts: { 6: 0, 5: 0, 4: 0, 3: 0, 2: 0, 1: 0, 0: 0 },
           recentComments: [],
@@ -122,10 +138,10 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
         };
       }
 
-      const enrichedReviews = await enrichReviewsWithNames(data);
+      const enrichedReviews = await enrichReviewsWithFullNames(data);
 
       const counts = { 6: 0, 5: 0, 4: 0, 3: 0, 2: 0, 1: 0, 0: 0 };
-      let sum = 0;
+      let totalStars = 0;
 
       for (const row of enrichedReviews) {
         const raw = Number(row.rating);
@@ -133,16 +149,17 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
           ? raw
           : Math.min(5, Math.max(0, raw || 5));
         counts[r] = (counts[r] || 0) + 1;
-        sum += r;
+        totalStars += r;
       }
 
-      const average = (sum / enrichedReviews.length).toFixed(1);
+      const average = (totalStars / enrichedReviews.length).toFixed(1);
       const recentComments = enrichedReviews
-        .filter(r => r.comment && String(r.comment).trim().length > 0)
+        .filter((r) => r.comment && String(r.comment).trim().length > 0)
         .slice(0, 3);
 
       return {
         total: enrichedReviews.length,
+        totalStars,
         average,
         counts,
         recentComments,
@@ -151,6 +168,7 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
     } catch (e) {
       return {
         total: 0,
+        totalStars: 0,
         average: '0.0',
         counts: { 6: 0, 5: 0, 4: 0, 3: 0, 2: 0, 1: 0, 0: 0 },
         recentComments: [],
@@ -161,16 +179,16 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
 
   function formatSingleReviewItem(review, index) {
     const dt = formatDateTime(review.updated_at || review.created_at);
-    const name = escapeHtml(review.reviewer_name || 'مستخدم موثق');
+    const fullName = escapeHtml(review.reviewer_full_name || 'مستخدم المنصة');
     const stars = formatStarsVisual(review.rating);
-    const commentBlock = review.comment
-      ? `\n   💬 <i>${escapeHtml(review.comment)}</i>`
-      : `\n   💬 <i>تقييم بالنجوم فقط</i>`;
+    const commentLine = review.comment
+      ? `\n<blockquote>💬 ${escapeHtml(review.comment)}</blockquote>`
+      : `\n<blockquote><i>تقييم بالنجوم فقط</i></blockquote>`;
 
     return (
-      `▸ <b>${index + 1}. ${name}</b> • <b>${stars}</b>\n` +
-      `   🕒 <code>${escapeHtml(dt)}</code>` +
-      commentBlock
+      `<b>${index + 1}. 👤 ${fullName}</b> • <b>${stars}</b>` +
+      (dt ? `\n🕒 <i>${escapeHtml(dt)}</i>` : '') +
+      commentLine
     );
   }
 
@@ -180,23 +198,21 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
       const adminIds = await getAdminIds();
       if (!Array.isArray(adminIds) || adminIds.length === 0) return;
 
-      const dbUser = typeof getUserRecord === 'function' ? await getUserRecord(userId) : null;
-      const fullName = escapeHtml(
-        [ctx.from?.first_name, ctx.from?.last_name].filter(Boolean).join(' ') || dbUser?.first_name || 'مستخدم'
-      );
+      const resolvedName = await resolveFullReviewerName(userId, ctx);
+      const fullName = escapeHtml(resolvedName || 'مستخدم');
       const nowText = formatDateTime(new Date());
       const titleBadge = isUpdate ? '✏️ تحديث تقييم للمنصة' : '⭐ تقييم جديد للمنصة';
-      const commentLine = comment
-        ? `\n💬 <b>التعليق:</b> ${escapeHtml(comment)}`
-        : `\n💬 <b>التعليق:</b> <i>تقييم بالنجوم فقط</i>`;
+      const commentBlock = comment
+        ? `\n<blockquote>💬 ${escapeHtml(comment)}</blockquote>`
+        : `\n<blockquote><i>تقييم بالنجوم فقط</i></blockquote>`;
 
       const adminMsg = fitTelegramText(
         `<b>${titleBadge}</b>\n` +
-        `━━━━━━━━━━━━━━━━━━━━\n` +
-        `👤 <b>المستخدم:</b> ${fullName} (<code>${userId}</code>)\n` +
+        `${LINE}\n` +
+        `👤 <b>المستخدم:</b> <b>${fullName}</b> (<code>${userId}</code>)\n` +
         `🌟 <b>التقييم:</b> <b>${formatStarsVisual(rating)}</b>\n` +
-        `🕒 <b>الوقت:</b> <code>${escapeHtml(nowText)}</code>` +
-        commentLine,
+        `🕒 <i>${escapeHtml(nowText)}</i>` +
+        commentBlock,
         false
       );
 
@@ -220,18 +236,20 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
     );
 
     const stats = await getPlatformRatingsSummary();
-    const existingReview = stats.allReviews.find(r => Number(r.user_id) === Number(userId)) || null;
+    const existingReview = stats.allReviews.find((r) => Number(r.user_id) === Number(userId)) || null;
 
-    let ratingBlock = `\n\n━━━━━━━━━━━━━━━━━━━━\n📊 <b>تقييم المنصة من المستخدمين</b>\n━━━━━━━━━━━━━━━━━━━━\n`;
+    let ratingBlock = `\n\n${LINE}\n📊 <b>تقييم المنصة من المستخدمين</b>\n${LINE}\n`;
     if (stats.total === 0) {
-      ratingBlock += `<i>لا توجد تقييمات بعد — كن أول من يقيّم تجربته على المنصة!</i>`;
+      ratingBlock += `<blockquote><i>لا توجد تقييمات بعد — كن أول من يقيّم تجربته على المنصة!</i></blockquote>`;
     } else {
       ratingBlock +=
-        `⭐ <b>المتوسط العام:</b> <b>${stats.average}</b>  •  👥 <b>إجمالي الآراء:</b> <b>${stats.total}</b>\n\n` +
-        `• ${STAR_CHOICES[6]}: <b>${stats.counts[6]}</b>  |  ${STAR_CHOICES[5]}: <b>${stats.counts[5]}</b>\n` +
-        `• ${STAR_CHOICES[4]}: <b>${stats.counts[4]}</b>  |  ${STAR_CHOICES[3]}: <b>${stats.counts[3]}</b>\n` +
-        `• ${STAR_CHOICES[2]}: <b>${stats.counts[2]}</b>  |  ${STAR_CHOICES[1]}: <b>${stats.counts[1]}</b>\n` +
-        `• ${STAR_CHOICES[0]}: <b>${stats.counts[0]}</b>`;
+        `⭐ <b>مجموع النجوم:</b> <b>${stats.totalStars}</b>  •  📈 <b>المتوسط:</b> <b>${stats.average}</b>  •  👥 <b>التقييمات:</b> <b>${stats.total}</b>\n\n` +
+        `<blockquote>` +
+        `${STAR_CHOICES[6]}: <b>${stats.counts[6]}</b>  |  ${STAR_CHOICES[5]}: <b>${stats.counts[5]}</b>\n` +
+        `${STAR_CHOICES[4]}: <b>${stats.counts[4]}</b>  |  ${STAR_CHOICES[3]}: <b>${stats.counts[3]}</b>\n` +
+        `${STAR_CHOICES[2]}: <b>${stats.counts[2]}</b>  |  ${STAR_CHOICES[1]}: <b>${stats.counts[1]}</b>\n` +
+        `${STAR_CHOICES[0]}: <b>${stats.counts[0]}</b>` +
+        `</blockquote>`;
 
       if (stats.recentComments.length > 0) {
         ratingBlock += `\n\n💬 <b>أحدث آراء المستخدمين:</b>\n\n` +
@@ -286,7 +304,7 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
 
     await replyTracked(
       ctx, userId,
-      `⭐ <b>تقييم منصة عقار الجزائر</b>\n━━━━━━━━━━━━━━━━━━━━${prevNote}\n👇 <b>اختر تقييمك من الأزرار في الأسفل:</b>`,
+      `⭐ <b>تقييم منصة عقار الجزائر</b>\n${LINE}${prevNote}\n👇 <i>اختر تقييمك من الأزرار في الأسفل</i>`,
       {
         parse_mode: 'HTML',
         ...Markup.keyboard([
@@ -314,9 +332,9 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
     const sent = await ctx.reply(
       fitTelegramText(
         `💬 <b>آراء المستخدمين حول المنصة</b>\n` +
-        `━━━━━━━━━━━━━━━━━━━━\n` +
-        `⭐ <b>المتوسط العام:</b> <b>${stats.average}</b>  •  👥 <b>الإجمالي:</b> <b>${stats.total}</b>\n` +
-        `━━━━━━━━━━━━━━━━━━━━\n\n` +
+        `${LINE}\n` +
+        `⭐ <b>مجموع النجوم:</b> <b>${stats.totalStars}</b>  •  📈 <b>المتوسط:</b> <b>${stats.average}</b>  •  👥 <b>الإجمالي:</b> <b>${stats.total}</b>\n` +
+        `${LINE}\n\n` +
         `${lines.join('\n\n')}`,
         false
       ),
@@ -414,7 +432,7 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
       return replyTracked(
         ctx, userId,
         `✅ <b>تم اختيار تقييمك:</b> <b>${formatStarsVisual(chosenRating)}</b>\n\n` +
-        `✍️ <b>اكتب الآن تعليقك أو ملاحظتك حول المنصة (اختياري)، أو اضغط "⏭️ تخطّي" لحفظ النجوم فقط:</b>`,
+        `✍️ <i>اكتب الآن تعليقك أو ملاحظتك حول المنصة (اختياري)، أو اضغط "⏭️ تخطّي" لحفظ النجوم فقط</i>`,
         {
           parse_mode: 'HTML',
           ...Markup.keyboard([
