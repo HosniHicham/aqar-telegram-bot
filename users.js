@@ -1270,7 +1270,7 @@ module.exports = function registerUsers(bot, core) {
       if (walletBalance >= walletCost) {
         rows.push([`💼 الخصم من المحفظة (${formatMoney(walletCost)})`]);
       } else {
-        rows.push([`💳 شحن المحفظة (${formatMoney(walletCost)})`]);
+        rows.push([`💳 شحن الرصيد`]);
       }
       rows.push([
         `🪙 النشر مجاناً (${publishCost} نقطة)`,
@@ -1302,7 +1302,7 @@ module.exports = function registerUsers(bot, core) {
 
       opts.footer =
         `💰 <b>اختر طريقة إتمام ونشر الإعلان:</b>\n\n` +
-        `1️⃣ <b>الدفع عبر BaridiMob / CCP:</b> فحص رصيد المحفظة أو التحويل (${formatMoney(walletCost)}).\n` +
+        `1️⃣ <b>الدفع عبر BaridiMob / CCP:</b> عرض الرصيد وخيارات الخصم أو الشحن (${formatMoney(walletCost)}).\n` +
         `2️⃣ <b>النشر المجاني بالنقاط:</b> يتطلب <b>${publishCost} نقطة</b>\n` +
         `3️⃣ <b>نشر مجاني:</b> يُرسل إلى قائمة الانتظار والمراجعة الإدارية كإعلان مجاني.\n` +
         `${walletStatusLine}\n` +
@@ -1334,7 +1334,7 @@ module.exports = function registerUsers(bot, core) {
   async function publishAdByWalletBalance(ctx, userId, state, walletCost) {
     const unreadCount = core.messenger?.getUnreadCount ? await core.messenger.getUnreadCount(userId) : 0;
     const mainKb = await buildUserMainKeyboard(userId, unreadCount);
-    state.data.payment_label = `💼 خصم من المحفظة (${formatMoney(walletCost)})`;
+    state.data.payment_label = `💼 خصم من الرصيد (${formatMoney(walletCost)})`;
     state.step = 'publishing';
 
     try {
@@ -1347,8 +1347,8 @@ module.exports = function registerUsers(bot, core) {
         state.step = 'waiting_for_payment_choice';
         return renderWizard(ctx, userId, {
           footer:
-            `⚠️ <b>رصيد محفظتك الحالي (${formatMoney(currentWallet)}) أقل من تكلفة النشر (${formatMoney(walletCost)}).</b>\n` +
-            `يرجى شحن المحفظة أولاً أو اختيار طريقة نشر أخرى.`
+            `⚠️ <b>رصيدك الحالي (${formatMoney(currentWallet)}) أقل من تكلفة النشر (${formatMoney(walletCost)}).</b>\n` +
+            `يرجى اختيار <b>💳 شحن الرصيد</b> أو اختيار طريقة نشر أخرى.`
         });
       }
 
@@ -1391,10 +1391,10 @@ module.exports = function registerUsers(bot, core) {
         [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' ') || freshUser?.first_name || 'مستخدم'
       );
       const adminMsg =
-        `💼 <b>تم نشر إعلان جديد عبر رصيد المحفظة (#${adId})</b>\n` +
+        `💼 <b>تم نشر إعلان جديد عبر خصم الرصيد (#${adId})</b>\n` +
         `🕒 <b>التاريخ والوقت:</b> <code>${escapeHtml(formatDateTime(nowIso))}</code>\n\n` +
         `👤 <b>العميل:</b> ${senderName} (<code>${userId}</code>)\n` +
-        `💸 <b>المخصوم من المحفظة:</b> <b>${formatMoney(walletCost)}</b>\n` +
+        `💸 <b>المخصوم من الرصيد:</b> <b>${formatMoney(walletCost)}</b>\n` +
         `💼 <b>الرصيد المتبقي:</b> <b>${formatMoney(newWalletBalance)}</b>\n` +
         `🏠 <b>العقار:</b> ${escapeHtml(state.data.property_type || '')} — ${escapeHtml(state.data.state_name || '')}\n` +
         `💰 <b>السعر:</b> ${formatMoney(numericPrice)}`;
@@ -1406,8 +1406,8 @@ module.exports = function registerUsers(bot, core) {
       delete userState[userId];
       await replyTracked(
         ctx, userId,
-        `🎉 <b>تم خصم ${formatMoney(walletCost)} من محفظتك ونشر إعلانك بنجاح!</b>\n\n` +
-        `💼 <b>رصيد محفظتك المتبقي:</b> <b>${formatMoney(newWalletBalance)}</b>\n` +
+        `🎉 <b>تم خصم ${formatMoney(walletCost)} من رصيدك ونشر إعلانك بنجاح!</b>\n\n` +
+        `💼 <b>رصيدك المتبقي:</b> <b>${formatMoney(newWalletBalance)}</b>\n` +
         `🕒 <b>تاريخ ووقت النشر:</b> <code>${escapeHtml(formatDateTime(nowIso))}</code>`,
         { parse_mode: 'HTML', ...mainKb },
         true
@@ -1575,15 +1575,30 @@ module.exports = function registerUsers(bot, core) {
     await showWalletAndPointsScreen(ctx, ctx.from.id);
   });
 
-  bot.hears('💳 شحن الرصيد (CCP / BaridiMob)', async (ctx) => {
+  bot.hears(['💳 شحن الرصيد (CCP / BaridiMob)', '💳 شحن الرصيد'], async (ctx) => {
     await safeDeleteUserMessage(ctx);
-    await openWalletTopupScreen(ctx, ctx.from.id);
+    const userId = ctx.from.id;
+    const state = userState[userId];
+    if (state && state.step === 'waiting_for_payment_choice') {
+      const walletCost = sanitizeNumericPrice(await getSetting('publish_cost_wallet', '500')) || 500;
+      return openWalletTopupScreen(ctx, userId, walletCost);
+    }
+    await openWalletTopupScreen(ctx, userId);
   });
 
   bot.hears(/^💳 شحن المحفظة/, async (ctx) => {
     await safeDeleteUserMessage(ctx);
     const walletCost = sanitizeNumericPrice(await getSetting('publish_cost_wallet', '500')) || 500;
     await openWalletTopupScreen(ctx, ctx.from.id, walletCost);
+  });
+
+  bot.hears(/^(?:💼 )?الخصم من الرصيد/, async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    const userId = ctx.from.id;
+    const state = userState[userId];
+    if (!state || state.step !== 'waiting_for_payment_choice') return;
+    const walletCost = sanitizeNumericPrice(await getSetting('publish_cost_wallet', '500')) || 500;
+    await publishAdByWalletBalance(ctx, userId, state, walletCost);
   });
 
   bot.hears(/^💼 الخصم من المحفظة/, async (ctx) => {
@@ -1593,30 +1608,6 @@ module.exports = function registerUsers(bot, core) {
     if (!state || state.step !== 'waiting_for_payment_choice') return;
     const walletCost = sanitizeNumericPrice(await getSetting('publish_cost_wallet', '500')) || 500;
     await publishAdByWalletBalance(ctx, userId, state, walletCost);
-  });
-
-  bot.hears('📄 إرسال وصل تحويل جديد', async (ctx) => {
-    await safeDeleteUserMessage(ctx);
-    const userId = ctx.from.id;
-    const state = userState[userId];
-    if (!state || state.step !== 'waiting_for_payment_choice') return;
-
-    const walletCost = sanitizeNumericPrice(await getSetting('publish_cost_wallet', '500')) || 500;
-    const ccpRip = await getSetting('ccp_rip', '00234567890123456789');
-    const ccpName = await getSetting('ccp_name', '');
-    const nameLine = ccpName ? `\n👤 <b>الاسم:</b> ${ccpName}` : '';
-
-    const ccpInstructions =
-      `💳 <b>الدفع عبر بريدي موب أو CCP:</b>\n\n` +
-      `يرجى تحويل مبلغ <b>${formatMoney(walletCost)}</b> إلى الحساب التالي:${nameLine}\n` +
-      `📌 <b>رقم الحساب (RIP) (اضغط للنسخ 👇):</b>\n` +
-      `<code>${ccpRip}</code>\n\n` +
-      `📸 <b>بعد التحويل، أرسل هنا صورة وصل الدفع (Reçu):</b>`;
-
-    state.data.payment_label = '💳 تحويل بريدي موب / CCP';
-    state.data.fromWalletChoice = true;
-    state.step = 'waiting_for_payment_receipt';
-    await renderWizard(ctx, userId, { footer: ccpInstructions });
   });
 
   bot.hears(['🌐 تصفح الموقع الرسمي (البروزر)', '🌐 تصفح الموقع الرسمي'], async (ctx) => {
@@ -1716,50 +1707,25 @@ module.exports = function registerUsers(bot, core) {
     const walletBalance = sanitizeNumericPrice(dbUser?.wallet_balance || 0);
     const walletCost = sanitizeNumericPrice(await getSetting('publish_cost_wallet', '500')) || 500;
 
-    // 1) إذا كان لديه رصيد كافٍ في المحفظة: نُخبره ونمنحه خيار الخصم المباشر من المحفظة أو التحويل
-    if (walletBalance >= walletCost) {
-      state.data.payment_label = `💼 رصيد المحفظة (${formatMoney(walletBalance)})`;
-      const enoughBalanceMsg =
-        `💼 <b>لديك رصيد كافٍ في محفظتك!</b>\n\n` +
-        `• <b>رصيدك الحالي في المحفظة:</b> <b>${formatMoney(walletBalance)}</b>\n` +
-        `• <b>تكلفة نشر الإعلان:</b> <b>${formatMoney(walletCost)}</b>\n\n` +
-        `هل تريد <b>الخصم مباشرة من المحفظة ونشر الإعلان الآن</b> أم إرسال وصل تحويل جديد؟`;
+    state.data.payment_label = `💳 BaridiMob / CCP (الرصيد: ${formatMoney(walletBalance)})`;
 
-      const sent = await ctx.reply(
-        await buildWizardText(state, { footer: enoughBalanceMsg }),
-        {
-          parse_mode: 'HTML',
-          ...Markup.keyboard([
-            [`💼 الخصم من المحفظة (${formatMoney(walletCost)})`],
-            ['📄 إرسال وصل تحويل جديد'],
-            ['⬅️ رجوع', '🏠 القائمة الرئيسية']
-          ]).resize()
-        }
-      );
-      const oldId = state.wizardMsgId;
-      state.wizardMsgId = sent.message_id;
-      if (sent.message_id) trackBotMessage(userId, ctx.chat.id, sent.message_id);
-      if (oldId && oldId !== sent.message_id) {
-        await ctx.telegram.deleteMessage(state.chatId, oldId).catch(() => {});
-      }
-      return;
-    }
+    const statusLine = walletBalance >= walletCost
+      ? `✅ <b>رصيدك كافٍ للخصم المباشر</b> (تكلفة النشر: <b>${formatMoney(walletCost)}</b>)`
+      : `⚠️ <b>رصيدك غير كافٍ حالياً</b> (تكلفة النشر: <b>${formatMoney(walletCost)}</b> — ينقصك <b>${formatMoney(walletCost - walletBalance)}</b>)`;
 
-    // 2) إذا كان رصيده فارغاً أو غير كافٍ: نُخبره مباشرة ونطلب منه الشحن
-    const isEmpty = walletBalance <= 0;
-    const shortageMsg = isEmpty
-      ? `⚠️ <b>رصيد محفظتك فارغ حالياً (0 دج) ولا يكفي لنشر الإعلان (المطلوب: ${formatMoney(walletCost)}).</b>\n\n` +
-        `يرجى <b>شحن محفظتك الآن</b> عبر BaridiMob / CCP لتتمكن من النشر، أو إرسال وصل تحويل جديد:`
-      : `⚠️ <b>رصيد محفظتك الحالي (${formatMoney(walletBalance)}) غير كافٍ (المطلوب: ${formatMoney(walletCost)}).</b>\n\n` +
-        `يرجى <b>شحن محفظتك الآن</b> لإكمال الرصيد، أو إرسال وصل تحويل جديد:`;
+    const choicePrompt =
+      `💳 <b>عبر BaridiMob / CCP — الرصيد والاختيارات</b>\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `💼 <b>رصيدك الحالي:</b> <b>${formatMoney(walletBalance)}</b>\n` +
+      `${statusLine}\n\n` +
+      `👇 <b>اختر من الأسفل:</b>`;
 
     const sent = await ctx.reply(
-      await buildWizardText(state, { footer: shortageMsg }),
+      await buildWizardText(state, { footer: choicePrompt }),
       {
         parse_mode: 'HTML',
         ...Markup.keyboard([
-          [`💳 شحن المحفظة (${formatMoney(walletCost)})`],
-          ['📄 إرسال وصل تحويل جديد'],
+          [`💼 الخصم من الرصيد (${formatMoney(walletCost)})`, '💳 شحن الرصيد'],
           ['⬅️ رجوع', '🏠 القائمة الرئيسية']
         ]).resize()
       }
