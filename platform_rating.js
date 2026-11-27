@@ -1,10 +1,13 @@
 'use strict';
 // =========================================================================
 // ⭐ PLATFORM RATING MODULE — خاصية تقييم المنصة وإرسال التقييم وعرض الإحصائيات
-// يجلب الاسم الحقيقي من جدول users عبر id ويعرض كل تقييم في فقاعة واحدة متناسقة.
+// يحفظ الاسم في عمودين (first_name و last_name) عند التسجيل الأول ويعرضه مباشرة.
+// يوجّه أصحاب التقييمات الأقل من 3 نجوم إلى قسم الردود والاستفسار لتسجيل الشكاوى.
 // =========================================================================
 
 const LINE = '▬▬▬▬▬▬▬▬▬▬▬▬';
+const NAME_CACHE_TTL = 60 * 60 * 1000;
+const SUPPORT_BTN_TEXT = '💬 الردود والاستفسار';
 
 const STAR_CHOICES = {
   0: '☆☆☆☆☆',
@@ -16,13 +19,22 @@ const STAR_CHOICES = {
   6: '🌟'
 };
 
-function extractNameFromUserRow(row) {
-  if (!row || typeof row !== 'object') return '';
-  const combined = [row.first_name, row.last_name].filter(Boolean).join(' ').trim();
+function joinFirstAndLastName(firstName = '', lastName = '') {
+  return [firstName, lastName]
+    .map((v) => String(v || '').trim())
+    .filter(Boolean)
+    .join(' ')
+    .trim();
+}
+
+function extractNameFromObj(obj) {
+  if (!obj || typeof obj !== 'object') return '';
+  const combined = joinFirstAndLastName(obj.first_name, obj.last_name);
   if (combined) return combined;
-  if (row.full_name && String(row.full_name).trim()) return String(row.full_name).trim();
-  if (row.name && String(row.name).trim()) return String(row.name).trim();
-  if (row.username && String(row.username).trim()) return String(row.username).trim();
+  if (obj.title && String(obj.title).trim()) return String(obj.title).trim();
+  if (obj.full_name && String(obj.full_name).trim()) return String(obj.full_name).trim();
+  if (obj.name && String(obj.name).trim()) return String(obj.name).trim();
+  if (obj.username && String(obj.username).trim()) return String(obj.username).trim();
   return '';
 }
 
@@ -35,9 +47,14 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
   } = core;
 
   const { registerFreeTextStep } = helpers;
+  const nameCache = new Map();
 
   if (typeof registerFreeTextStep === 'function') {
     registerFreeTextStep('rating_platform_comment');
+  }
+
+  function getTelegramClient(ctx) {
+    return bot?.telegram || core.bot?.telegram || ctx?.telegram || null;
   }
 
   function formatStarsVisual(rating) {
@@ -71,84 +88,107 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
     return null;
   }
 
-  async function fetchRealNameByUserId(userId, ctx = null) {
+  async function resolveNamePartsForSubmission(ctx, userId) {
+    let firstName = ctx?.from?.first_name ? String(ctx.from.first_name).trim() : '';
+    let lastName = ctx?.from?.last_name ? String(ctx.from.last_name).trim() : '';
+
+    if ((!firstName || !lastName) && typeof getUserRecord === 'function') {
+      try {
+        const rec = await getUserRecord(Number(userId));
+        if (rec) {
+          if (!firstName && rec.first_name) firstName = String(rec.first_name).trim();
+          if (!lastName && rec.last_name) lastName = String(rec.last_name).trim();
+        }
+      } catch (_) {}
+    }
+
+    if ((!firstName || !lastName) && userId) {
+      try {
+        const { data } = await supabase
+          .from('users')
+          .select('first_name, last_name')
+          .eq('id', Number(userId))
+          .limit(1);
+        const row = Array.isArray(data) ? data[0] : data;
+        if (row) {
+          if (!firstName && row.first_name) firstName = String(row.first_name).trim();
+          if (!lastName && row.last_name) lastName = String(row.last_name).trim();
+        }
+      } catch (_) {}
+    }
+
+    return {
+      first_name: firstName || null,
+      last_name: lastName || null
+    };
+  }
+
+  async function fetchTelegramFallbackNameById(userId, ctx = null) {
     const rawId = String(userId || '').trim();
     const numId = Number(userId);
     if (!rawId) return '';
 
-    if (typeof getUserRecord === 'function') {
-      try {
-        const rec = await getUserRecord(numId || rawId);
-        const fromRec = extractNameFromUserRow(rec);
-        if (fromRec) return fromRec;
-      } catch (_) {}
+    const cached = nameCache.get(rawId);
+    if (cached && Date.now() - cached.at < NAME_CACHE_TTL) {
+      return cached.name;
     }
 
-    try {
-      const { data } = await supabase
-        .from('users')
-        .select('*')
-        .eq('id', numId || rawId)
-        .limit(1);
-      const row = Array.isArray(data) ? data[0] : data;
-      const fromDb = extractNameFromUserRow(row);
-      if (fromDb) return fromDb;
-    } catch (_) {}
-
-    if (ctx && String(ctx.from?.id) === rawId) {
-      return extractNameFromUserRow(ctx.from);
+    const tg = getTelegramClient(ctx);
+    if (tg && typeof tg.getChat === 'function' && !Number.isNaN(numId) && numId > 0) {
+      try {
+        const chat = await tg.getChat(numId);
+        const fromTg = extractNameFromObj(chat);
+        if (fromTg) {
+          nameCache.set(rawId, { name: fromTg, at: Date.now() });
+          return fromTg;
+        }
+      } catch (_) {}
     }
 
     return '';
   }
 
-  async function enrichReviewsWithRealNames(reviews = []) {
+  async function enrichReviewsWithNames(reviews = [], ctx = null) {
     if (!Array.isArray(reviews) || reviews.length === 0) return [];
 
-    const uniqueIds = [...new Set(
-      reviews.map((r) => String(r.user_id || '').trim()).filter(Boolean)
-    )];
-    const namesMap = {};
-
-    if (uniqueIds.length > 0) {
-      try {
-        const numIds = uniqueIds.map((x) => Number(x)).filter((n) => !Number.isNaN(n));
-        const { data: rowsByNum } = numIds.length
-          ? await supabase.from('users').select('*').in('id', numIds)
-          : { data: [] };
-
-        if (Array.isArray(rowsByNum)) {
-          for (const u of rowsByNum) {
-            const name = extractNameFromUserRow(u);
-            if (name && u.id !== undefined && u.id !== null) {
-              namesMap[String(u.id)] = name;
-            }
-          }
-        }
-      } catch (_) {}
-
-      for (const idStr of uniqueIds) {
-        if (!namesMap[idStr]) {
-          const singleName = await fetchRealNameByUserId(idStr);
-          if (singleName) namesMap[idStr] = singleName;
-        }
+    const missingIds = [];
+    const baseList = reviews.map((r) => {
+      const directFull = joinFirstAndLastName(r.first_name, r.last_name);
+      if (!directFull && r.user_id) {
+        missingIds.push(String(r.user_id).trim());
       }
+      return {
+        ...r,
+        reviewer_full_name: directFull
+      };
+    });
+
+    const uniqueMissingIds = [...new Set(missingIds.filter(Boolean))];
+    const fallbackMap = {};
+
+    if (uniqueMissingIds.length > 0) {
+      await Promise.all(
+        uniqueMissingIds.map(async (idStr) => {
+          const name = await fetchTelegramFallbackNameById(idStr, ctx);
+          if (name) fallbackMap[idStr] = name;
+        })
+      );
     }
 
-    return reviews.map((r) => {
+    return baseList.map((r) => {
       const key = String(r.user_id || '').trim();
       return {
         ...r,
-        reviewer_full_name: namesMap[key] || ''
+        reviewer_full_name: r.reviewer_full_name || fallbackMap[key] || ''
       };
     });
   }
 
-  async function getPlatformRatingsSummary() {
+  async function getPlatformRatingsSummary(ctx = null) {
     try {
       const { data, error } = await supabase
         .from('platform_reviews')
-        .select('id, user_id, rating, comment, created_at, updated_at')
+        .select('id, user_id, first_name, last_name, rating, comment, created_at, updated_at')
         .eq('is_visible', true)
         .order('id', { ascending: false });
 
@@ -163,7 +203,7 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
         };
       }
 
-      const enrichedReviews = await enrichReviewsWithRealNames(data);
+      const enrichedReviews = await enrichReviewsWithNames(data, ctx);
 
       const counts = { 6: 0, 5: 0, 4: 0, 3: 0, 2: 0, 1: 0, 0: 0 };
       let totalStars = 0;
@@ -202,7 +242,6 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
     }
   }
 
-  // فقاعة واحدة كاملة تضم الاسم الحقيقي + النجوم + التاريخ + التعليق
   function formatSingleReviewBubble(review, index) {
     const dt = formatDateTime(review.updated_at || review.created_at);
     const stars = formatStarsVisual(review.rating);
@@ -223,13 +262,14 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
     );
   }
 
-  async function notifyAdminsOnPlatformReview(ctx, userId, rating, comment, isUpdate = false) {
+  async function notifyAdminsOnPlatformReview(ctx, userId, rating, comment, nameParts = {}, isUpdate = false) {
     if (typeof getAdminIds !== 'function') return;
     try {
       const adminIds = await getAdminIds();
       if (!Array.isArray(adminIds) || adminIds.length === 0) return;
 
-      const resolvedName = await fetchRealNameByUserId(userId, ctx);
+      const resolvedName = joinFirstAndLastName(nameParts.first_name, nameParts.last_name)
+        || await fetchTelegramFallbackNameById(userId, ctx);
       const nowText = formatDateTime(new Date());
       const titleBadge = isUpdate ? '✏️ تحديث تقييم للمنصة' : '⭐ تقييم جديد للمنصة';
       const commentLine = comment
@@ -267,7 +307,7 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
       '🏛 <b>عن منصة عقار الجزائر (Aqar System):</b>\n\nنظام رقمي ذكي ومتطور لإدارة وعروض العقارات.'
     );
 
-    const stats = await getPlatformRatingsSummary();
+    const stats = await getPlatformRatingsSummary(ctx);
     const existingReview = stats.allReviews.find((r) => String(r.user_id) === String(userId)) || null;
 
     let ratingBlock = `\n\n${LINE}\n📊 <b>تقييم المنصة من المستخدمين</b>\n${LINE}\n`;
@@ -357,7 +397,7 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
   bot.hears(/^💬 عرض كل الآراء \(\d+\)$/, async (ctx) => {
     await safeDeleteUserMessage(ctx);
     const userId = ctx.from.id;
-    const stats = await getPlatformRatingsSummary();
+    const stats = await getPlatformRatingsSummary(ctx);
 
     if (!stats.allReviews.length) {
       return showAboutPlatformScreen(ctx, userId);
@@ -395,6 +435,7 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
       ? String(rawComment).trim().slice(0, 400)
       : null;
     const nowIso = new Date().toISOString();
+    const nameParts = await resolveNamePartsForSubmission(ctx, cleanUserId);
 
     const { data, error } = await supabase
       .from('platform_reviews')
@@ -402,6 +443,8 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
         [
           {
             user_id: cleanUserId,
+            first_name: nameParts.first_name,
+            last_name: nameParts.last_name,
             rating: cleanRating,
             comment: cleanComment,
             is_visible: true,
@@ -410,7 +453,7 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
         ],
         { onConflict: 'user_id' }
       )
-      .select('id, user_id, rating, comment, created_at, updated_at')
+      .select('id, user_id, first_name, last_name, rating, comment, created_at, updated_at')
       .single();
 
     if (error) {
@@ -422,9 +465,32 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
       return showAboutPlatformScreen(ctx, cleanUserId);
     }
 
-    await notifyAdminsOnPlatformReview(ctx, cleanUserId, cleanRating, cleanComment, isUpdate);
+    await notifyAdminsOnPlatformReview(ctx, cleanUserId, cleanRating, cleanComment, nameParts, isUpdate);
 
     delete userState[cleanUserId];
+
+    // توجيه صاحب التقييم الأقل من 3 نجوم إلى زر الردود والاستفسار لتسجيل استفساره أو شكواه
+    if (cleanRating < 3) {
+      const sent = await ctx.reply(
+        `📌 <b>تم حفظ تقييمك (<b>${formatStarsVisual(cleanRating)}</b>).</b>\n` +
+        `${LINE}\n` +
+        `<blockquote>إذا كان لديك استفسار أو شكوى أو واجهتك مشكلة، يُرجى التوجه إلى زر <b>"${SUPPORT_BTN_TEXT}"</b> لتسجيل استفسارك وشكواك ليتمكن فريق الإدارة من متابعتها.</blockquote>`,
+        {
+          parse_mode: 'HTML',
+          ...Markup.keyboard([
+            [SUPPORT_BTN_TEXT],
+            ['ℹ️ عن المنصة', '🏠 القائمة الرئيسية']
+          ]).resize()
+        }
+      ).catch(() => null);
+
+      if (sent?.message_id) {
+        trackBotMessage(cleanUserId, ctx.chat.id, sent.message_id);
+        await clearTrackedBotMessages(ctx, cleanUserId, [sent.message_id]);
+      }
+      return;
+    }
+
     await ctx.reply(
       `🎉 <b>شكراً لك! تم حفظ تقييمك للمنصة بنجاح</b>\n🌟 <b>التقييم:</b> <b>${formatStarsVisual(cleanRating)}</b>`,
       { parse_mode: 'HTML' }
@@ -445,7 +511,7 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
     const userText = ctx.message?.text ? ctx.message.text.trim() : '';
     if (!userText || userText.startsWith('/')) return next();
 
-    if (['⬅️ رجوع', '🏠 القائمة الرئيسية', '❌ إلغاء العملية والعودة'].includes(userText)) {
+    if (['⬅️ رجوع', '🏠 القائمة الرئيسية', '❌ إلغاء العملية والعودة', SUPPORT_BTN_TEXT].includes(userText)) {
       return next();
     }
 
