@@ -1,11 +1,12 @@
 'use strict';
 // =========================================================================
 // ⭐ PLATFORM RATING MODULE — خاصية تقييم المنصة وإرسال التقييم وعرض الإحصائيات
-// ملف مستقل لتسهيل التعديل والصيانة دون التأثير على باقي ملفات المستخدم.
-// يعرض الاسم الأول للمُقيّم لزيادة المصداقية مع حماية الخصوصية.
+// يدعم من 0 إلى 5 نجوم + النجمة البيضاء (🌟)، ويعرض (الحرف الأول. الاسم التالي)
+// أو الاسم الكامل عند توفر اسم واحد فقط، مع عرض أنيق ومنسّق.
 // =========================================================================
 
 const STAR_CHOICES = {
+  0: '☆☆☆☆☆',
   1: '⭐☆☆☆☆',
   2: '⭐⭐☆☆☆',
   3: '⭐⭐⭐☆☆',
@@ -30,33 +31,54 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
 
   function formatStarsVisual(rating) {
     const n = Number(rating);
-    if (STAR_CHOICES[n]) return STAR_CHOICES[n];
-    const safeN = Math.min(5, Math.max(1, n || 5));
+    if (Object.prototype.hasOwnProperty.call(STAR_CHOICES, n)) {
+      return STAR_CHOICES[n];
+    }
+    const safeN = Math.min(5, Math.max(0, n || 5));
     return '⭐'.repeat(safeN) + '☆'.repeat(5 - safeN);
   }
 
   function parseStarSelection(text = '') {
     const clean = String(text).trim();
     if (clean === STAR_CHOICES[6]) return 6;
+    if (clean === STAR_CHOICES[0]) return 0;
+
     for (const [key, label] of Object.entries(STAR_CHOICES)) {
       if (clean === label) return Number(key);
     }
+
     const filledStars = (clean.match(/⭐/g) || []).length;
     if (filledStars >= 1 && filledStars <= 5) {
       return filledStars;
     }
+
+    const emptyStars = (clean.match(/☆/g) || []).length;
+    if (emptyStars === 5 && filledStars === 0) {
+      return 0;
+    }
+
     return null;
   }
 
-  // استخراج الاسم الأول فقط لزيادة المصداقية دون كشف الاسم الكامل
-  function formatPublicReviewerName(rawName = '') {
+  // صيغة الاسم لزيادة المصداقية:
+  // - إذا وُجد اسم أول واسم تالٍ: "ه. حسني"
+  // - إذا وُجد اسم واحد فقط: "هشام"
+  function formatCredibleReviewerName(rawName = '') {
     const clean = String(rawName || '').trim().replace(/\s+/g, ' ');
     if (!clean) return 'مستخدم موثق';
-    const firstWord = clean.split(' ')[0];
-    return firstWord.length > 18 ? firstWord.slice(0, 18) : firstWord;
+
+    const parts = clean.split(' ').filter(Boolean);
+    if (parts.length >= 2) {
+      const firstChar = Array.from(parts[0])[0] || '';
+      const nextPart = parts.slice(1).join(' ');
+      const formatted = firstChar ? `${firstChar}. ${nextPart}` : nextPart;
+      return formatted.slice(0, 32);
+    }
+
+    return parts[0].slice(0, 24);
   }
 
-  async function enrichReviewsWithFirstNames(reviews = []) {
+  async function enrichReviewsWithNames(reviews = []) {
     if (!Array.isArray(reviews) || reviews.length === 0) return [];
     const userIds = [...new Set(reviews.map(r => Number(r.user_id)).filter(Boolean))];
     const namesMap = {};
@@ -70,7 +92,7 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
 
         if (Array.isArray(usersRows)) {
           for (const u of usersRows) {
-            namesMap[Number(u.id)] = formatPublicReviewerName(u.first_name);
+            namesMap[Number(u.id)] = formatCredibleReviewerName(u.first_name);
           }
         }
       } catch (e) {}
@@ -94,20 +116,22 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
         return {
           total: 0,
           average: '0.0',
-          counts: { 6: 0, 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 },
+          counts: { 6: 0, 5: 0, 4: 0, 3: 0, 2: 0, 1: 0, 0: 0 },
           recentComments: [],
           allReviews: []
         };
       }
 
-      const enrichedReviews = await enrichReviewsWithFirstNames(data);
+      const enrichedReviews = await enrichReviewsWithNames(data);
 
-      const counts = { 6: 0, 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 };
+      const counts = { 6: 0, 5: 0, 4: 0, 3: 0, 2: 0, 1: 0, 0: 0 };
       let sum = 0;
 
       for (const row of enrichedReviews) {
         const raw = Number(row.rating);
-        const r = STAR_CHOICES[raw] ? raw : Math.min(5, Math.max(1, raw || 5));
+        const r = Object.prototype.hasOwnProperty.call(STAR_CHOICES, raw)
+          ? raw
+          : Math.min(5, Math.max(0, raw || 5));
         counts[r] = (counts[r] || 0) + 1;
         sum += r;
       }
@@ -128,11 +152,26 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
       return {
         total: 0,
         average: '0.0',
-        counts: { 6: 0, 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 },
+        counts: { 6: 0, 5: 0, 4: 0, 3: 0, 2: 0, 1: 0, 0: 0 },
         recentComments: [],
         allReviews: []
       };
     }
+  }
+
+  function formatSingleReviewItem(review, index) {
+    const dt = formatDateTime(review.updated_at || review.created_at);
+    const name = escapeHtml(review.reviewer_name || 'مستخدم موثق');
+    const stars = formatStarsVisual(review.rating);
+    const commentBlock = review.comment
+      ? `\n   💬 <i>${escapeHtml(review.comment)}</i>`
+      : `\n   💬 <i>تقييم بالنجوم فقط</i>`;
+
+    return (
+      `▸ <b>${index + 1}. ${name}</b> • <b>${stars}</b>\n` +
+      `   🕒 <code>${escapeHtml(dt)}</code>` +
+      commentBlock
+    );
   }
 
   async function notifyAdminsOnPlatformReview(ctx, userId, rating, comment, isUpdate = false) {
@@ -183,20 +222,20 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
     const stats = await getPlatformRatingsSummary();
     const existingReview = stats.allReviews.find(r => Number(r.user_id) === Number(userId)) || null;
 
-    let ratingBlock = `\n\n━━━━━━━━━━━━━━━━━━━━\n📊 <b>تقييم المنصة من المستخدمين:</b>\n`;
+    let ratingBlock = `\n\n━━━━━━━━━━━━━━━━━━━━\n📊 <b>تقييم المنصة من المستخدمين</b>\n━━━━━━━━━━━━━━━━━━━━\n`;
     if (stats.total === 0) {
       ratingBlock += `<i>لا توجد تقييمات بعد — كن أول من يقيّم تجربته على المنصة!</i>`;
     } else {
       ratingBlock +=
-        `⭐ <b>التقييم العام:</b> <b>${stats.average}</b> (${stats.total} تقييم)\n` +
-        `${STAR_CHOICES[6]}: <b>${stats.counts[6]}</b> | ${STAR_CHOICES[5]}: <b>${stats.counts[5]}</b> | ${STAR_CHOICES[4]}: <b>${stats.counts[4]}</b>\n` +
-        `${STAR_CHOICES[3]}: <b>${stats.counts[3]}</b> | ${STAR_CHOICES[2]}: <b>${stats.counts[2]}</b> | ${STAR_CHOICES[1]}: <b>${stats.counts[1]}</b>`;
+        `⭐ <b>المتوسط العام:</b> <b>${stats.average}</b>  •  👥 <b>إجمالي الآراء:</b> <b>${stats.total}</b>\n\n` +
+        `• ${STAR_CHOICES[6]}: <b>${stats.counts[6]}</b>  |  ${STAR_CHOICES[5]}: <b>${stats.counts[5]}</b>\n` +
+        `• ${STAR_CHOICES[4]}: <b>${stats.counts[4]}</b>  |  ${STAR_CHOICES[3]}: <b>${stats.counts[3]}</b>\n` +
+        `• ${STAR_CHOICES[2]}: <b>${stats.counts[2]}</b>  |  ${STAR_CHOICES[1]}: <b>${stats.counts[1]}</b>\n` +
+        `• ${STAR_CHOICES[0]}: <b>${stats.counts[0]}</b>`;
 
       if (stats.recentComments.length > 0) {
-        ratingBlock += `\n\n💬 <b>أحدث التعليقات:</b>\n` + stats.recentComments.map((c, i) => {
-          const dt = formatDateTime(c.updated_at || c.created_at);
-          return `${i + 1}. 👤 <b>${escapeHtml(c.reviewer_name)}</b> • <b>${formatStarsVisual(c.rating)}</b> (<code>${escapeHtml(dt)}</code>)\n   💬 ${escapeHtml(c.comment)}`;
-        }).join('\n\n');
+        ratingBlock += `\n\n💬 <b>أحدث آراء المستخدمين:</b>\n\n` +
+          stats.recentComments.map((c, i) => formatSingleReviewItem(c, i)).join('\n\n');
       }
     }
 
@@ -230,7 +269,9 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
     await safeDeleteUserMessage(ctx);
     const userId = ctx.from.id;
     const prevReview = userState[userId]?.data?.existingReview || null;
-    const prevRating = prevReview?.rating || null;
+    const prevRating = prevReview && Object.prototype.hasOwnProperty.call(STAR_CHOICES, Number(prevReview.rating))
+      ? Number(prevReview.rating)
+      : null;
 
     userState[userId] = {
       step: 'rating_platform_stars',
@@ -239,18 +280,19 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
       wizardMsgId: null
     };
 
-    const prevNote = prevRating
-      ? `\n📌 تقييمك السابق: <b>${formatStarsVisual(prevRating)}</b>\n`
+    const prevNote = prevRating !== null
+      ? `\n📌 <b>تقييمك السابق:</b> <b>${formatStarsVisual(prevRating)}</b>\n`
       : '';
 
     await replyTracked(
       ctx, userId,
-      `⭐ <b>تقييم منصة عقار الجزائر</b>\n━━━━━━━━━━━━━━━━━━━━\n${prevNote}\nاختر تقييمك للمنصة من الأزرار في الأسفل:`,
+      `⭐ <b>تقييم منصة عقار الجزائر</b>\n━━━━━━━━━━━━━━━━━━━━${prevNote}\n👇 <b>اختر تقييمك من الأزرار في الأسفل:</b>`,
       {
         parse_mode: 'HTML',
         ...Markup.keyboard([
-          [STAR_CHOICES[1], STAR_CHOICES[2], STAR_CHOICES[3]],
-          [STAR_CHOICES[4], STAR_CHOICES[5], STAR_CHOICES[6]],
+          [STAR_CHOICES[0], STAR_CHOICES[1], STAR_CHOICES[2]],
+          [STAR_CHOICES[3], STAR_CHOICES[4], STAR_CHOICES[5]],
+          [STAR_CHOICES[6]],
           ['⬅️ رجوع', '🏠 القائمة الرئيسية']
         ]).resize()
       },
@@ -267,15 +309,15 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
       return showAboutPlatformScreen(ctx, userId);
     }
 
-    const lines = stats.allReviews.slice(0, 15).map((r, idx) => {
-      const dt = formatDateTime(r.updated_at || r.created_at);
-      const cText = r.comment ? escapeHtml(r.comment) : '<i>تقييم بالنجوم فقط</i>';
-      return `${idx + 1}. 👤 <b>${escapeHtml(r.reviewer_name)}</b> • <b>${formatStarsVisual(r.rating)}</b> • <code>${escapeHtml(dt)}</code>\n   💬 ${cText}`;
-    });
+    const lines = stats.allReviews.slice(0, 15).map((r, idx) => formatSingleReviewItem(r, idx));
 
     const sent = await ctx.reply(
       fitTelegramText(
-        `💬 <b>آراء المستخدمين حول المنصة</b>\n⭐ <b>المتوسط:</b> <b>${stats.average}</b> (${stats.total} تقييم)\n━━━━━━━━━━━━━━━━━━━━\n\n${lines.join('\n\n')}`,
+        `💬 <b>آراء المستخدمين حول المنصة</b>\n` +
+        `━━━━━━━━━━━━━━━━━━━━\n` +
+        `⭐ <b>المتوسط العام:</b> <b>${stats.average}</b>  •  👥 <b>الإجمالي:</b> <b>${stats.total}</b>\n` +
+        `━━━━━━━━━━━━━━━━━━━━\n\n` +
+        `${lines.join('\n\n')}`,
         false
       ),
       {
@@ -294,7 +336,7 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
 
   async function submitPlatformReview(ctx, userId, chosenRating, rawComment = null, isUpdate = false) {
     const cleanUserId = Number(userId);
-    const cleanRating = Math.min(6, Math.max(1, Number(chosenRating) || 5));
+    const cleanRating = Math.min(6, Math.max(0, Number(chosenRating)));
     const cleanComment = rawComment && String(rawComment).trim().length > 0
       ? String(rawComment).trim().slice(0, 400)
       : null;
@@ -330,7 +372,7 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
 
     delete userState[cleanUserId];
     await ctx.reply(
-      `🎉 <b>شكراً لك! تم حفظ تقييمك للمنصة (<b>${formatStarsVisual(cleanRating)}</b>).</b>`,
+      `🎉 <b>شكراً لك! تم حفظ تقييمك للمنصة بنجاح</b>\n🌟 <b>التقييم:</b> <b>${formatStarsVisual(cleanRating)}</b>`,
       { parse_mode: 'HTML' }
     ).catch(() => {});
 
@@ -356,7 +398,7 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
     if (state.step === 'rating_platform_stars') {
       await safeDeleteUserMessage(ctx);
       const chosenRating = parseStarSelection(userText);
-      if (!chosenRating) {
+      if (chosenRating === null) {
         return replyTracked(
           ctx, userId,
           `⚠️ <b>يرجى اختيار التقييم من أزرار النجوم في الأسفل:</b>`,
@@ -371,7 +413,7 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
 
       return replyTracked(
         ctx, userId,
-        `✅ اخترت: <b>${formatStarsVisual(chosenRating)}</b>\n\n` +
+        `✅ <b>تم اختيار تقييمك:</b> <b>${formatStarsVisual(chosenRating)}</b>\n\n` +
         `✍️ <b>اكتب الآن تعليقك أو ملاحظتك حول المنصة (اختياري)، أو اضغط "⏭️ تخطّي" لحفظ النجوم فقط:</b>`,
         {
           parse_mode: 'HTML',
@@ -386,7 +428,9 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
 
     if (state.step === 'rating_platform_comment') {
       await safeDeleteUserMessage(ctx);
-      const chosenRating = Number(state.data?.rating) || 5;
+      const chosenRating = Object.prototype.hasOwnProperty.call(STAR_CHOICES, Number(state.data?.rating))
+        ? Number(state.data.rating)
+        : 5;
       const isUpdate = Boolean(state.data?.isUpdate);
       const isSkip = userText === '⏭️ تخطّي (الاكتفاء بالنجوم)';
       const cleanComment = isSkip ? null : userText.slice(0, 400);
