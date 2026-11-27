@@ -1,6 +1,6 @@
 'use strict';
 // =========================================================================
-// ⭐ PLATFORM RATING MODULE — خاصية تقييم المنصة وعرض الإحصائيات والآراء
+// ⭐ PLATFORM RATING MODULE — خاصية تقييم المنصة وإرسال التقييم وعرض الإحصائيات
 // ملف مستقل لتسهيل التعديل والصيانة دون التأثير على باقي ملفات المستخدم.
 // =========================================================================
 
@@ -14,7 +14,13 @@ const STAR_CHOICES = {
 };
 
 module.exports = function registerPlatformRating(bot, core, helpers) {
-  const { Markup, supabase, userState, trackBotMessage, clearTrackedBotMessages, replyTracked, safeDeleteUserMessage, getSetting, formatDateTime, escapeHtml, fitTelegramText } = core;
+  const {
+    Markup, supabase, userState,
+    trackBotMessage, clearTrackedBotMessages, replyTracked, safeDeleteUserMessage,
+    getSetting, getAdminIds, getUserRecord,
+    formatDateTime, escapeHtml, fitTelegramText
+  } = core;
+
   const { registerFreeTextStep } = helpers;
 
   if (typeof registerFreeTextStep === 'function') {
@@ -92,6 +98,45 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
     }
   }
 
+  async function notifyAdminsOnPlatformReview(ctx, userId, rating, comment, isUpdate = false) {
+    if (typeof getAdminIds !== 'function') return;
+    try {
+      const adminIds = await getAdminIds();
+      if (!Array.isArray(adminIds) || adminIds.length === 0) return;
+
+      const dbUser = typeof getUserRecord === 'function' ? await getUserRecord(userId) : null;
+      const fullName = escapeHtml(
+        [ctx.from?.first_name, ctx.from?.last_name].filter(Boolean).join(' ') || dbUser?.first_name || 'مستخدم'
+      );
+      const nowText = formatDateTime(new Date());
+      const titleBadge = isUpdate ? '✏️ تحديث تقييم للمنصة' : '⭐ تقييم جديد للمنصة';
+      const commentLine = comment
+        ? `\n💬 <b>التعليق:</b> ${escapeHtml(comment)}`
+        : `\n💬 <b>التعليق:</b> <i>تقييم بالنجوم فقط</i>`;
+
+      const adminMsg = fitTelegramText(
+        `<b>${titleBadge}</b>\n` +
+        `━━━━━━━━━━━━━━━━━━━━\n` +
+        `👤 <b>المستخدم:</b> ${fullName} (<code>${userId}</code>)\n` +
+        `🌟 <b>التقييم:</b> <b>${formatStarsVisual(rating)}</b>\n` +
+        `🕒 <b>الوقت:</b> <code>${escapeHtml(nowText)}</code>` +
+        commentLine,
+        false
+      );
+
+      for (const adminId of adminIds) {
+        await ctx.telegram.sendMessage(adminId, adminMsg, {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback(`✉️ رد على العميل (${userId})`, `support_reply_${userId}`)]
+          ])
+        }).catch(() => {});
+      }
+    } catch (e) {
+      console.error('notifyAdminsOnPlatformReview error:', e.message);
+    }
+  }
+
   async function showAboutPlatformScreen(ctx, userId) {
     const aboutMsg = await getSetting(
       'about_text',
@@ -147,11 +192,12 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
   bot.hears(/^(?:⭐ قيّم المنصة الآن|✏️ تعديل تقييمي للمنصة)$/, async (ctx) => {
     await safeDeleteUserMessage(ctx);
     const userId = ctx.from.id;
-    const prevRating = userState[userId]?.data?.existingReview?.rating || null;
+    const prevReview = userState[userId]?.data?.existingReview || null;
+    const prevRating = prevReview?.rating || null;
 
     userState[userId] = {
       step: 'rating_platform_stars',
-      data: { rating: prevRating },
+      data: { rating: prevRating, isUpdate: Boolean(prevReview) },
       chatId: ctx.chat.id,
       wizardMsgId: null
     };
@@ -209,6 +255,37 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
     await clearTrackedBotMessages(ctx, userId, keepIds);
   });
 
+  async function submitPlatformReview(ctx, userId, chosenRating, cleanComment, isUpdate = false) {
+    const { error } = await supabase
+      .from('platform_reviews')
+      .upsert([{
+        user_id: Number(userId),
+        rating: chosenRating,
+        comment: cleanComment,
+        is_visible: true,
+        updated_at: new Date().toISOString()
+      }], { onConflict: 'user_id' });
+
+    if (error) {
+      console.error('submitPlatformReview error:', error.message);
+      await ctx.reply(
+        `⚠️ <b>تعذر حفظ تقييمك حالياً، يرجى المحاولة مرة أخرى.</b>`,
+        { parse_mode: 'HTML' }
+      ).catch(() => {});
+      return showAboutPlatformScreen(ctx, userId);
+    }
+
+    await notifyAdminsOnPlatformReview(ctx, userId, chosenRating, cleanComment, isUpdate);
+
+    delete userState[userId];
+    await ctx.reply(
+      `🎉 <b>شكراً لك! تم حفظ تقييمك للمنصة (<b>${formatStarsVisual(chosenRating)}</b>).</b>`,
+      { parse_mode: 'HTML' }
+    ).catch(() => {});
+
+    return showAboutPlatformScreen(ctx, userId);
+  }
+
   async function handlePlatformRatingText(ctx, next) {
     const userId = ctx.from?.id;
     if (!userId) return next();
@@ -237,8 +314,9 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
         );
       }
 
+      const isUpdate = Boolean(state.data?.isUpdate);
       state.step = 'rating_platform_comment';
-      state.data = { rating: chosenRating };
+      state.data = { rating: chosenRating, isUpdate };
 
       return replyTracked(
         ctx, userId,
@@ -258,26 +336,11 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
     if (state.step === 'rating_platform_comment') {
       await safeDeleteUserMessage(ctx);
       const chosenRating = Number(state.data?.rating) || 5;
+      const isUpdate = Boolean(state.data?.isUpdate);
       const isSkip = userText === '⏭️ تخطّي (الاكتفاء بالنجوم)';
       const cleanComment = isSkip ? null : userText.slice(0, 400);
 
-      await supabase
-        .from('platform_reviews')
-        .upsert([{
-          user_id: Number(userId),
-          rating: chosenRating,
-          comment: cleanComment,
-          is_visible: true,
-          updated_at: new Date().toISOString()
-        }], { onConflict: 'user_id' });
-
-      delete userState[userId];
-      await ctx.reply(
-        `🎉 <b>شكراً لك! تم حفظ تقييمك للمنصة (<b>${formatStarsVisual(chosenRating)}</b>).</b>`,
-        { parse_mode: 'HTML' }
-      ).catch(() => {});
-
-      return showAboutPlatformScreen(ctx, userId);
+      return submitPlatformReview(ctx, userId, chosenRating, cleanComment, isUpdate);
     }
 
     return next();
