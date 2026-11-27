@@ -289,6 +289,7 @@ module.exports = function registerUsers(bot, core) {
   }
 
   function inferInquiryType(titleText = '') {
+    if (/تقييم المنصة/.test(titleText)) return 'rating';
     if (/لماذا إعلاني معلق/.test(titleText)) return 'why_pending';
     if (/تذكير الإدارة/.test(titleText)) return 'remind_admin';
     if (/لم يتم التواصل/.test(titleText)) return 'no_contact';
