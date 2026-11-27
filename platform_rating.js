@@ -54,6 +54,8 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
   if (typeof registerFreeTextStep === 'function') {
     registerFreeTextStep('rating_platform_comment');
     registerFreeTextStep('support_selecting_category');
+    registerFreeTextStep('client_following_up_inquiry');
+    registerFreeTextStep('rating_user_replying');
   }
 
   function getSupportDashboardFn() {
@@ -356,7 +358,7 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
 
   async function fetchAllRatingAdminReplies(userId) {
     const cleanUserId = Number(userId);
-    if (!cleanUserId) return [];
+    if (!cleanUserId) return { replies: [], latestInquiryId: null };
 
     try {
       const { data: ratingInquiries } = await supabase
@@ -367,10 +369,11 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
         .order('id', { ascending: true });
 
       const inqList = Array.isArray(ratingInquiries) ? ratingInquiries : [];
-      if (!inqList.length) return [];
+      if (!inqList.length) return { replies: [], latestInquiryId: null };
 
+      const latestInquiryId = inqList[inqList.length - 1]?.id || null;
       const inquiryIds = inqList.map((i) => i.id).filter(Boolean);
-      if (!inquiryIds.length) return [];
+      if (!inquiryIds.length) return { replies: [], latestInquiryId };
 
       const { data: replies } = await supabase
         .from('inquiry_replies')
@@ -394,10 +397,10 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
         }
       }
 
-      return list;
+      return { replies: list, latestInquiryId };
     } catch (e) {
       console.error('fetchAllRatingAdminReplies error:', e.message);
-      return [];
+      return { replies: [], latestInquiryId: null };
     }
   }
 
@@ -419,6 +422,110 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
       `💬 <b>ردود الإدارة على تقييمك (${replies.length}):</b>\n` +
       `${formattedItems.join('\n')}` +
       `</blockquote>\n`
+    );
+  }
+
+  async function saveAndSendRatingReplyToAdmins(ctx, userId, payload = {}) {
+    const cleanUserId = Number(userId);
+    const { text = '', mediaType = null, fileId = null, caption = '' } = payload;
+
+    const { latestInquiryId } = await fetchAllRatingAdminReplies(cleanUserId);
+    const reviewRefTag = latestInquiryId ? ` (#${latestInquiryId})` : '';
+    const subjectTitle = `رد على التقييم${reviewRefTag}`;
+
+    const attachmentUrl = fileId ? `tg:${fileId}` : null;
+    const messageBody = text
+      ? text
+      : (caption || (mediaType === 'photo' ? '🖼 صورة مرفقة (رد على التقييم)' : '🎥 فيديو مرفق (رد على التقييم)'));
+
+    let savedRecord = null;
+    try {
+      const { data } = await supabase
+        .from('user_inquiries')
+        .insert([
+          {
+            user_id: cleanUserId,
+            property_id: null,
+            property_source: null,
+            inquiry_type: 'rating',
+            target_role: 'general_support',
+            subject: subjectTitle,
+            message: messageBody,
+            attachment_url: attachmentUrl,
+            status: 'open'
+          }
+        ])
+        .select()
+        .single();
+      savedRecord = data || null;
+    } catch (e) {
+      console.error('saveAndSendRatingReplyToAdmins insert error:', e.message);
+    }
+
+    const adminIds = typeof getAdminIds === 'function' ? await getAdminIds() : [];
+    if (Array.isArray(adminIds) && adminIds.length > 0) {
+      const dbUser = typeof getUserRecord === 'function' ? await getUserRecord(cleanUserId) : null;
+      const nameParts = await resolveNamePartsForSubmission(ctx, cleanUserId);
+      const fullName = escapeHtml(
+        joinFirstAndLastName(nameParts.first_name, nameParts.last_name) || dbUser?.first_name || 'مستخدم'
+      );
+      const nowText = formatDateTime(new Date());
+      const recordTag = savedRecord?.id ? ` • سجل <code>#${savedRecord.id}</code>` : '';
+
+      const header =
+        `📩 <b>رد على التقييم${escapeHtml(reviewRefTag)}${recordTag}</b>\n` +
+        `${LINE}\n` +
+        `👤 <b>الاسم:</b> ${fullName}\n` +
+        `🆔 <b>الآيدي (ID):</b> <code>${cleanUserId}</code>\n` +
+        `🕒 <b>الوقت:</b> <code>${escapeHtml(nowText)}</code>\n`;
+
+      const inlineRows = [];
+      if (savedRecord?.id) {
+        inlineRows.push([Markup.button.callback(`💬 الرد على الاستعلام (#${savedRecord.id})`, `inq_reply_${savedRecord.id}`)][span_2](start_span)[span_2](end_span)[span_3](start_span)[span_3](end_span));
+      }
+      inlineRows.push([Markup.button.callback(`✉️ رد على العميل (${cleanUserId})`, `support_reply_${cleanUserId}`)][span_4](start_span)[span_4](end_span)[span_5](start_span)[span_5](end_span));
+      const kb = Markup.inlineKeyboard(inlineRows);
+
+      for (const adminId of adminIds) {
+        try {
+          if (mediaType === 'photo' && fileId) {
+            const cap = fitTelegramText(
+              header + `\n💬 <b>الرد على التقييم:</b> ${escapeHtml(caption || '🖼 صورة مرفقة')}`,
+              true
+            );
+            await ctx.telegram.sendPhoto(adminId, fileId, { caption: cap, parse_mode: 'HTML', ...kb });
+          } else if (mediaType === 'video' && fileId) {
+            const cap = fitTelegramText(
+              header + `\n💬 <b>الرد على التقييم:</b> ${escapeHtml(caption || '🎥 فيديو مرفق')}`,
+              true
+            );
+            await ctx.telegram.sendVideo(adminId, fileId, { caption: cap, parse_mode: 'HTML', ...kb });
+          } else {
+            const fullText = fitTelegramText(
+              header + `\n💬 <b>الرد على التقييم:</b>\n${escapeHtml(messageBody)}`,
+              false
+            );
+            await ctx.telegram.sendMessage(adminId, fullText, { parse_mode: 'HTML', ...kb });
+          }
+        } catch (err) {
+          console.error(`Error forwarding rating reply to admin ${adminId}:`, err.message);
+        }
+      }
+    }
+
+    delete userState[cleanUserId];
+    const unreadCount = await getUnreadRepliesCountSafe(cleanUserId);
+    const refLine = savedRecord?.id ? ` (رقم السجل: <code>#${savedRecord.id}</code>)` : '';
+
+    return replyTracked(
+      ctx,
+      cleanUserId,
+      `✅ <b>تم إرسال ردك على التقييم${escapeHtml(reviewRefTag)} إلى الإدارة بنجاح${refLine}.</b>`,
+      {
+        parse_mode: 'HTML',
+        ...buildRatingSupportKeyboard(unreadCount)
+      },
+      true
     );
   }
 
@@ -620,7 +727,7 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
       : null;
     const prevComment = prevReview?.comment ? String(prevReview.comment).trim() : '';
 
-    const adminReplies = await fetchAllRatingAdminReplies(userId);
+    const { replies: adminReplies, latestInquiryId } = await fetchAllRatingAdminReplies(userId);
 
     userState[userId] = {
       step: 'rating_platform_stars',
@@ -628,7 +735,8 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
         rating: prevRating,
         comment: prevComment,
         isUpdate: Boolean(prevReview),
-        adminReplies
+        adminReplies,
+        latestInquiryId
       },
       chatId: ctx.chat.id,
       wizardMsgId: null
@@ -643,6 +751,10 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
 
     const repliesBlock = formatRatingAdminRepliesBlock(adminReplies);
 
+    const replyBtnRow = adminReplies.length > 0
+      ? [['💬 رد على التقييم']]
+      : [];
+
     await replyTracked(
       ctx, userId,
       fitTelegramText(
@@ -655,6 +767,38 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
           [STAR_CHOICES[0], STAR_CHOICES[1], STAR_CHOICES[2]],
           [STAR_CHOICES[3], STAR_CHOICES[4], STAR_CHOICES[5]],
           [STAR_CHOICES[6]],
+          ...replyBtnRow,
+          ['⬅️ رجوع', '🏠 القائمة الرئيسية']
+        ]).resize()
+      },
+      true
+    );
+  });
+
+  bot.hears('💬 رد على التقييم', async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    const userId = ctx.from.id;
+    let latestInquiryId = userState[userId]?.data?.latestInquiryId || null;
+
+    if (!latestInquiryId) {
+      const fetched = await fetchAllRatingAdminReplies(userId);
+      latestInquiryId = fetched.latestInquiryId;
+    }
+
+    userState[userId] = {
+      step: 'rating_user_replying',
+      data: { latestInquiryId },
+      chatId: ctx.chat.id,
+      wizardMsgId: null
+    };
+
+    const refLine = latestInquiryId ? ` <code>#${latestInquiryId}</code>` : '';
+    await replyTracked(
+      ctx, userId,
+      `💬 <b>رد على التقييم${refLine}</b>\n\nاكتب ردك على الإدارة بخصوص تقييمك الآن أو أرفق صورة/فيديو:`,
+      {
+        parse_mode: 'HTML',
+        ...Markup.keyboard([
           ['⬅️ رجوع', '🏠 القائمة الرئيسية']
         ]).resize()
       },
@@ -741,15 +885,14 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
     const syncedInquiry = await syncRatingInquiryRecord(cleanUserId, cleanRating, cleanComment, isUpdate);
     await notifyAdminsOnPlatformReview(ctx, cleanUserId, cleanRating, cleanComment, nameParts, isUpdate, syncedInquiry?.id || null);
 
-    // إذا كان التقييم أقل من 3 نجوم: نفتح مباشرة مسار الردود والاستفسار والتحسينات
     if (cleanRating < 3) {
       return openSupportAndImprovementsFlow(ctx, cleanUserId, cleanRating);
     }
 
-    const repliesToShow = Array.isArray(adminReplies) && adminReplies.length > 0
+    const fetched = Array.isArray(adminReplies) && adminReplies.length > 0
       ? adminReplies
-      : await fetchAllRatingAdminReplies(cleanUserId);
-    const repliesNote = formatRatingAdminRepliesBlock(repliesToShow);
+      : (await fetchAllRatingAdminReplies(cleanUserId)).replies;
+    const repliesNote = formatRatingAdminRepliesBlock(fetched);
 
     delete userState[cleanUserId];
     await ctx.reply(
@@ -768,7 +911,7 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
     if (!userId) return next();
 
     const state = userState[userId];
-    if (!state || !['rating_platform_stars', 'rating_platform_comment'].includes(state.step)) {
+    if (!state || !['rating_platform_stars', 'rating_platform_comment', 'rating_user_replying'].includes(state.step)) {
       return next();
     }
 
@@ -776,10 +919,15 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
     if (!userText || userText.startsWith('/')) return next();
 
     if (
-      ['⬅️ رجوع', '🏠 القائمة الرئيسية', '❌ إلغاء العملية والعودة', IMPROVEMENT_BTN_TEXT].includes(userText) ||
+      ['⬅️ رجوع', '🏠 القائمة الرئيسية', '❌ إلغاء العملية والعودة', IMPROVEMENT_BTN_TEXT, '💬 رد على التقييم'].includes(userText) ||
       /^📞 الدعم والإدارة(?:\s*\(\d+\))?$/.test(userText)
     ) {
       return next();
+    }
+
+    if (state.step === 'rating_user_replying') {
+      await safeDeleteUserMessage(ctx);
+      return saveAndSendRatingReplyToAdmins(ctx, userId, { text: userText });
     }
 
     if (state.step === 'rating_platform_stars') {
@@ -796,8 +944,9 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
 
       const isUpdate = Boolean(state.data?.isUpdate);
       const adminReplies = Array.isArray(state.data?.adminReplies) ? state.data.adminReplies : [];
+      const latestInquiryId = state.data?.latestInquiryId || null;
       state.step = 'rating_platform_comment';
-      state.data = { rating: chosenRating, isUpdate, adminReplies };
+      state.data = { rating: chosenRating, isUpdate, adminReplies, latestInquiryId };
 
       return replyTracked(
         ctx, userId,
@@ -836,6 +985,29 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
 
   bot.on('text', async (ctx, next) => {
     return handlePlatformRatingText(ctx, next);
+  });
+
+  bot.on('photo', async (ctx, next) => {
+    const userId = ctx.from?.id;
+    if (!userId || userState[userId]?.step !== 'rating_user_replying') return next();
+    await safeDeleteUserMessage(ctx);
+    const photo = ctx.message.photo[ctx.message.photo.length - 1];
+    return saveAndSendRatingReplyToAdmins(ctx, userId, {
+      mediaType: 'photo',
+      fileId: photo.file_id,
+      caption: ctx.message.caption || ''
+    });
+  });
+
+  bot.on('video', async (ctx, next) => {
+    const userId = ctx.from?.id;
+    if (!userId || userState[userId]?.step !== 'rating_user_replying') return next();
+    await safeDeleteUserMessage(ctx);
+    return saveAndSendRatingReplyToAdmins(ctx, userId, {
+      mediaType: 'video',
+      fileId: ctx.message.video.file_id,
+      caption: ctx.message.caption || ''
+    });
   });
 
   return {
