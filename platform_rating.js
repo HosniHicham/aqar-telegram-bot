@@ -3,6 +3,7 @@
 // ⭐ PLATFORM RATING MODULE — خاصية تقييم المنصة وإرسال التقييم وعرض الإحصائيات
 // يحفظ الاسم في عمودين (first_name و last_name) عند التسجيل الأول ويعرضه مباشرة.
 // يوجّه أصحاب التقييمات الأقل من 3 نجوم مباشرة إلى قسم الردود والاستفسار والتحسينات.
+// يسجّل التقييم في user_inquiries بـ inquiry_type = 'rating' ويعرض كل ردود الإدارة عند التعديل.
 // =========================================================================
 
 const LINE = '▬▬▬▬▬▬▬▬▬▬▬▬';
@@ -101,7 +102,6 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
     ]).resize();
   }
 
-  // يفتح شاشة الردود والاستفسار والتحسينات وكأن المستخدم دخل من القائمة الرئيسية -> الدعم -> الردود
   async function openSupportAndImprovementsFlow(ctx, userId, chosenRating = null) {
     const cleanUserId = Number(userId);
 
@@ -288,6 +288,140 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
     });
   }
 
+  async function syncRatingInquiryRecord(userId, chosenRating, cleanComment, isUpdate = false) {
+    const cleanUserId = Number(userId);
+    const starsVisual = formatStarsVisual(chosenRating);
+    const subjectText = `تقييم المنصة (${starsVisual})`;
+    const messageText = cleanComment
+      ? `التقييم: ${starsVisual}\nالتعليق: ${cleanComment}`
+      : `التقييم: ${starsVisual} (بدون تعليق نصي)`;
+
+    try {
+      const { data: existingRows } = await supabase
+        .from('user_inquiries')
+        .select('id, status')
+        .eq('user_id', cleanUserId)
+        .eq('inquiry_type', 'rating')
+        .order('id', { ascending: false })
+        .limit(1);
+
+      const existing = Array.isArray(existingRows) ? existingRows[0] : existingRows;
+
+      if (existing && existing.id) {
+        const { data: updatedRow, error: updErr } = await supabase
+          .from('user_inquiries')
+          .update({
+            inquiry_type: 'rating',
+            target_role: 'general_support',
+            subject: subjectText,
+            message: messageText,
+            status: existing.status === 'closed' ? 'open' : (existing.status || 'open')
+          })
+          .eq('id', existing.id)
+          .select()
+          .single();
+
+        if (!updErr && updatedRow) return updatedRow;
+      }
+
+      const { data: insertedRow, error: insErr } = await supabase
+        .from('user_inquiries')
+        .insert([
+          {
+            user_id: cleanUserId,
+            property_id: null,
+            property_source: null,
+            inquiry_type: 'rating',
+            target_role: 'general_support',
+            subject: subjectText,
+            message: messageText,
+            attachment_url: null,
+            status: 'open'
+          }
+        ])
+        .select()
+        .single();
+
+      if (insErr) {
+        console.error('syncRatingInquiryRecord insert error:', insErr.message);
+        return null;
+      }
+
+      return insertedRow;
+    } catch (e) {
+      console.error('syncRatingInquiryRecord error:', e.message);
+      return null;
+    }
+  }
+
+  async function fetchAllRatingAdminReplies(userId) {
+    const cleanUserId = Number(userId);
+    if (!cleanUserId) return [];
+
+    try {
+      const { data: ratingInquiries } = await supabase
+        .from('user_inquiries')
+        .select('id, admin_reply, target_role, updated_at, created_at')
+        .eq('user_id', cleanUserId)
+        .eq('inquiry_type', 'rating')
+        .order('id', { ascending: true });
+
+      const inqList = Array.isArray(ratingInquiries) ? ratingInquiries : [];
+      if (!inqList.length) return [];
+
+      const inquiryIds = inqList.map((i) => i.id).filter(Boolean);
+      if (!inquiryIds.length) return [];
+
+      const { data: replies } = await supabase
+        .from('inquiry_replies')
+        .select('id, inquiry_id, admin_role, reply_message, media_type, attachment_url, created_at')
+        .in('inquiry_id', inquiryIds)
+        .order('id', { ascending: true });
+
+      const list = Array.isArray(replies) ? [...replies] : [];
+
+      if (list.length === 0) {
+        for (const inq of inqList) {
+          if (inq.admin_reply && String(inq.admin_reply).trim()) {
+            list.push({
+              id: `legacy_${inq.id}`,
+              inquiry_id: inq.id,
+              admin_role: inq.target_role || 'general_support',
+              reply_message: String(inq.admin_reply).trim(),
+              created_at: inq.updated_at || inq.created_at
+            });
+          }
+        }
+      }
+
+      return list;
+    } catch (e) {
+      console.error('fetchAllRatingAdminReplies error:', e.message);
+      return [];
+    }
+  }
+
+  function formatRatingAdminRepliesBlock(replies = []) {
+    if (!Array.isArray(replies) || replies.length === 0) return '';
+
+    const formattedItems = replies.map((rep, idx) => {
+      const dt = rep.created_at ? formatDateTime(rep.created_at) : '';
+      const timeTag = dt ? ` <code>${escapeHtml(dt)}</code>` : '';
+      const body = escapeHtml(
+        rep.reply_message ||
+        (rep.media_type === 'photo' ? '🖼 صورة مرفقة' : rep.media_type === 'video' ? '🎥 فيديو مرفق' : '')
+      );
+      return `${idx + 1}.${timeTag} ${body}`;
+    });
+
+    return (
+      `\n<blockquote>` +
+      `💬 <b>ردود الإدارة على تقييمك (${replies.length}):</b>\n` +
+      `${formattedItems.join('\n')}` +
+      `</blockquote>\n`
+    );
+  }
+
   async function getPlatformRatingsSummary(ctx = null) {
     try {
       const { data, error } = await supabase
@@ -366,7 +500,7 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
     );
   }
 
-  async function notifyAdminsOnPlatformReview(ctx, userId, rating, comment, nameParts = {}, isUpdate = false) {
+  async function notifyAdminsOnPlatformReview(ctx, userId, rating, comment, nameParts = {}, isUpdate = false, inquiryId = null) {
     if (typeof getAdminIds !== 'function') return;
     try {
       const adminIds = await getAdminIds();
@@ -376,12 +510,13 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
         || await fetchTelegramFallbackNameById(userId, ctx);
       const nowText = formatDateTime(new Date());
       const titleBadge = isUpdate ? '✏️ تحديث تقييم للمنصة' : '⭐ تقييم جديد للمنصة';
+      const inqTag = inquiryId ? ` • استعلام <code>#${inquiryId}</code>` : '';
       const commentLine = comment
         ? `\n💬 ${escapeHtml(comment)}`
         : `\n<i>تقييم بالنجوم فقط</i>`;
 
       const adminMsg = fitTelegramText(
-        `<b>${titleBadge}</b>\n` +
+        `<b>${titleBadge}${inqTag}</b>\n` +
         `${LINE}\n` +
         `<blockquote>` +
         (resolvedName ? `👤 <b>${escapeHtml(resolvedName)}</b> (<code>${userId}</code>)\n` : `🆔 <code>${userId}</code>\n`) +
@@ -392,12 +527,16 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
         false
       );
 
+      const inlineRows = [];
+      if (inquiryId) {
+        inlineRows.push([Markup.button.callback(`💬 الرد على الاستعلام (#${inquiryId})`, `inq_reply_${inquiryId}`)]);
+      }
+      inlineRows.push([Markup.button.callback(`✉️ رد على العميل (${userId})`, `support_reply_${userId}`)]);
+
       for (const adminId of adminIds) {
         await ctx.telegram.sendMessage(adminId, adminMsg, {
           parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([
-            [Markup.button.callback(`✉️ رد على العميل (${userId})`, `support_reply_${userId}`)]
-          ])
+          ...Markup.inlineKeyboard(inlineRows)
         }).catch(() => {});
       }
     } catch (e) {
@@ -462,15 +601,35 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
   bot.hears(/^(?:⭐ قيّم المنصة الآن|✏️ تعديل تقييمي للمنصة)$/, async (ctx) => {
     await safeDeleteUserMessage(ctx);
     const userId = ctx.from.id;
-    const prevReview = userState[userId]?.data?.existingReview || null;
+    let prevReview = userState[userId]?.data?.existingReview || null;
+
+    if (!prevReview) {
+      try {
+        const { data } = await supabase
+          .from('platform_reviews')
+          .select('id, user_id, first_name, last_name, rating, comment, created_at, updated_at')
+          .eq('user_id', Number(userId))
+          .eq('is_visible', true)
+          .limit(1);
+        prevReview = (Array.isArray(data) ? data[0] : data) || null;
+      } catch (_) {}
+    }
+
     const prevRating = prevReview && Object.prototype.hasOwnProperty.call(STAR_CHOICES, Number(prevReview.rating))
       ? Number(prevReview.rating)
       : null;
     const prevComment = prevReview?.comment ? String(prevReview.comment).trim() : '';
 
+    const adminReplies = await fetchAllRatingAdminReplies(userId);
+
     userState[userId] = {
       step: 'rating_platform_stars',
-      data: { rating: prevRating, comment: prevComment, isUpdate: Boolean(prevReview) },
+      data: {
+        rating: prevRating,
+        comment: prevComment,
+        isUpdate: Boolean(prevReview),
+        adminReplies
+      },
       chatId: ctx.chat.id,
       wizardMsgId: null
     };
@@ -482,9 +641,14 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
         `</blockquote>\n`
       : '';
 
+    const repliesBlock = formatRatingAdminRepliesBlock(adminReplies);
+
     await replyTracked(
       ctx, userId,
-      `⭐ <b>تقييم منصة عقار الجزائر</b>\n${LINE}${prevNote}\n👇 <i>اختر تقييمك من الأزرار في الأسفل</i>`,
+      fitTelegramText(
+        `⭐ <b>تقييم منصة عقار الجزائر</b>\n${LINE}${prevNote}${repliesBlock}\n👇 <i>اختر تقييمك من الأزرار في الأسفل</i>`,
+        false
+      ),
       {
         parse_mode: 'HTML',
         ...Markup.keyboard([
@@ -537,7 +701,7 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
     return openSupportFromRating(ctx, ctx.from.id);
   });
 
-  async function submitPlatformReview(ctx, userId, chosenRating, rawComment = null, isUpdate = false) {
+  async function submitPlatformReview(ctx, userId, chosenRating, rawComment = null, isUpdate = false, adminReplies = []) {
     const cleanUserId = Number(userId);
     const cleanRating = Math.min(6, Math.max(0, Number(chosenRating)));
     const cleanComment = rawComment && String(rawComment).trim().length > 0
@@ -574,16 +738,25 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
       return showAboutPlatformScreen(ctx, cleanUserId);
     }
 
-    await notifyAdminsOnPlatformReview(ctx, cleanUserId, cleanRating, cleanComment, nameParts, isUpdate);
+    const syncedInquiry = await syncRatingInquiryRecord(cleanUserId, cleanRating, cleanComment, isUpdate);
+    await notifyAdminsOnPlatformReview(ctx, cleanUserId, cleanRating, cleanComment, nameParts, isUpdate, syncedInquiry?.id || null);
 
     // إذا كان التقييم أقل من 3 نجوم: نفتح مباشرة مسار الردود والاستفسار والتحسينات
     if (cleanRating < 3) {
       return openSupportAndImprovementsFlow(ctx, cleanUserId, cleanRating);
     }
 
+    const repliesToShow = Array.isArray(adminReplies) && adminReplies.length > 0
+      ? adminReplies
+      : await fetchAllRatingAdminReplies(cleanUserId);
+    const repliesNote = formatRatingAdminRepliesBlock(repliesToShow);
+
     delete userState[cleanUserId];
     await ctx.reply(
-      `🎉 <b>شكراً لك! تم حفظ تقييمك للمنصة بنجاح</b>\n🌟 <b>التقييم:</b> <b>${formatStarsVisual(cleanRating)}</b>`,
+      fitTelegramText(
+        `🎉 <b>شكراً لك! تم حفظ تقييمك للمنصة بنجاح</b>\n🌟 <b>التقييم:</b> <b>${formatStarsVisual(cleanRating)}</b>${repliesNote}`,
+        false
+      ),
       { parse_mode: 'HTML' }
     ).catch(() => {});
 
@@ -622,13 +795,18 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
       }
 
       const isUpdate = Boolean(state.data?.isUpdate);
+      const adminReplies = Array.isArray(state.data?.adminReplies) ? state.data.adminReplies : [];
       state.step = 'rating_platform_comment';
-      state.data = { rating: chosenRating, isUpdate };
+      state.data = { rating: chosenRating, isUpdate, adminReplies };
 
       return replyTracked(
         ctx, userId,
-        `✅ <b>تم اختيار تقييمك:</b> <b>${formatStarsVisual(chosenRating)}</b>\n\n` +
-        `✍️ <i>اكتب الآن تعليقك أو ملاحظتك حول المنصة (اختياري)، أو اضغط "⏭️ تخطّي" لحفظ النجوم فقط</i>`,
+        fitTelegramText(
+          `✅ <b>تم اختيار تقييمك:</b> <b>${formatStarsVisual(chosenRating)}</b>\n` +
+          `${formatRatingAdminRepliesBlock(adminReplies)}\n` +
+          `✍️ <i>اكتب الآن تعليقك أو ملاحظتك حول المنصة (اختياري)، أو اضغط "⏭️ تخطّي" لحفظ النجوم فقط</i>`,
+          false
+        ),
         {
           parse_mode: 'HTML',
           ...Markup.keyboard([
@@ -646,10 +824,11 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
         ? Number(state.data.rating)
         : 5;
       const isUpdate = Boolean(state.data?.isUpdate);
+      const adminReplies = Array.isArray(state.data?.adminReplies) ? state.data.adminReplies : [];
       const isSkip = userText === '⏭️ تخطّي (الاكتفاء بالنجوم)';
       const cleanComment = isSkip ? null : userText.slice(0, 400);
 
-      return submitPlatformReview(ctx, userId, chosenRating, cleanComment, isUpdate);
+      return submitPlatformReview(ctx, userId, chosenRating, cleanComment, isUpdate, adminReplies);
     }
 
     return next();
