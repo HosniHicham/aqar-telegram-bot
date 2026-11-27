@@ -2,12 +2,13 @@
 // =========================================================================
 // ⭐ PLATFORM RATING MODULE — خاصية تقييم المنصة وإرسال التقييم وعرض الإحصائيات
 // يحفظ الاسم في عمودين (first_name و last_name) عند التسجيل الأول ويعرضه مباشرة.
-// يوجّه أصحاب التقييمات الأقل من 3 نجوم إلى قسم الردود والاستفسار لتسجيل الشكاوى.
+// يوجّه أصحاب التقييمات الأقل من 3 نجوم مباشرة إلى قسم الردود والاستفسار والتحسينات.
 // =========================================================================
 
 const LINE = '▬▬▬▬▬▬▬▬▬▬▬▬';
 const NAME_CACHE_TTL = 60 * 60 * 1000;
 const SUPPORT_BTN_TEXT = '📞 الدعم والإدارة';
+const IMPROVEMENT_BTN_TEXT = '💡 اقتراح أو تحسين';
 
 const STAR_CHOICES = {
   0: '☆☆☆☆☆',
@@ -51,6 +52,7 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
 
   if (typeof registerFreeTextStep === 'function') {
     registerFreeTextStep('rating_platform_comment');
+    registerFreeTextStep('support_selecting_category');
   }
 
   function getSupportDashboardFn() {
@@ -65,6 +67,82 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
     return null;
   }
 
+  async function getUnreadRepliesCountSafe(userId) {
+    try {
+      const { data: inquiries } = await supabase
+        .from('user_inquiries')
+        .select('id')
+        .eq('user_id', Number(userId));
+
+      if (!Array.isArray(inquiries) || inquiries.length === 0) return 0;
+      const ids = inquiries.map((i) => i.id).filter(Boolean);
+
+      const { data: unreadRows } = await supabase
+        .from('inquiry_replies')
+        .select('id')
+        .in('inquiry_id', ids)
+        .eq('is_read', false);
+
+      return Array.isArray(unreadRows) ? unreadRows.length : 0;
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  function buildRatingSupportKeyboard(unreadRepliesCount = 0) {
+    const inqLabel = unreadRepliesCount > 0
+      ? `📨 استعلاماتي وردود الإدارة (${unreadRepliesCount})`
+      : '📨 استعلاماتي وردود الإدارة';
+
+    return Markup.keyboard([
+      [IMPROVEMENT_BTN_TEXT, '💬 استفسار عام / أخرى'],
+      ['💳 مشكلة في الدفع', '🏠 إعلان أو تصفح عقاري'],
+      [inqLabel, '🏠 القائمة الرئيسية']
+    ]).resize();
+  }
+
+  // يفتح شاشة الردود والاستفسار والتحسينات وكأن المستخدم دخل من القائمة الرئيسية -> الدعم -> الردود
+  async function openSupportAndImprovementsFlow(ctx, userId, chosenRating = null) {
+    const cleanUserId = Number(userId);
+
+    if (core.browsingSession && core.browsingSession[cleanUserId]) {
+      delete core.browsingSession[cleanUserId];
+    }
+    if (core.supportUserSession && core.supportUserSession[cleanUserId]) {
+      delete core.supportUserSession[cleanUserId];
+    }
+
+    const unreadCount = await getUnreadRepliesCountSafe(cleanUserId);
+
+    userState[cleanUserId] = {
+      step: 'support_selecting_category',
+      data: { fromLowRating: true, rating: chosenRating },
+      chatId: ctx.chat.id,
+      wizardMsgId: null
+    };
+
+    const ratingNote = chosenRating !== null
+      ? `📌 <b>تم تسجيل تقييمك (<b>${formatStarsVisual(chosenRating)}</b>).</b>\n${LINE}\n`
+      : '';
+
+    const msg =
+      `${ratingNote}` +
+      `📞 <b>الردود والاستفسار والتحسينات</b>\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `تم توجيهك مباشرة إلى قسم الردود والاستفسار لتسجيل شكواك أو استفسارك أو إرسال <b>تحسينات</b> للمنصة.\n\n` +
+      `👇 <b>اختر من الأزرار في الأسفل (أو اضغط "${IMPROVEMENT_BTN_TEXT}" لتسجيل التحسينات):</b>`;
+
+    const sent = await ctx.reply(msg, {
+      parse_mode: 'HTML',
+      ...buildRatingSupportKeyboard(unreadCount)
+    }).catch(() => null);
+
+    if (sent?.message_id) {
+      trackBotMessage(cleanUserId, ctx.chat.id, sent.message_id);
+      await clearTrackedBotMessages(ctx, cleanUserId, [sent.message_id]);
+    }
+  }
+
   async function openSupportFromRating(ctx, userId) {
     const dashboardFn = getSupportDashboardFn();
     if (dashboardFn) {
@@ -76,13 +154,7 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
       return inquiryFn(ctx, userId, 0, true, 'all');
     }
 
-    return replyTracked(
-      ctx,
-      userId,
-      `📞 <b>الردود والاستفسار</b>\n\nاضغط على زر <b>"${SUPPORT_BTN_TEXT}"</b> من القائمة لفتح مركز الدعم والردود.`,
-      { parse_mode: 'HTML' },
-      true
-    );
+    return openSupportAndImprovementsFlow(ctx, userId, null);
   }
 
   function getTelegramClient(ctx) {
@@ -504,30 +576,12 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
 
     await notifyAdminsOnPlatformReview(ctx, cleanUserId, cleanRating, cleanComment, nameParts, isUpdate);
 
-    delete userState[cleanUserId];
-
-    // توجيه صاحب التقييم الأقل من 3 نجوم إلى قسم الردود والاستفسار لتسجيل استفساره أو شكواه
+    // إذا كان التقييم أقل من 3 نجوم: نفتح مباشرة مسار الردود والاستفسار والتحسينات
     if (cleanRating < 3) {
-      const sent = await ctx.reply(
-        `📌 <b>تم حفظ تقييمك (<b>${formatStarsVisual(cleanRating)}</b>).</b>\n` +
-        `${LINE}\n` +
-        `<blockquote>إذا كان لديك استفسار أو شكوى أو واجهتك مشكلة، يُرجى التوجه إلى زر <b>"${SUPPORT_BTN_TEXT}"</b> لتسجيل استفسارك وشكواك ليتمكن فريق الإدارة من متابعتها.</blockquote>`,
-        {
-          parse_mode: 'HTML',
-          ...Markup.keyboard([
-            [SUPPORT_BTN_TEXT],
-            ['ℹ️ عن المنصة', '🏠 القائمة الرئيسية']
-          ]).resize()
-        }
-      ).catch(() => null);
-
-      if (sent?.message_id) {
-        trackBotMessage(cleanUserId, ctx.chat.id, sent.message_id);
-        await clearTrackedBotMessages(ctx, cleanUserId, [sent.message_id]);
-      }
-      return;
+      return openSupportAndImprovementsFlow(ctx, cleanUserId, cleanRating);
     }
 
+    delete userState[cleanUserId];
     await ctx.reply(
       `🎉 <b>شكراً لك! تم حفظ تقييمك للمنصة بنجاح</b>\n🌟 <b>التقييم:</b> <b>${formatStarsVisual(cleanRating)}</b>`,
       { parse_mode: 'HTML' }
@@ -548,7 +602,10 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
     const userText = ctx.message?.text ? ctx.message.text.trim() : '';
     if (!userText || userText.startsWith('/')) return next();
 
-    if (['⬅️ رجوع', '🏠 القائمة الرئيسية', '❌ إلغاء العملية والعودة'].includes(userText) || /^📞 الدعم والإدارة(?:\s*\(\d+\))?$/.test(userText)) {
+    if (
+      ['⬅️ رجوع', '🏠 القائمة الرئيسية', '❌ إلغاء العملية والعودة', IMPROVEMENT_BTN_TEXT].includes(userText) ||
+      /^📞 الدعم والإدارة(?:\s*\(\d+\))?$/.test(userText)
+    ) {
       return next();
     }
 
@@ -604,6 +661,7 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
 
   return {
     showAboutPlatformScreen,
-    getPlatformRatingsSummary
+    getPlatformRatingsSummary,
+    openSupportAndImprovementsFlow
   };
 };
