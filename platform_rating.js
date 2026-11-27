@@ -1,7 +1,7 @@
 'use strict';
 // =========================================================================
 // ⭐ PLATFORM RATING MODULE — خاصية تقييم المنصة وإرسال التقييم وعرض الإحصائيات
-// ملف مستقل لتسهيل التعديل والصيانة دون التأثير على باقي ملفات المستخدم.
+// يعرض الاسم الأول للمُقيّم لزيادة المصداقية مع حماية الخصوصية.
 // =========================================================================
 
 const STAR_CHOICES = {
@@ -47,6 +47,40 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
     return null;
   }
 
+  // استخراج الاسم الأول فقط لزيادة المصداقية دون كشف الاسم الكامل
+  function formatPublicReviewerName(rawName = '') {
+    const clean = String(rawName || '').trim().replace(/\s+/g, ' ');
+    if (!clean) return 'مستخدم موثق';
+    const firstWord = clean.split(' ')[0];
+    return firstWord.length > 18 ? firstWord.slice(0, 18) : firstWord;
+  }
+
+  async function enrichReviewsWithFirstNames(reviews = []) {
+    if (!Array.isArray(reviews) || reviews.length === 0) return [];
+    const userIds = [...new Set(reviews.map(r => Number(r.user_id)).filter(Boolean))];
+    const namesMap = {};
+
+    if (userIds.length > 0) {
+      try {
+        const { data: usersRows } = await supabase
+          .from('users')
+          .select('id, first_name')
+          .in('id', userIds);
+
+        if (Array.isArray(usersRows)) {
+          for (const u of usersRows) {
+            namesMap[Number(u.id)] = formatPublicReviewerName(u.first_name);
+          }
+        }
+      } catch (e) {}
+    }
+
+    return reviews.map(r => ({
+      ...r,
+      reviewer_name: namesMap[Number(r.user_id)] || 'مستخدم موثق'
+    }));
+  }
+
   async function getPlatformRatingsSummary() {
     try {
       const { data, error } = await supabase
@@ -65,27 +99,29 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
         };
       }
 
+      const enrichedReviews = await enrichReviewsWithFirstNames(data);
+
       const counts = { 6: 0, 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 };
       let sum = 0;
 
-      for (const row of data) {
+      for (const row of enrichedReviews) {
         const raw = Number(row.rating);
         const r = STAR_CHOICES[raw] ? raw : Math.min(5, Math.max(1, raw || 5));
         counts[r] = (counts[r] || 0) + 1;
         sum += r;
       }
 
-      const average = (sum / data.length).toFixed(1);
-      const recentComments = data
+      const average = (sum / enrichedReviews.length).toFixed(1);
+      const recentComments = enrichedReviews
         .filter(r => r.comment && String(r.comment).trim().length > 0)
         .slice(0, 3);
 
       return {
-        total: data.length,
+        total: enrichedReviews.length,
         average,
         counts,
         recentComments,
-        allReviews: data
+        allReviews: enrichedReviews
       };
     } catch (e) {
       return {
@@ -158,8 +194,8 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
       if (stats.recentComments.length > 0) {
         ratingBlock += `\n\n💬 <b>أحدث التعليقات:</b>\n` + stats.recentComments.map((c, i) => {
           const dt = formatDateTime(c.updated_at || c.created_at);
-          return `${i + 1}. <b>${formatStarsVisual(c.rating)}</b> (<code>${escapeHtml(dt)}</code>): ${escapeHtml(c.comment)}`;
-        }).join('\n');
+          return `${i + 1}. 👤 <b>${escapeHtml(c.reviewer_name)}</b> • <b>${formatStarsVisual(c.rating)}</b> (<code>${escapeHtml(dt)}</code>)\n   💬 ${escapeHtml(c.comment)}`;
+        }).join('\n\n');
       }
     }
 
@@ -233,7 +269,7 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
     const lines = stats.allReviews.slice(0, 15).map((r, idx) => {
       const dt = formatDateTime(r.updated_at || r.created_at);
       const cText = r.comment ? escapeHtml(r.comment) : '<i>تقييم بالنجوم فقط</i>';
-      return `${idx + 1}. <b>${formatStarsVisual(r.rating)}</b> • <code>${escapeHtml(dt)}</code>\n   💬 ${cText}`;
+      return `${idx + 1}. 👤 <b>${escapeHtml(r.reviewer_name)}</b> • <b>${formatStarsVisual(r.rating)}</b> • <code>${escapeHtml(dt)}</code>\n   💬 ${cText}`;
     });
 
     const sent = await ctx.reply(
