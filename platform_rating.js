@@ -4,17 +4,41 @@
 // ملف مستقل لتسهيل التعديل والصيانة دون التأثير على باقي ملفات المستخدم.
 // =========================================================================
 
+const STAR_CHOICES = {
+  1: '⭐☆☆☆☆',
+  2: '⭐⭐☆☆☆',
+  3: '⭐⭐⭐☆☆',
+  4: '⭐⭐⭐⭐☆',
+  5: '⭐⭐⭐⭐⭐',
+  6: '🌟'
+};
+
 module.exports = function registerPlatformRating(bot, core, helpers) {
   const { Markup, supabase, userState, trackBotMessage, clearTrackedBotMessages, replyTracked, safeDeleteUserMessage, getSetting, formatDateTime, escapeHtml, fitTelegramText } = core;
-  const { buildUserMainKeyboard, registerFreeTextStep } = helpers;
+  const { registerFreeTextStep } = helpers;
 
   if (typeof registerFreeTextStep === 'function') {
     registerFreeTextStep('rating_platform_comment');
   }
 
   function formatStarsVisual(rating) {
-    const n = Math.min(5, Math.max(1, Number(rating) || 0));
-    return '⭐'.repeat(n);
+    const n = Number(rating);
+    if (STAR_CHOICES[n]) return STAR_CHOICES[n];
+    const safeN = Math.min(5, Math.max(1, n || 5));
+    return '⭐'.repeat(safeN) + '☆'.repeat(5 - safeN);
+  }
+
+  function parseStarSelection(text = '') {
+    const clean = String(text).trim();
+    if (clean === STAR_CHOICES[6]) return 6;
+    for (const [key, label] of Object.entries(STAR_CHOICES)) {
+      if (clean === label) return Number(key);
+    }
+    const filledStars = (clean.match(/⭐/g) || []).length;
+    if (filledStars >= 1 && filledStars <= 5) {
+      return filledStars;
+    }
+    return null;
   }
 
   async function getPlatformRatingsSummary() {
@@ -29,17 +53,18 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
         return {
           total: 0,
           average: '0.0',
-          counts: { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 },
+          counts: { 6: 0, 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 },
           recentComments: [],
           allReviews: []
         };
       }
 
-      const counts = { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 };
+      const counts = { 6: 0, 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 };
       let sum = 0;
 
       for (const row of data) {
-        const r = Math.min(5, Math.max(1, Number(row.rating) || 5));
+        const raw = Number(row.rating);
+        const r = STAR_CHOICES[raw] ? raw : Math.min(5, Math.max(1, raw || 5));
         counts[r] = (counts[r] || 0) + 1;
         sum += r;
       }
@@ -60,7 +85,7 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
       return {
         total: 0,
         average: '0.0',
-        counts: { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 },
+        counts: { 6: 0, 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 },
         recentComments: [],
         allReviews: []
       };
@@ -81,13 +106,14 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
       ratingBlock += `<i>لا توجد تقييمات بعد — كن أول من يقيّم تجربته على المنصة!</i>`;
     } else {
       ratingBlock +=
-        `⭐ <b>التقييم العام:</b> <b>${stats.average} / 5</b> (${stats.total} تقييم)\n` +
-        `5⭐: <b>${stats.counts[5]}</b> | 4⭐: <b>${stats.counts[4]}</b> | 3⭐: <b>${stats.counts[3]}</b> | 2⭐: <b>${stats.counts[2]}</b> | 1⭐: <b>${stats.counts[1]}</b>`;
+        `⭐ <b>التقييم العام:</b> <b>${stats.average}</b> (${stats.total} تقييم)\n` +
+        `${STAR_CHOICES[6]}: <b>${stats.counts[6]}</b> | ${STAR_CHOICES[5]}: <b>${stats.counts[5]}</b> | ${STAR_CHOICES[4]}: <b>${stats.counts[4]}</b>\n` +
+        `${STAR_CHOICES[3]}: <b>${stats.counts[3]}</b> | ${STAR_CHOICES[2]}: <b>${stats.counts[2]}</b> | ${STAR_CHOICES[1]}: <b>${stats.counts[1]}</b>`;
 
       if (stats.recentComments.length > 0) {
         ratingBlock += `\n\n💬 <b>أحدث التعليقات:</b>\n` + stats.recentComments.map((c, i) => {
           const dt = formatDateTime(c.updated_at || c.created_at);
-          return `${i + 1}. ${formatStarsVisual(c.rating)} (<code>${escapeHtml(dt)}</code>): ${escapeHtml(c.comment)}`;
+          return `${i + 1}. <b>${formatStarsVisual(c.rating)}</b> (<code>${escapeHtml(dt)}</code>): ${escapeHtml(c.comment)}`;
         }).join('\n');
       }
     }
@@ -131,17 +157,17 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
     };
 
     const prevNote = prevRating
-      ? `\n📌 تقييمك السابق: <b>${formatStarsVisual(prevRating)} (${prevRating}/5)</b>\n`
+      ? `\n📌 تقييمك السابق: <b>${formatStarsVisual(prevRating)}</b>\n`
       : '';
 
     await replyTracked(
       ctx, userId,
-      `⭐ <b>تقييم منصة عقار الجزائر</b>\n━━━━━━━━━━━━━━━━━━━━\n${prevNote}\nاختر تقييمك للمنصة من 1 إلى 5 نجوم:`,
+      `⭐ <b>تقييم منصة عقار الجزائر</b>\n━━━━━━━━━━━━━━━━━━━━\n${prevNote}\nاختر تقييمك للمنصة من الأزرار في الأسفل:`,
       {
         parse_mode: 'HTML',
         ...Markup.keyboard([
-          ['⭐☆☆☆☆', '⭐⭐☆☆☆', '⭐⭐⭐☆☆'],
-          ['⭐⭐⭐⭐☆', '⭐⭐⭐⭐⭐'],
+          [STAR_CHOICES[1], STAR_CHOICES[2], STAR_CHOICES[3]],
+          [STAR_CHOICES[4], STAR_CHOICES[5], STAR_CHOICES[6]],
           ['⬅️ رجوع', '🏠 القائمة الرئيسية']
         ]).resize()
       },
@@ -161,12 +187,12 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
     const lines = stats.allReviews.slice(0, 15).map((r, idx) => {
       const dt = formatDateTime(r.updated_at || r.created_at);
       const cText = r.comment ? escapeHtml(r.comment) : '<i>تقييم بالنجوم فقط</i>';
-      return `${idx + 1}. ${formatStarsVisual(r.rating)} (<b>${r.rating}/5</b>) • <code>${escapeHtml(dt)}</code>\n   💬 ${cText}`;
+      return `${idx + 1}. <b>${formatStarsVisual(r.rating)}</b> • <code>${escapeHtml(dt)}</code>\n   💬 ${cText}`;
     });
 
     const sent = await ctx.reply(
       fitTelegramText(
-        `💬 <b>آراء المستخدمين حول المنصة</b>\n⭐ <b>المتوسط:</b> <b>${stats.average} / 5</b> (${stats.total} تقييم)\n━━━━━━━━━━━━━━━━━━━━\n\n${lines.join('\n\n')}`,
+        `💬 <b>آراء المستخدمين حول المنصة</b>\n⭐ <b>المتوسط:</b> <b>${stats.average}</b> (${stats.total} تقييم)\n━━━━━━━━━━━━━━━━━━━━\n\n${lines.join('\n\n')}`,
         false
       ),
       {
@@ -201,23 +227,22 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
 
     if (state.step === 'rating_platform_stars') {
       await safeDeleteUserMessage(ctx);
-      const starMatch = userText.match(/^(?:⭐){1,5}\s*([1-5])$/);
-      if (!starMatch) {
+      const chosenRating = parseStarSelection(userText);
+      if (!chosenRating) {
         return replyTracked(
           ctx, userId,
-          `⚠️ <b>يرجى اختيار عدد النجوم من الأزرار في الأسفل (1 إلى 5):</b>`,
+          `⚠️ <b>يرجى اختيار التقييم من أزرار النجوم في الأسفل:</b>`,
           { parse_mode: 'HTML' },
           true
         );
       }
 
-      const chosenRating = Number(starMatch[1]);
       state.step = 'rating_platform_comment';
       state.data = { rating: chosenRating };
 
       return replyTracked(
         ctx, userId,
-        `✅ اخترت: <b>${formatStarsVisual(chosenRating)} (${chosenRating}/5)</b>\n\n` +
+        `✅ اخترت: <b>${formatStarsVisual(chosenRating)}</b>\n\n` +
         `✍️ <b>اكتب الآن تعليقك أو ملاحظتك حول المنصة (اختياري)، أو اضغط "⏭️ تخطّي" لحفظ النجوم فقط:</b>`,
         {
           parse_mode: 'HTML',
@@ -248,7 +273,7 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
 
       delete userState[userId];
       await ctx.reply(
-        `🎉 <b>شكراً لك! تم حفظ تقييمك للمنصة (${chosenRating}/5).</b>`,
+        `🎉 <b>شكراً لك! تم حفظ تقييمك للمنصة (<b>${formatStarsVisual(chosenRating)}</b>).</b>`,
         { parse_mode: 'HTML' }
       ).catch(() => {});
 
