@@ -734,6 +734,12 @@ module.exports = function registerUsers(bot, core) {
       };
     }
 
+    const inlineQuickReply = currentInquiry?.id
+      ? Markup.inlineKeyboard([
+          [Markup.button.callback(`💬 رد مباشر على الإدارة (#${currentInquiry.id})`, `client_quick_reply_${currentInquiry.id}`)]
+        ])
+      : undefined;
+
     let sent = null;
     if (attachedMedia) {
       const mediaCaption = formatClientInquiryCard(
@@ -747,8 +753,8 @@ module.exports = function registerUsers(bot, core) {
       );
       try {
         sent = attachedMedia.type === 'video'
-          ? await ctx.replyWithVideo(attachedMedia.ref, { caption: mediaCaption, parse_mode: 'HTML', ...kb })
-          : await ctx.replyWithPhoto(attachedMedia.ref, { caption: mediaCaption, parse_mode: 'HTML', ...kb });
+          ? await ctx.replyWithVideo(attachedMedia.ref, { caption: mediaCaption, parse_mode: 'HTML', ...(inlineQuickReply || {}), ...kb })
+          : await ctx.replyWithPhoto(attachedMedia.ref, { caption: mediaCaption, parse_mode: 'HTML', ...(inlineQuickReply || {}), ...kb });
       } catch (e) {
         console.error('renderClientInquiryAt media card error:', e.message);
       }
@@ -756,12 +762,44 @@ module.exports = function registerUsers(bot, core) {
 
     if (!sent) {
       const cardText = formatClientInquiryCard(currentInquiry, replies, safeIdx, st.items.length, false, '', st.filterMode);
-      sent = await ctx.reply(cardText, { parse_mode: 'HTML', ...kb }).catch(() => null);
+      sent = await ctx.reply(cardText, { parse_mode: 'HTML', ...(inlineQuickReply || {}), ...kb }).catch(() => null);
     }
 
     const keepIds = sent?.message_id ? [sent.message_id] : [];
     if (sent?.message_id) trackBotMessage(userId, ctx.chat.id, sent.message_id);
     await clearTrackedBotMessages(ctx, userId, keepIds);
+  }
+
+  async function openClientFollowUpComposer(ctx, userId, parentInquiryId = null) {
+    const { unreadRepliesCount } = await getClientRepliesSummary(userId);
+    const cleanId = parentInquiryId ? Number(parentInquiryId) : null;
+
+    userState[userId] = {
+      step: 'client_following_up_inquiry',
+      data: { parentInquiryId: cleanId },
+      chatId: ctx.chat.id,
+      wizardMsgId: null
+    };
+
+    const titleLine = cleanId
+      ? `💬 <b>الرد المباشر على الإدارة (الاستعلام <code>#${cleanId}</code>)</b>`
+      : `💬 <b>إرسال رد أو استفسار جديد للإدارة</b>`;
+
+    await replyTracked(
+      ctx, userId,
+      `${titleLine}\n\nاكتب ردك الآن أو أرفق صورة/فيديو وسيصل مباشرة إلى الإدارة ويُسجل في استعلاماتك:`,
+      {
+        parse_mode: 'HTML',
+        ...Markup.keyboard([
+          [
+            getInquiriesMenuLabel(unreadRepliesCount),
+            unreadRepliesCount > 0 ? `⬅️ لوحة العميل (${unreadRepliesCount})` : '⬅️ لوحة العميل'
+          ],
+          ['🏠 القائمة الرئيسية']
+        ]).resize()
+      },
+      true
+    );
   }
 
   async function getDynamicWilayas() {
@@ -2411,6 +2449,13 @@ module.exports = function registerUsers(bot, core) {
     );
   }
 
+  bot.action(/^client_quick_reply_(\d+)$/, async (ctx) => {
+    const userId = ctx.from.id;
+    const inquiryId = Number(ctx.match[1]) || null;
+    await ctx.answerCbQuery();
+    await openClientFollowUpComposer(ctx, userId, inquiryId);
+  });
+
   bot.hears(/^📨 استعلاماتي وردود الإدارة(?:\s*\(\d+\))?$/, async (ctx) => {
     await safeDeleteUserMessage(ctx);
     await renderClientInquiryAt(ctx, ctx.from.id, 0, true, 'all');
@@ -2461,31 +2506,8 @@ module.exports = function registerUsers(bot, core) {
 
   bot.hears(/^💬 متابعة الاستعلام #(\d+)$/, async (ctx) => {
     await safeDeleteUserMessage(ctx);
-    const userId = ctx.from.id;
     const parentInquiryId = Number(ctx.match[1]);
-    const { unreadRepliesCount } = await getClientRepliesSummary(userId);
-
-    userState[userId] = {
-      step: 'client_following_up_inquiry',
-      data: { parentInquiryId },
-      chatId: ctx.chat.id,
-      wizardMsgId: null
-    };
-
-    await replyTracked(
-      ctx, userId,
-      `💬 <b>متابعة الاستعلام رقم</b> <code>#${parentInquiryId}</code>\n\nاكتب رسالتك أو أرفق صورة/فيديو ليتم حفظها في استعلاماتك وإرسالها للإدارة:`,
-      {
-        parse_mode: 'HTML',
-        ...Markup.keyboard([
-          [
-            getInquiriesMenuLabel(unreadRepliesCount),
-            unreadRepliesCount > 0 ? `⬅️ لوحة العميل (${unreadRepliesCount})` : '⬅️ لوحة العميل'
-          ]
-        ]).resize()
-      },
-      true
-    );
+    await openClientFollowUpComposer(ctx, ctx.from.id, parentInquiryId);
   });
 
   bot.action(/^adinq:([a-z_]+):(.+)$/, async (ctx) => {
