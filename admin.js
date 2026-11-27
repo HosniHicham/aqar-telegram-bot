@@ -2,7 +2,7 @@
 // =========================================================================
 // 🛡️ SERVER ADMIN — لوحة تحكم الإدارة
 // - فصل صورة الوصل عن صور وفيديوهات العقار ومنع تكرارها
-// - زر مباشر لمعاينة الوصل للإعلانات المعلقة فقط متى كان موجوداً
+// - زر مباشر لمعاينة الوصل للإعلانات المعلقة فقط متى كان موجوداً مع أزرار الموافقة/الرفض والرجوع للعقار
 // - التنقل بين الإعلانات (المعلقة / المنشورة / المرفوضة / البحث)
 // - تصفح طلبات الشحن (wallet_topups) والموافقة أو الرفض أو المراسلة
 // - إدارة ومعاينة استعلامات المستخدمين (user_inquiries) وسجل الردود (inquiry_replies)
@@ -131,9 +131,17 @@ module.exports = function registerAdmin(bot, core) {
     return Markup.keyboard(rows).resize();
   }
 
+  function getAdminReceiptPreviewKeyboard(adId) {
+    return Markup.keyboard([
+      [`❌ رفض (#${adId})`, `✅ موافقة (#${adId})`],
+      ['↩️ رجوع للعقار'],
+      ['🎛 لوحة الإدارة']
+    ]).resize();
+  }
+
   function getAdminBrowsingKeyboard(
     idx, total, filterType, currentItem = null,
-    mediaIdx = 0, totalMedia = 0, hasReceipt = false, currentMedia = null, isPendingAd = false
+    mediaIdx = 0, totalMedia = 0, hasReceipt = false, isPendingAd = false
   ) {
     const rows = [];
 
@@ -145,7 +153,7 @@ module.exports = function registerAdmin(bot, core) {
       rows.push(mediaRow);
     }
 
-    if (isPendingAd && hasReceipt && currentMedia && currentMedia.kind !== 'receipt') {
+    if (isPendingAd && hasReceipt) {
       rows.push(['🧾 معاينة الوصل']);
     }
 
@@ -1230,23 +1238,10 @@ module.exports = function registerAdmin(bot, core) {
       }
     }
 
-    const receiptSlide = receiptRef
-      ? {
-          type: 'photo',
-          ref: receiptRef,
-          kind: 'receipt',
-          label: '🧾 صورة وصل العقار'
-        }
-      : null;
-
-    // نضع صورة الوصل في البداية للإعلانات المعلقة ثم صور وفيديوهات العقار المفصولة
-    const slides = receiptSlide ? [receiptSlide, ...propertyMedia] : propertyMedia;
-
     return {
-      receiptSlide,
+      receiptRef,
       propertyMedia,
-      slides,
-      hasReceipt: Boolean(receiptSlide)
+      hasReceipt: Boolean(receiptRef)
     };
   }
 
@@ -1377,8 +1372,7 @@ module.exports = function registerAdmin(bot, core) {
 
   function formatAdminAdCaption(
     item, idx, total, filterType, stats, searchQuery = '',
-    currentMedia = null, mediaIdx = 0, totalMedia = 0, hasReceipt = false,
-    propertyMediaCount = 0, isPendingAd = false
+    currentMedia = null, mediaIdx = 0, totalMedia = 0, hasReceipt = false, isPendingAd = false
   ) {
     const effectiveFilter = filterType === 'search' ? (item._filterType || 'pending') : filterType;
     const titleMap = {
@@ -1402,14 +1396,14 @@ module.exports = function registerAdmin(bot, core) {
       if (isFree) {
         receiptSectionLine = `🧾 <b>الوصل:</b> 🆓 غير مطلوب (باقة مجانية)\n`;
       } else if (hasReceipt) {
-        receiptSectionLine = `🧾 <b>الوصل:</b> ✅ مفصول ومرفق (العنصر 1)\n`;
+        receiptSectionLine = `🧾 <b>الوصل:</b> ✅ متوفر (اضغط <b>🧾 معاينة الوصل</b>)\n`;
       } else {
         receiptSectionLine = `🧾 <b>الوصل:</b> ⚠️ غير مرفق\n`;
       }
     }
 
     const mediaLine = totalMedia > 0
-      ? `\n${currentMedia?.label || (currentMedia?.type === 'video' ? '🎥 فيديو العقار' : '🖼 صورة العقار')}: <b>${mediaIdx + 1} / ${totalMedia}</b> (وسائط العقار: <b>${propertyMediaCount}</b>)`
+      ? `\n${currentMedia?.type === 'video' ? '🎥 فيديو العقار' : '🖼 صورة العقار'}: <b>${mediaIdx + 1} / ${totalMedia}</b>`
       : '';
 
     const rawCap =
@@ -1426,6 +1420,57 @@ module.exports = function registerAdmin(bot, core) {
       `📝 <b>التفاصيل:</b> ${escapeHtml(desc.length > 240 ? desc.slice(0, 240) + '…' : desc)}`;
 
     return fitTelegramText(rawCap, !!currentMedia);
+  }
+
+  async function renderAdminReceiptPreview(ctx, adminId, item) {
+    if (!item || !item.id) return;
+    const isPendingAd = (item._filterType || 'pending') === 'pending';
+    const { receiptRef, hasReceipt } = separateAdReceiptAndPropertyMedia(item, isPendingAd);
+
+    if (!hasReceipt || !receiptRef) {
+      return replyTracked(
+        ctx, adminId,
+        `<blockquote>⚠️ <b>لا يوجد وصل مرفق لهذا الإعلان (#${item.id}).</b></blockquote>`,
+        { parse_mode: 'HTML', ...getAdminReceiptPreviewKeyboard(item.id) },
+        true
+      );
+    }
+
+    const ownerId = item.user_id || item._resolvedUserId || 'غير محدد';
+    const timeLine = item.created_at ? formatDateTime(item.created_at) : '';
+    const propLine = item.property_type || item.state_name
+      ? `${escapeHtml(item.property_type || '')}${item.state_name ? ` — ${escapeHtml(item.state_name)}` : ''}`
+      : '';
+
+    const metaLines =
+      `<blockquote>` +
+      `🧾 <b>وصل العقار</b> • <code>#${item.id}</code>\n` +
+      `👤 <b>المعلن:</b> <code>${ownerId}</code>` +
+      (propLine ? `\n🏠 <b>العقار:</b> ${propLine}` : '') +
+      (timeLine ? `\n🕒 <b>الوقت:</b> <i>${escapeHtml(timeLine)}</i>` : '') +
+      `</blockquote>`;
+
+    const caption = fitTelegramText(metaLines, true);
+    const kb = getAdminReceiptPreviewKeyboard(item.id);
+
+    let sentCard = null;
+    try {
+      sentCard = await ctx.replyWithPhoto(receiptRef, { caption, parse_mode: 'HTML', ...kb });
+    } catch (_) {
+      sentCard = await replyTracked(
+        ctx, adminId,
+        `<blockquote>⚠️ <b>تعذر تحميل صورة الوصل للإعلان #${item.id}.</b></blockquote>`,
+        { parse_mode: 'HTML', ...kb },
+        true
+      );
+    }
+
+    const keepIds = [];
+    if (sentCard?.message_id) {
+      keepIds.push(sentCard.message_id);
+      trackBotMessage(adminId, ctx.chat.id, sentCard.message_id);
+    }
+    await clearTrackedBotMessages(ctx, adminId, keepIds);
   }
 
   async function renderAdminAdAt(ctx, adminId, filterType, index = 0, refreshList = false, mediaIndex = 0) {
@@ -1449,6 +1494,7 @@ module.exports = function registerAdmin(bot, core) {
         items,
         index: 0,
         mediaIndex: 0,
+        viewingReceipt: false,
         query: filterType === 'search' ? (st?.query || '') : ''
       };
       adminBrowseState[adminId] = st;
@@ -1476,6 +1522,7 @@ module.exports = function registerAdmin(bot, core) {
     if (safeIdx < 0) safeIdx = 0;
     if (safeIdx >= st.items.length) safeIdx = st.items.length - 1;
     st.index = safeIdx;
+    st.viewingReceipt = false;
 
     const item = st.items[safeIdx];
     await resolveAdOwnerUserId(item);
@@ -1483,7 +1530,7 @@ module.exports = function registerAdmin(bot, core) {
     const cardFilter = item._filterType || (filterType === 'search' ? 'pending' : filterType);
     const isPendingAd = cardFilter === 'pending';
 
-    const { propertyMedia, slides: mediaList, hasReceipt } = separateAdReceiptAndPropertyMedia(item, isPendingAd);
+    const { propertyMedia: mediaList, hasReceipt } = separateAdReceiptAndPropertyMedia(item, isPendingAd);
 
     const totalMedia = mediaList.length;
     let safeMediaIdx = Number(mediaIndex) || 0;
@@ -1494,11 +1541,11 @@ module.exports = function registerAdmin(bot, core) {
     const currentMedia = totalMedia > 0 ? mediaList[safeMediaIdx] : null;
     const caption = formatAdminAdCaption(
       item, safeIdx, st.items.length, filterType, stats, st.query || '',
-      currentMedia, safeMediaIdx, totalMedia, hasReceipt, propertyMedia.length, isPendingAd
+      currentMedia, safeMediaIdx, totalMedia, hasReceipt, isPendingAd
     );
     const inlineKb = buildAdInlineButtons(item, cardFilter);
     const controlKb = getAdminBrowsingKeyboard(
-      safeIdx, st.items.length, filterType, item, safeMediaIdx, totalMedia, hasReceipt, currentMedia, isPendingAd
+      safeIdx, st.items.length, filterType, item, safeMediaIdx, totalMedia, hasReceipt, isPendingAd
     );
 
     const cardExtra = inlineKb ? { caption, parse_mode: 'HTML', ...inlineKb } : { caption, parse_mode: 'HTML' };
@@ -1771,11 +1818,31 @@ module.exports = function registerAdmin(bot, core) {
     const st = adminBrowseState[adminId];
     if (!st) return openAdminHome(ctx);
     const item = st.items?.[st.index || 0];
-    const cardFilter = item?._filterType || (st.filter === 'search' ? 'pending' : st.filter);
-    if (cardFilter !== 'pending') {
-      return renderAdminAdAt(ctx, adminId, st.filter, st.index || 0, false, st.mediaIndex || 0);
-    }
-    await renderAdminAdAt(ctx, adminId, st.filter, st.index || 0, false, 0);
+    if (!item) return openAdminHome(ctx);
+    await resolveAdOwnerUserId(item);
+    st.viewingReceipt = true;
+    await renderAdminReceiptPreview(ctx, adminId, item);
+  });
+
+  bot.hears('↩️ رجوع للعقار', async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    const adminId = ctx.from.id;
+    const st = adminBrowseState[adminId];
+    if (!st) return openAdminHome(ctx);
+    st.viewingReceipt = false;
+    await renderAdminAdAt(ctx, adminId, st.filter, st.index || 0, false, st.mediaIndex || 0);
+  });
+
+  bot.hears(/^✅ موافقة \(#(\d+)\)$/, async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    const adId = Number(ctx.match[1]);
+    await handleAdminAction({ ...ctx, match: [null, String(adId)] }, 'approve');
+  });
+
+  bot.hears(/^❌ رفض \(#(\d+)\)$/, async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    const adId = Number(ctx.match[1]);
+    await handleAdminAction({ ...ctx, match: [null, String(adId)] }, 'reject');
   });
 
   bot.hears('الصورة التالية 🖼', async (ctx) => {
@@ -2159,7 +2226,7 @@ module.exports = function registerAdmin(bot, core) {
     try {
       if (action === 'delete_published') {
         await supabase.from('test_messages').delete().eq('id', requestId);
-        await ctx.answerCbQuery('🗑 تم حذف الإعلان');
+        if (typeof ctx.answerCbQuery === 'function') await ctx.answerCbQuery('🗑 تم حذف الإعلان');
         await editCard(ctx, `🗑 <b>تم حذف الإعلان (#${requestId}) من المنصة.</b>`);
         return;
       }
@@ -2168,7 +2235,9 @@ module.exports = function registerAdmin(bot, core) {
         .from('pending_properties').select('*').eq('id', requestId).single();
 
       if (fetchError || !pendingItem) {
-        await ctx.answerCbQuery('⚠️ الطلب غير متوفر أو تمت معالجته', { show_alert: true });
+        if (typeof ctx.answerCbQuery === 'function') {
+          await ctx.answerCbQuery('⚠️ الطلب غير متوفر أو تمت معالجته', { show_alert: true });
+        }
         return editCard(ctx, `⚠️ <b>الطلب (#${requestId}) غير متوفر أو تمت معالجته مسبقاً.</b>`);
       }
 
@@ -2177,7 +2246,7 @@ module.exports = function registerAdmin(bot, core) {
 
       if (action === 'requeue') {
         await supabase.from('pending_properties').update({ status: 'pending' }).eq('id', requestId);
-        await ctx.answerCbQuery('♻️ أُعيد لقائمة المراجعة');
+        if (typeof ctx.answerCbQuery === 'function') await ctx.answerCbQuery('♻️ أُعيد لقائمة المراجعة');
         await editCard(ctx, `♻️ <b>تمت إعادة الإعلان (#${requestId}) إلى قائمة المراجعة.</b>`);
         return;
       }
@@ -2217,7 +2286,7 @@ module.exports = function registerAdmin(bot, core) {
         if (publishError) throw publishError;
 
         await supabase.from('pending_properties').update({ status: 'approved' }).eq('id', requestId);
-        await ctx.answerCbQuery('✅ تم القبول والنشر');
+        if (typeof ctx.answerCbQuery === 'function') await ctx.answerCbQuery('✅ تم القبول والنشر');
 
         await ctx.telegram.sendMessage(
           targetUserId,
@@ -2225,15 +2294,19 @@ module.exports = function registerAdmin(bot, core) {
           { parse_mode: 'HTML' }
         ).catch(() => {});
 
-        await editCard(
-          ctx,
+        const doneText =
           `✅ <b>تم قبول الإعلان (#${requestId}) ونشره بنجاح</b>\n` +
           `👤 المعلن: <code>${targetUserId}</code> • ${isFreeAd ? 'باقة مجانية' : 'مدفوع بوصل'}\n` +
-          `🕒 وقت النشر: <code>${escapeHtml(formatDateTime(nowIso))}</code>`
-        );
+          `🕒 وقت النشر: <code>${escapeHtml(formatDateTime(nowIso))}</code>`;
+
+        if (ctx.callbackQuery?.message) {
+          await editCard(ctx, doneText);
+        } else {
+          await ctx.reply(doneText, { parse_mode: 'HTML', ...getAdminMenuKeyboard() }).catch(() => {});
+        }
       } else {
         await supabase.from('pending_properties').update({ status: 'rejected' }).eq('id', requestId);
-        await ctx.answerCbQuery('❌ تم الرفض');
+        if (typeof ctx.answerCbQuery === 'function') await ctx.answerCbQuery('❌ تم الرفض');
 
         const rejectUserMsg = isFreeAd
           ? `❌ <b>نعتذر، لم تتم الموافقة على نشر إعلانك المجاني (#${requestId}).</b>`
@@ -2241,15 +2314,21 @@ module.exports = function registerAdmin(bot, core) {
 
         await ctx.telegram.sendMessage(targetUserId, rejectUserMsg, { parse_mode: 'HTML' }).catch(() => {});
 
-        await editCard(
-          ctx,
+        const rejectedText =
           `❌ <b>تم رفض الإعلان (#${requestId})</b>\n` +
-          `👤 المعلن: <code>${targetUserId}</code> • ${isFreeAd ? 'باقة مجانية' : 'مدفوع بوصل'}`
-        );
+          `👤 المعلن: <code>${targetUserId}</code> • ${isFreeAd ? 'باقة مجانية' : 'مدفوع بوصل'}`;
+
+        if (ctx.callbackQuery?.message) {
+          await editCard(ctx, rejectedText);
+        } else {
+          await ctx.reply(rejectedText, { parse_mode: 'HTML', ...getAdminMenuKeyboard() }).catch(() => {});
+        }
       }
     } catch (err) {
       console.error(`Admin action error #${requestId}:`, err);
-      await ctx.answerCbQuery('⚠️ تعذرت العملية', { show_alert: true }).catch(() => {});
+      if (typeof ctx.answerCbQuery === 'function') {
+        await ctx.answerCbQuery('⚠️ تعذرت العملية', { show_alert: true }).catch(() => {});
+      }
       await ctx.reply(`⚠️ تعذرت معالجة الإعلان #${requestId}: ${escapeHtml(err.message)}`, { parse_mode: 'HTML' }).catch(() => {});
     }
   };
