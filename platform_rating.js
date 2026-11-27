@@ -1,7 +1,7 @@
 'use strict';
 // =========================================================================
 // ⭐ PLATFORM RATING MODULE — خاصية تقييم المنصة وإرسال التقييم وعرض الإحصائيات
-// يجلب الاسم الحقيقي للمستخدم من جدول users عبر id ويعرض كل تقييم في فقاعة واحدة.
+// يجلب الاسم الحقيقي للمستخدم من جدول users حسب id مباشرة.
 // =========================================================================
 
 const LINE = '▬▬▬▬▬▬▬▬▬▬▬▬';
@@ -16,16 +16,11 @@ const STAR_CHOICES = {
   6: '🌟'
 };
 
-function isBadName(name) {
-  const n = String(name || '').trim();
-  return !n || /^مستخدم\s*\d*$/i.test(n) || /^user\s*\d*$/i.test(n) || /^\d+$/.test(n);
-}
-
-function buildFullNameFromRecord(obj) {
-  if (!obj) return '';
-  const full = [obj.first_name, obj.last_name].filter(Boolean).join(' ').trim();
-  if (!isBadName(full)) return full;
-  if (!isBadName(obj.username)) return String(obj.username).trim();
+function extractNameFromUserRow(row) {
+  if (!row) return '';
+  const full = [row.first_name, row.last_name].filter(Boolean).join(' ').trim();
+  if (full) return full;
+  if (row.username) return String(row.username).trim();
   return '';
 }
 
@@ -76,12 +71,12 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
 
   async function fetchRealNameByUserId(userId, ctx = null) {
     const id = Number(userId);
-    if (!id) return 'مستخدم';
+    if (!id) return '';
 
     if (typeof getUserRecord === 'function') {
       try {
         const rec = await getUserRecord(id);
-        const fromRec = buildFullNameFromRecord(rec);
+        const fromRec = extractNameFromUserRow(rec);
         if (fromRec) return fromRec;
       } catch (_) {}
     }
@@ -93,16 +88,15 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
         .eq('id', id)
         .limit(1);
       const row = Array.isArray(data) ? data[0] : data;
-      const fromDb = buildFullNameFromRecord(row);
+      const fromDb = extractNameFromUserRow(row);
       if (fromDb) return fromDb;
     } catch (_) {}
 
     if (ctx && Number(ctx.from?.id) === id) {
-      const fromCtx = buildFullNameFromRecord(ctx.from);
-      if (fromCtx) return fromCtx;
+      return extractNameFromUserRow(ctx.from);
     }
 
-    return 'مستخدم';
+    return '';
   }
 
   async function enrichReviewsWithRealNames(reviews = []) {
@@ -119,8 +113,8 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
 
         if (Array.isArray(usersRows)) {
           for (const u of usersRows) {
-            const full = buildFullNameFromRecord(u);
-            if (full) namesMap[Number(u.id)] = full;
+            const name = extractNameFromUserRow(u);
+            if (name) namesMap[Number(u.id)] = name;
           }
         }
       } catch (_) {}
@@ -128,7 +122,7 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
 
     return reviews.map((r) => ({
       ...r,
-      reviewer_full_name: namesMap[Number(r.user_id)] || 'مستخدم'
+      reviewer_full_name: namesMap[Number(r.user_id)] || ''
     }));
   }
 
@@ -190,11 +184,11 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
     }
   }
 
-  // فقاعة واحدة كاملة تضم الاسم الحقيقي + التقييم + التاريخ + التعليق
   function formatSingleReviewBubble(review, index) {
     const dt = formatDateTime(review.updated_at || review.created_at);
-    const fullName = escapeHtml(review.reviewer_full_name || 'مستخدم');
-    const stars = formatStarsVisual(review.rating);
+    const nameLine = review.reviewer_full_name
+      ? `<b>${index + 1}. 👤 ${escapeHtml(review.reviewer_full_name)} • ${formatStarsVisual(review.rating)}</b>`
+      : `<b>${index + 1}. ${formatStarsVisual(review.rating)}</b>`;
     const commentPart = review.comment
       ? `\n💬 ${escapeHtml(review.comment)}`
       : `\n<i>تقييم بالنجوم فقط</i>`;
@@ -202,7 +196,7 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
 
     return (
       `<blockquote>` +
-      `<b>${index + 1}. 👤 ${fullName} • ${stars}</b>` +
+      nameLine +
       timePart +
       commentPart +
       `</blockquote>`
@@ -216,7 +210,6 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
       if (!Array.isArray(adminIds) || adminIds.length === 0) return;
 
       const resolvedName = await fetchRealNameByUserId(userId, ctx);
-      const fullName = escapeHtml(resolvedName || 'مستخدم');
       const nowText = formatDateTime(new Date());
       const titleBadge = isUpdate ? '✏️ تحديث تقييم للمنصة' : '⭐ تقييم جديد للمنصة';
       const commentLine = comment
@@ -227,7 +220,7 @@ module.exports = function registerPlatformRating(bot, core, helpers) {
         `<b>${titleBadge}</b>\n` +
         `${LINE}\n` +
         `<blockquote>` +
-        `👤 <b>${fullName}</b> (<code>${userId}</code>)\n` +
+        (resolvedName ? `👤 <b>${escapeHtml(resolvedName)}</b> (<code>${userId}</code>)\n` : `🆔 <code>${userId}</code>\n`) +
         `🌟 <b>${formatStarsVisual(rating)}</b>\n` +
         `🕒 <i>${escapeHtml(nowText)}</i>` +
         commentLine +
