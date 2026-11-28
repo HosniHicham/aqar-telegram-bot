@@ -184,7 +184,119 @@ module.exports = function registerUsers(bot, core) {
     return `tg:${fileId}`;
   }
 
+  // =========================================================================
+  // 🏠 إرسال طلب نشر عقار مرفق بالوصل مباشرة إلى pending_properties والإدارة
+  // (يُستخدم في النشر المباشر بالوصل أو عند الشحن لأجل النشر والرصيد 0)
+  // =========================================================================
+  async function submitPropertyWithReceiptRequest(ctx, userId, adData, receiptFileId, topupAmount = null) {
+    const unreadCount = core.messenger?.getUnreadCount ? await core.messenger.getUnreadCount(userId) : 0;
+    const mainKb = await buildUserMainKeyboard(userId, unreadCount);
+
+    const publishingText = await getSetting('publishing_text', '⏳ جاري المعالجة وحفظ طلب النشر مع الوصل...');
+    await renderWizard(ctx, userId, { footer: publishingText });
+
+    const mediaItems = adData.media_items || [];
+    const combinedImagesUrl = await uploadMediaListByType(ctx, mediaItems, 'photo');
+    const videoUrl = await uploadMediaListByType(ctx, mediaItems, 'video');
+
+    const receiptUrl = await uploadSingleReceiptToStorage(ctx, receiptFileId, userId);
+
+    const numericPrice = sanitizeNumericPrice(adData.price);
+    const cleanPhone = String(adData.phone || '').replace(/\D/g, '').trim();
+
+    const { data: insertedRow, error: insertError } = await supabase
+      .from('pending_properties')
+      .insert([{
+        user_id: userId,
+        property_type: adData.property_type,
+        state_name: adData.state_name,
+        price: numericPrice,
+        phone: cleanPhone,
+        description: adData.description,
+        image_url: combinedImagesUrl,
+        video_url: videoUrl,
+        receipt_url: receiptUrl,
+        status: 'pending'
+      }])
+      .select()
+      .single();
+
+    if (insertError) throw insertError;
+
+    const requestId = insertedRow.id;
+    const photosCount = parseImagesFromImageUrl(combinedImagesUrl).length;
+    const videosCount = parseMediaListFromField(videoUrl).length;
+    const submittedAt = formatDateTime(insertedRow.created_at || new Date());
+
+    const topupNoteLine = topupAmount
+      ? `\n💳 <b>طلب شحن مرفق بالنشر (BaridiMob / CCP):</b> <b>${formatMoney(topupAmount)}</b>`
+      : '';
+
+    const adminCaption =
+      `🚨 <b>طلب إعلان عقاري جديد (#${requestId})</b>${topupNoteLine}\n` +
+      `🕒 <b>التاريخ والوقت:</b> <code>${escapeHtml(submittedAt)}</code>\n\n` +
+      `👤 <b>معرف المستخدم:</b> <code>${userId}</code>\n` +
+      `🏠 <b>النوع:</b> ${escapeHtml(adData.property_type || '')}\n` +
+      `📍 <b>الولاية:</b> ${escapeHtml(adData.state_name || '')}\n` +
+      `💰 <b>السعر:</b> ${formatMoney(numericPrice)}\n` +
+      `📞 <b>الهاتف:</b> ${escapeHtml(cleanPhone)}\n` +
+      `🖼 <b>عدد الصور:</b> ${photosCount}\n` +
+      `🎥 <b>عدد الفيديوهات:</b> ${videosCount}\n` +
+      `📝 <b>الوصف:</b> ${escapeHtml(adData.description || '')}`;
+
+    const adminButtons = Markup.inlineKeyboard([
+      [
+        Markup.button.callback(`❌ رفض (#${requestId})`, `reject_${requestId}`),
+        Markup.button.callback(`✅ قبول ونشر (#${requestId})`, `approve_${requestId}`)
+      ]
+    ]);
+
+    const photoSource =
+      typeof receiptUrl === 'string' && receiptUrl.startsWith('http') ? receiptUrl : receiptFileId;
+
+    const adminIds = await getAdminIds();
+
+    for (const currentAdminId of adminIds) {
+      try {
+        await ctx.telegram.sendPhoto(currentAdminId, photoSource, {
+          caption: fitTelegramText(
+            adminCaption + `\n\n👇 <b>يرجى مراجعة وصل الدفع أعلاه واتخاذ القرار:</b>`,
+            true
+          ),
+          parse_mode: 'HTML',
+          ...adminButtons
+        });
+      } catch (sendErr) {
+        console.error(`Failed to send admin notification to ${currentAdminId}:`, sendErr.message);
+        await ctx.telegram.sendMessage(currentAdminId, fitTelegramText(adminCaption, false), {
+          parse_mode: 'HTML',
+          ...adminButtons
+        }).catch(() => {});
+      }
+    }
+
+    delete userState[userId];
+    await replyTracked(ctx, userId,
+      `⏳ <b>تم إرسال طلب نشر عقارك مرفقاً بالوصل برقم (#${requestId})!</b>\n🕒 <b>التاريخ والوقت:</b> <code>${escapeHtml(submittedAt)}</code>\n\nالعقار في طور المراجعة والموافقة من طرف الإدارة، وسيتم نشره مباشرة عند الموافقة على الوصل والطلب.`,
+      { parse_mode: 'HTML', ...mainKb },
+      true
+    );
+  }
+
   async function submitWalletTopupRequest(ctx, userId, amount, receiptFileId) {
+    const stateData = userState[userId]?.data || {};
+    // إذا جاء الشحن من مسار نشر عقار (والرصيد كان غير كافٍ)، نرسل العقار + الوصل مباشرة كطلب نشر عقار
+    if (stateData.publishAdDraft && stateData.publishAdDraft.property_type) {
+      return await submitPropertyWithReceiptRequest(
+        ctx,
+        userId,
+        stateData.publishAdDraft,
+        receiptFileId,
+        amount
+      );
+    }
+
+    // شحن محفظة مستقل كما كان سابقاً
     const unreadCount = core.messenger?.getUnreadCount ? await core.messenger.getUnreadCount(userId) : 0;
     const mainKb = await buildUserMainKeyboard(userId, unreadCount);
     const cleanAmount = sanitizeNumericPrice(amount);
@@ -957,14 +1069,18 @@ module.exports = function registerUsers(bot, core) {
     return `✨ <b>محفظتك نشطة وجاهزة</b> — استثمر رصيدك أو اجمع نقاطاً إضافية لتوسيع فرصك على المنصة.`;
   }
 
-  async function openWalletTopupScreen(ctx, userId, prefillAmount = null) {
+  // يدعم تمرير publishAdDraft إذا كان الشحن قادماً من مسار نشر عقار والرصيد غير كافٍ
+  async function openWalletTopupScreen(ctx, userId, prefillAmount = null, publishAdDraft = null) {
     const ccpRip = await getSetting('ccp_rip', '00234567890123456789');
     const ccpName = await getSetting('ccp_name', '');
     const nameLine = ccpName ? `\n👤 <b>الاسم:</b> ${escapeHtml(ccpName)}` : '';
 
     userState[userId] = {
       step: 'topup_waiting_amount',
-      data: prefillAmount ? { suggestedAmount: prefillAmount } : {},
+      data: {
+        ...(prefillAmount ? { suggestedAmount: prefillAmount } : {}),
+        ...(publishAdDraft ? { publishAdDraft } : {})
+      },
       chatId: ctx.chat.id,
       wizardMsgId: null
     };
@@ -972,11 +1088,14 @@ module.exports = function registerUsers(bot, core) {
     const suggestedLine = prefillAmount
       ? `\n💡 <b>المبلغ المقترح للنشر:</b> <b>${formatMoney(prefillAmount)}</b>`
       : '';
+    const publishNoteLine = publishAdDraft
+      ? `\n🏠 <b>مرتبط بنشر العقار:</b> سيتم إرسال عقارك مرفقاً بالوصل مباشرة للمراجعة والموافقة عند إرسال الوصل.`
+      : '';
 
     const text =
       `💳 <b>شحن الرصيد عبر BaridiMob / CCP</b>\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
-      `حوّل المبلغ الذي يناسبك إلى الحساب التالي لتجهيز رصيدك:${nameLine}${suggestedLine}\n` +
+      `حوّل المبلغ الذي يناسبك إلى الحساب التالي:${nameLine}${suggestedLine}${publishNoteLine}\n` +
       `📌 <b>رقم الحساب (RIP):</b>\n<code>${escapeHtml(ccpRip)}</code>\n\n` +
       `👇 <b>اختر مبلغاً جاهزاً أو اكتب المبلغ رقمياً بالدينار الجزائري:</b>`;
 
@@ -1289,7 +1408,7 @@ module.exports = function registerUsers(bot, core) {
     if (state.step === 'waiting_for_payment_choice' && !opts.footer) {
       opts.footer =
         `💰 <b>اختر طريقة إتمام ونشر الإعلان:</b>\n\n` +
-        `1️⃣ <b>الدفع عبر BaridiMob / CCP:</b> فحص الرصيد (${formatMoney(currentWallet)}) — إظهار الخصم إذا كان كافياً (${formatMoney(walletCost)}) أو التوجه للشحن مباشرة إذا كان غير كافٍ.\n` +
+        `1️⃣ <b>الدفع عبر BaridiMob / CCP:</b> فحص الرصيد (${formatMoney(currentWallet)}) — إظهار الخصم إذا كان كافياً (${formatMoney(walletCost)}) أو التوجه للشحن وربط الوصل مباشرة بطلب النشر إذا كان غير كافٍ.\n` +
         `2️⃣ <b>النشر المجاني بالنقاط:</b> يتطلب <b>${publishCost} نقطة</b>\n` +
         `3️⃣ <b>نشر مجاني:</b> يُرسل إلى قائمة الانتظار والمراجعة الإدارية كإعلان مجاني.\n` +
         `🪙 <b>رصيد النقاط:</b> <b>${currentPoints} نقطة</b>`;
@@ -1320,6 +1439,7 @@ module.exports = function registerUsers(bot, core) {
   async function publishAdByWalletBalance(ctx, userId, state, walletCost) {
     const unreadCount = core.messenger?.getUnreadCount ? await core.messenger.getUnreadCount(userId) : 0;
     const mainKb = await buildUserMainKeyboard(userId, unreadCount);
+    const adDraftSnapshot = { ...state.data };
     state.data.payment_label = `💼 خصم من الرصيد (${formatMoney(walletCost)})`;
     state.step = 'publishing';
 
@@ -1330,7 +1450,7 @@ module.exports = function registerUsers(bot, core) {
       const freshUser = await getUserRecord(userId);
       const currentWallet = sanitizeNumericPrice(freshUser?.wallet_balance || 0);
       if (currentWallet < walletCost) {
-        return openWalletTopupScreen(ctx, userId, walletCost);
+        return openWalletTopupScreen(ctx, userId, walletCost, adDraftSnapshot);
       }
 
       const mediaItems = state.data.media_items || [];
@@ -1503,13 +1623,24 @@ module.exports = function registerUsers(bot, core) {
     if (!state || state.step === 'publishing') return;
 
     if (state.step === 'topup_waiting_amount') {
+      const draft = state.data?.publishAdDraft;
       delete userState[userId];
+      if (draft) {
+        userState[userId] = {
+          step: 'waiting_for_payment_choice',
+          data: draft,
+          chatId: ctx.chat.id,
+          wizardMsgId: null
+        };
+        return renderWizard(ctx, userId);
+      }
       return showWalletAndPointsScreen(ctx, userId);
     }
 
     if (state.step === 'topup_waiting_receipt') {
+      const keepDraft = state.data?.publishAdDraft || null;
       state.step = 'topup_waiting_amount';
-      state.data = {};
+      state.data = keepDraft ? { publishAdDraft: keepDraft } : {};
       return replyTracked(
         ctx, userId,
         `💳 <b>اختر أو أدخل مبلغ الشحن المطلوب (بالدينار الجزائري):</b>`,
@@ -1562,15 +1693,18 @@ module.exports = function registerUsers(bot, core) {
     const state = userState[userId];
     if (state && state.step === 'waiting_for_payment_choice') {
       const walletCost = sanitizeNumericPrice(await getSetting('publish_cost_wallet', '500')) || 500;
-      return openWalletTopupScreen(ctx, userId, walletCost);
+      return openWalletTopupScreen(ctx, userId, walletCost, { ...state.data });
     }
     await openWalletTopupScreen(ctx, userId);
   });
 
   bot.hears(/^💳 شحن المحفظة/, async (ctx) => {
     await safeDeleteUserMessage(ctx);
+    const userId = ctx.from.id;
+    const state = userState[userId];
     const walletCost = sanitizeNumericPrice(await getSetting('publish_cost_wallet', '500')) || 500;
-    await openWalletTopupScreen(ctx, ctx.from.id, walletCost);
+    const draft = state?.step === 'waiting_for_payment_choice' ? { ...state.data } : null;
+    await openWalletTopupScreen(ctx, userId, walletCost, draft);
   });
 
   bot.hears(/^(?:💼 )?الخصم من الرصيد/, async (ctx) => {
@@ -1689,7 +1823,7 @@ module.exports = function registerUsers(bot, core) {
     const walletCost = sanitizeNumericPrice(await getSetting('publish_cost_wallet', '500')) || 500;
 
     if (walletBalance < walletCost) {
-      return openWalletTopupScreen(ctx, userId, walletCost);
+      return openWalletTopupScreen(ctx, userId, walletCost, { ...state.data });
     }
 
     state.data.payment_label = `💳 BaridiMob / CCP (الرصيد: ${formatMoney(walletBalance)})`;
@@ -2804,6 +2938,8 @@ module.exports = function registerUsers(bot, core) {
     if (state.step === 'topup_waiting_amount') {
       await safeDeleteUserMessage(ctx);
       const parsedAmt = sanitizeNumericPrice(userText);
+      const keepDraft = state.data?.publishAdDraft || null;
+
       if (!parsedAmt || parsedAmt <= 0) {
         return replyTracked(
           ctx, userId,
@@ -2820,12 +2956,15 @@ module.exports = function registerUsers(bot, core) {
         );
       }
 
-      state.data = { amount: parsedAmt };
+      state.data = {
+        amount: parsedAmt,
+        ...(keepDraft ? { publishAdDraft: keepDraft } : {})
+      };
       state.step = 'topup_waiting_receipt';
 
       return replyTracked(
         ctx, userId,
-        `💰 <b>مبلغ الشحن:</b> <b>${formatMoney(parsedAmt)}</b>\n\n` +
+        `💰 <b>المبلغ:</b> <b>${formatMoney(parsedAmt)}</b>\n\n` +
         `📸 <b>أرسل الآن صورة وصل التحويل (صورة واحدة للعملية الحالية):</b>`,
         {
           parse_mode: 'HTML',
@@ -3035,7 +3174,7 @@ module.exports = function registerUsers(bot, core) {
         delete userState[userId];
         return replyTracked(
           ctx, userId,
-          `⚠️ <b>تعذر تسجيل طلب الشحن:</b> <code>${escapeHtml(err.message || 'خطأ')}</code>`,
+          `⚠️ <b>تعذر تسجيل الطلب:</b> <code>${escapeHtml(err.message || 'خطأ')}</code>`,
           { parse_mode: 'HTML', ...mainKb },
           true
         );
@@ -3096,102 +3235,7 @@ module.exports = function registerUsers(bot, core) {
       state.step = 'publishing';
 
       try {
-        const publishingText = await getSetting('publishing_text', '⏳ جاري المعالجة والحفظ...');
-        await renderWizard(ctx, userId, { footer: publishingText });
-
-        const mediaItems = state.data.media_items || [];
-        const combinedImagesUrl = await uploadMediaListByType(ctx, mediaItems, 'photo');
-        const videoUrl = await uploadMediaListByType(ctx, mediaItems, 'video');
-
-        let receiptUrl = '';
-        try {
-          const receiptFileLink = await ctx.telegram.getFileLink(receiptPhoto.file_id);
-          const resReceipt = await fetch(receiptFileLink.href);
-          const bufReceipt = Buffer.from(await resReceipt.arrayBuffer());
-          const receiptFileName = `${Date.now()}_receipt_${userId}.jpg`;
-          await supabase.storage.from('test_media').upload(receiptFileName, bufReceipt, { contentType: 'image/jpeg', upsert: true });
-          const { data: pubReceiptUrl } = supabase.storage.from('test_media').getPublicUrl(receiptFileName);
-          receiptUrl = pubReceiptUrl.publicUrl;
-        } catch (e) {
-          receiptUrl = receiptPhoto.file_id;
-        }
-
-        const numericPrice = sanitizeNumericPrice(state.data.price);
-        const cleanPhone = String(state.data.phone || '').replace(/\D/g, '').trim();
-
-        const { data: insertedRow, error: insertError } = await supabase
-          .from('pending_properties')
-          .insert([{
-            user_id: userId,
-            property_type: state.data.property_type,
-            state_name: state.data.state_name,
-            price: numericPrice,
-            phone: cleanPhone,
-            description: state.data.description,
-            image_url: combinedImagesUrl,
-            video_url: videoUrl,
-            receipt_url: receiptUrl,
-            status: 'pending'
-          }])
-          .select()
-          .single();
-
-        if (insertError) throw insertError;
-
-        const requestId = insertedRow.id;
-        const photosCount = parseImagesFromImageUrl(combinedImagesUrl).length;
-        const videosCount = parseMediaListFromField(videoUrl).length;
-        const submittedAt = formatDateTime(insertedRow.created_at || new Date());
-
-        const adminCaption =
-          `🚨 <b>طلب إعلان عقاري جديد (#${requestId})</b>\n` +
-          `🕒 <b>التاريخ والوقت:</b> <code>${escapeHtml(submittedAt)}</code>\n\n` +
-          `👤 <b>معرف المستخدم:</b> <code>${userId}</code>\n` +
-          `🏠 <b>النوع:</b> ${escapeHtml(state.data.property_type || '')}\n` +
-          `📍 <b>الولاية:</b> ${escapeHtml(state.data.state_name || '')}\n` +
-          `💰 <b>السعر:</b> ${formatMoney(numericPrice)}\n` +
-          `📞 <b>الهاتف:</b> ${escapeHtml(cleanPhone)}\n` +
-          `🖼 <b>عدد الصور:</b> ${photosCount}\n` +
-          `🎥 <b>عدد الفيديوهات:</b> ${videosCount}\n` +
-          `📝 <b>الوصف:</b> ${escapeHtml(state.data.description || '')}`;
-
-        const adminButtons = Markup.inlineKeyboard([
-          [
-            Markup.button.callback(`❌ رفض (#${requestId})`, `reject_${requestId}`),
-            Markup.button.callback(`✅ قبول ونشر (#${requestId})`, `approve_${requestId}`)
-          ]
-        ]);
-
-        const photoSource =
-          typeof receiptUrl === 'string' && receiptUrl.startsWith('http') ? receiptUrl : receiptPhoto.file_id;
-
-        const adminIds = await getAdminIds();
-
-        for (const currentAdminId of adminIds) {
-          try {
-            await ctx.telegram.sendPhoto(currentAdminId, photoSource, {
-              caption: fitTelegramText(
-                adminCaption + `\n\n👇 <b>يرجى مراجعة وصل الدفع أعلاه واتخاذ قرار:</b>`,
-                true
-              ),
-              parse_mode: 'HTML',
-              ...adminButtons
-            });
-          } catch (sendErr) {
-            console.error(`Failed to send admin notification to ${currentAdminId}:`, sendErr.message);
-            await ctx.telegram.sendMessage(currentAdminId, fitTelegramText(adminCaption, false), {
-              parse_mode: 'HTML',
-              ...adminButtons
-            }).catch(() => {});
-          }
-        }
-
-        delete userState[userId];
-        await replyTracked(ctx, userId,
-          `⏳ <b>تم استلام وصل الدفع وحفظ طلبك برقم (#${requestId})!</b>\n🕒 <b>التاريخ والوقت:</b> <code>${escapeHtml(submittedAt)}</code>\n\nالإعلان قيد المراجعة من طرف الإدارة وسيتم نشره فور تأكيد التحويل.`,
-          { parse_mode: 'HTML', ...mainKb },
-          true
-        );
+        return await submitPropertyWithReceiptRequest(ctx, userId, state.data, receiptPhoto.file_id, null);
       } catch (err) {
         console.error('Receipt publish error:', err);
         delete userState[userId];
