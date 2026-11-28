@@ -1,8 +1,6 @@
 'use strict';
 // =========================================================================
-// 👤 SERVER USERS — كل ما يخص المستخدم
-// يستدعيه server.js (الأب) للمستخدمين العاديين، وللأدمن في وضع المعاينة.
-// يربط منطق التصفح والمفضلة عبر browse.js.
+// 👤 SERVER USERS — كل ما يخص المستخدم (ترابط حيّ ومباشر مع الإدارة)
 // =========================================================================
 
 const BTN_RATE_PLATFORM = '⭐ تقييم المنصة';
@@ -22,13 +20,15 @@ module.exports = function registerUsers(bot, core) {
   } = core;
 
   const clientInquiryBrowse = {};
+  const userLiveChatWithAdmin = {}; // حالة الدردشة الحية للمستخدم مع الإدارة
   const lastButtonHintAt = {};
   const buttonHintTimers = {};
 
   const FREE_TEXT_STEPS = new Set([
     'payment_issue_writing_detail',
     'topup_waiting_amount',
-    'client_following_up_inquiry'
+    'client_following_up_inquiry',
+    'live_chat_with_admin'
   ]);
 
   function registerFreeTextStep(stepName) {
@@ -98,6 +98,98 @@ module.exports = function registerUsers(bot, core) {
     approved: '✅ مقبول',
     rejected: '❌ مرفوض'
   };
+
+  function getUserLiveChatKeyboard(hasMissedAlert = false) {
+    return Markup.keyboard([
+      [hasMissedAlert ? '🔚 إنهاء الدردشة (تنبيه اتصال فائت)' : '🔚 إنهاء الدردشة مع الإدارة'],
+      ['🏠 القائمة الرئيسية']
+    ]).resize();
+  }
+
+  async function openUserLiveChatWithAdmin(ctx, userId, meta = {}) {
+    const uid = Number(userId);
+    if (!uid) return;
+
+    const adminIds = await getAdminIds();
+    const adminId = Number(meta.adminId) || adminIds[0] || null;
+    const adId = meta.adId || null;
+    const inquiryId = meta.inquiryId || null;
+    const reviewId = meta.reviewId || null;
+
+    userLiveChatWithAdmin[uid] = {
+      adminId,
+      adId,
+      inquiryId,
+      reviewId,
+      openedAt: Date.now()
+    };
+
+    userState[uid] = {
+      step: 'live_chat_with_admin',
+      data: { adminId, adId, inquiryId, reviewId },
+      chatId: ctx.chat?.id || uid,
+      wizardMsgId: null
+    };
+
+    if (!meta.silentOpen) {
+      const refLine = adId ? `\n📌 <b>بخصوص الإعلان:</b> <code>#${adId}</code>` : '';
+      const targetChatId = ctx.chat?.id || uid;
+      const sent = await ctx.telegram.sendMessage(
+        uid,
+        `🟢 <b>تم فتح الدردشة المباشرة مع الإدارة</b>${refLine}\n` +
+        `━━━━━━━━━━━━━━━━━━━━\n` +
+        `✍️ <i>اكتب رسالتك أو أرسل صورة/فيديو الآن وسيصل فوراً إلى الإدارة في نفس الاتصال الحيّ.</i>`,
+        { parse_mode: 'HTML', ...getUserLiveChatKeyboard(false) }
+      ).catch(() => null);
+      if (sent?.message_id) trackBotMessage(uid, targetChatId, sent.message_id);
+    }
+  }
+
+  async function closeUserLiveChatWithAdmin(ctx, userId, adminId = null) {
+    const uid = Number(userId);
+    if (!uid) return;
+    delete userLiveChatWithAdmin[uid];
+    if (userState[uid]?.step === 'live_chat_with_admin') {
+      delete userState[uid];
+    }
+    const unreadCount = core.messenger?.getUnreadCount ? await core.messenger.getUnreadCount(uid) : 0;
+    const mainKb = await buildUserMainKeyboard(uid, unreadCount);
+    await ctx.telegram.sendMessage(
+      uid,
+      `ℹ️ <b>تم إنهاء جلسة الدردشة المباشرة مع الإدارة.</b>\n<i>(في حال غفلت عن أي اتصال سابق، يمكنك دائماً متابعة الردود من زر الدعم والإدارة)</i>`,
+      { parse_mode: 'HTML', ...mainKb }
+    ).catch(() => {});
+  }
+
+  core.openUserLiveChatWithAdmin = openUserLiveChatWithAdmin;
+  core.closeUserLiveChatWithAdmin = closeUserLiveChatWithAdmin;
+
+  async function sendLiveUserMessageToAdmins(ctx, userId, payloadType, content) {
+    const sess = userLiveChatWithAdmin[userId] || {};
+    const stateData = userState[userId]?.data || {};
+    const targetAdminId = sess.adminId || stateData.adminId || null;
+    const adId = sess.adId || stateData.adId || null;
+    const inquiryId = sess.inquiryId || stateData.inquiryId || null;
+
+    const adminIds = targetAdminId ? [targetAdminId] : await getAdminIds();
+    for (const admId of adminIds) {
+      if (typeof core.forwardLiveMessageToAdmin === 'function') {
+        await core.forwardLiveMessageToAdmin(ctx, admId, userId, payloadType, content, { adId, inquiryId });
+      }
+    }
+
+    const preview = payloadType === 'text'
+      ? escapeHtml(content.text || '')
+      : (payloadType === 'photo' ? '🖼 صورة مرسلة' : '🎥 فيديو مرسل');
+
+    await replyTracked(
+      ctx,
+      userId,
+      `✅ <b>تم إرسال رسالتك إلى الإدارة</b>: <i>${preview}</i>\n👇 <i>يمكنك متابعة الكتابة في الدردشة المباشرة أو إنهاء الجلسة من الأسفل</i>`,
+      { parse_mode: 'HTML', ...getUserLiveChatKeyboard(false) },
+      true
+    );
+  }
 
   function getSupportButtonLabel(unreadRepliesCount = 0) {
     return unreadRepliesCount > 0
@@ -184,9 +276,6 @@ module.exports = function registerUsers(bot, core) {
     return `tg:${fileId}`;
   }
 
-  // =========================================================================
-  // 🏠 إرسال طلب نشر عقار مرفق بالوصل مباشرة إلى pending_properties والإدارة
-  // =========================================================================
   async function submitPropertyWithReceiptRequest(ctx, userId, adData, receiptFileId, topupAmount = null) {
     const unreadCount = core.messenger?.getUnreadCount ? await core.messenger.getUnreadCount(userId) : 0;
     const mainKb = await buildUserMainKeyboard(userId, unreadCount);
@@ -339,7 +428,7 @@ module.exports = function registerUsers(bot, core) {
         Markup.button.callback(`❌ رفض (#${topupId})`, `topup_reject_${topupId}`),
         Markup.button.callback(`✅ اعتماد وإضافة الرصيد (#${topupId})`, `topup_approve_${topupId}`)
       ],
-      [Markup.button.callback(`✉️ رد على العميل (${userId})`, `support_reply_${userId}`)]
+      [Markup.button.callback(`💬 فتح دردشة مع العميل (${userId})`, `admin_live_open_${userId}`)]
     ]);
 
     const adminIds = await getAdminIds();
@@ -463,179 +552,6 @@ module.exports = function registerUsers(bot, core) {
       console.error('saveInquiryToSupabase exception:', e);
       return null;
     }
-  }
-
-  // =========================================================================
-  // 📩 تسجيل رسالة مباشرة أرسلتها الإدارة للعميل كـ "رد/رسالة إدارية غير مقروءة"
-  // ليظهر العداد في (📞 الدعم والإدارة) وتظهر في الاستعلامات مع زر فتح النقاش
-  // =========================================================================
-  async function recordAdminDirectMessageForClient({
-    userId,
-    propertyId = null,
-    propertySource = null,
-    subject = null,
-    messageText = '',
-    adminRole = 'super_admin',
-    attachmentUrl = null,
-    mediaType = 'text'
-  }) {
-    const cleanUserId = Number(userId);
-    if (!cleanUserId) return null;
-
-    try {
-      const numPropId = Number(propertyId);
-      const cleanPropId = Number.isFinite(numPropId) && numPropId > 0 ? numPropId : null;
-      const derivedSubject = subject || (cleanPropId ? `رسالة الإدارة بخصوص الإعلان #${cleanPropId}` : 'رسالة من الإدارة');
-
-      // نبحث عن استعلام مفتوح مرتبط بنفس الإعلان إن وُجد، وإلا ننشئ سجلاً جديداً لكي يبرز كعنصر جديد غير مقروء
-      let targetInquiryId = null;
-
-      if (cleanPropId) {
-        const { data: existingRows } = await supabase
-          .from('user_inquiries')
-          .select('id, status')
-          .eq('user_id', cleanUserId)
-          .eq('property_id', cleanPropId)
-          .in('status', ['open', 'in_progress'])
-          .order('id', { ascending: false })
-          .limit(1);
-
-        if (Array.isArray(existingRows) && existingRows.length > 0) {
-          targetInquiryId = existingRows[0].id;
-        }
-      }
-
-      if (!targetInquiryId) {
-        const { data: createdInq, error: inqErr } = await supabase
-          .from('user_inquiries')
-          .insert([{
-            user_id: cleanUserId,
-            property_id: cleanPropId,
-            property_source: cleanPropId ? (propertySource || 'pending_properties') : null,
-            inquiry_type: 'admin_message',
-            target_role: adminRole || 'super_admin',
-            subject: derivedSubject,
-            message: messageText || derivedSubject,
-            attachment_url: mediaType !== 'text' ? attachmentUrl : null,
-            status: 'in_progress'
-          }])
-          .select()
-          .single();
-
-        if (inqErr || !createdInq) {
-          console.error('recordAdminDirectMessageForClient create inquiry error:', inqErr);
-          return null;
-        }
-        targetInquiryId = createdInq.id;
-      } else {
-        await supabase
-          .from('user_inquiries')
-          .update({
-            status: 'in_progress',
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', targetInquiryId);
-      }
-
-      const { data: replyRow, error: repErr } = await supabase
-        .from('inquiry_replies')
-        .insert([{
-          inquiry_id: targetInquiryId,
-          user_id: cleanUserId,
-          admin_role: adminRole || 'super_admin',
-          reply_message: messageText || (mediaType === 'photo' ? '🖼 صورة مرفقة' : mediaType === 'video' ? '🎥 فيديو مرفق' : ''),
-          attachment_url: attachmentUrl || null,
-          media_type: mediaType || 'text',
-          is_read: false
-        }])
-        .select()
-        .single();
-
-      if (repErr) {
-        console.error('recordAdminDirectMessageForClient insert reply error:', repErr);
-      }
-
-      return { inquiryId: targetInquiryId, reply: replyRow || null };
-    } catch (e) {
-      console.error('recordAdminDirectMessageForClient error:', e);
-      return null;
-    }
-  }
-
-  // إشعار العميل برسالة إدارية مع زر "💬 فتح النقاش" وتحديث العداد فوراً
-  async function notifyClientOfAdminMessage(ctxOrTelegram, userId, {
-    propertyId = null,
-    propertySource = null,
-    subject = null,
-    messageText = '',
-    adminRole = 'super_admin',
-    attachmentUrl = null,
-    mediaType = 'text',
-    sendNotificationMessage = true
-  } = {}) {
-    const cleanUserId = Number(userId);
-    if (!cleanUserId) return null;
-
-    const recorded = await recordAdminDirectMessageForClient({
-      userId: cleanUserId,
-      propertyId,
-      propertySource,
-      subject,
-      messageText,
-      adminRole,
-      attachmentUrl,
-      mediaType
-    });
-
-    const inquiryId = recorded?.inquiryId || null;
-    const { unreadRepliesCount } = await getClientRepliesSummary(cleanUserId);
-    const mainKb = await buildUserMainKeyboard(cleanUserId, 0);
-    const tg = ctxOrTelegram?.telegram || ctxOrTelegram || bot.telegram;
-
-    if (sendNotificationMessage && tg) {
-      const propLine = propertyId ? `\n🏠 <b>بخصوص الإعلان:</b> <code>#${escapeHtml(String(propertyId))}</code>` : '';
-      const inqLine = inquiryId ? `\n🔖 <b>رقم النقاش:</b> <code>#${inquiryId}</code>` : '';
-      const badgeLine = `\n🔔 <b>رسائل غير مقروءة في الدعم والإدارة:</b> <b>(${unreadRepliesCount})</b>`;
-      const notifText =
-        `📩 <b>رسالة جديدة من إدارة عقار الجزائر</b>${propLine}${inqLine}${badgeLine}\n` +
-        `━━━━━━━━━━━━━━━━━━━━\n` +
-        `${escapeHtml(messageText || '')}\n\n` +
-        `👇 اضغط <b>"💬 فتح النقاش"</b> للرد مباشرة على الإدارة أو افتح <b>"${getSupportButtonLabel(unreadRepliesCount)}"</b>.`;
-
-      const inlineKb = inquiryId
-        ? Markup.inlineKeyboard([
-            [Markup.button.callback(`💬 فتح النقاش (#${inquiryId})`, `client_open_chat_${inquiryId}`)]
-          ])
-        : undefined;
-
-      try {
-        if (mediaType === 'photo' && attachmentUrl) {
-          await tg.sendPhoto(cleanUserId, normalizeMediaRef(attachmentUrl), {
-            caption: fitTelegramText(notifText, true),
-            parse_mode: 'HTML',
-            ...(inlineKb || {}),
-            ...mainKb
-          });
-        } else if (mediaType === 'video' && attachmentUrl) {
-          await tg.sendVideo(cleanUserId, normalizeMediaRef(attachmentUrl), {
-            caption: fitTelegramText(notifText, true),
-            parse_mode: 'HTML',
-            ...(inlineKb || {}),
-            ...mainKb
-          });
-        } else {
-          await tg.sendMessage(cleanUserId, fitTelegramText(notifText, false), {
-            parse_mode: 'HTML',
-            ...(inlineKb || {}),
-            ...mainKb
-          });
-        }
-      } catch (e) {
-        console.error('notifyClientOfAdminMessage send error:', e.message);
-      }
-    }
-
-    return recorded;
   }
 
   async function fetchClientInquiriesByUserId(userId) {
@@ -799,7 +715,7 @@ module.exports = function registerUsers(bot, core) {
     ]);
 
     if (currentInquiry && currentInquiry.id) {
-      rows.push([`💬 فتح النقاش #${currentInquiry.id}`]);
+      rows.push([`💬 متابعة الاستعلام #${currentInquiry.id}`]);
     }
     rows.push([
       '💬 دعم واقتراحات وشكر',
@@ -832,7 +748,7 @@ module.exports = function registerUsers(bot, core) {
       ? `✅ <b>الردود:</b> تم الرد (${combinedReplies.length})\n`
       : `⏳ <b>الردود:</b> بانتظار الإدارة\n`;
 
-    let repliesSection = `\n💬 <b>ردود ورسائل الإدارة:</b>\n`;
+    let repliesSection = `\n💬 <b>ردود الإدارة:</b>\n`;
     if (!hasReplies) {
       repliesSection += `<i>— لا توجد ردود بعد —</i>`;
     } else {
@@ -847,11 +763,6 @@ module.exports = function registerUsers(bot, core) {
       }).join('\n');
     }
 
-    const isAdminInitiated = inquiry.inquiry_type === 'admin_message';
-    const topBodyLine = isAdminInitiated
-      ? `📩 <b>رسالة الإدارة:</b> ${escapeHtml(inquiry.message || '')}`
-      : `📝 <b>استفسارك:</b> ${escapeHtml(inquiry.message || '')}`;
-
     const text =
       `📨 <b>استعلاماتي (${getFilterModeTitle(filterMode)})</b> • <code>#${inquiry.id}</code> (${idx + 1}/${total})\n` +
       `📊 ${statusText} | 🎯 ${roleText}\n` +
@@ -860,8 +771,8 @@ module.exports = function registerUsers(bot, core) {
       propLine +
       `🕒 <code>${escapeHtml(formatDateTime(inquiry.created_at))}</code>\n` +
       subjectLine +
-      `${topBodyLine}` +
-      (isAdminInitiated && hasReplies ? '' : repliesSection);
+      `📝 <b>استفسارك:</b> ${escapeHtml(inquiry.message || '')}` +
+      repliesSection;
 
     return fitTelegramText(text, isMediaCaption);
   }
@@ -904,7 +815,7 @@ module.exports = function registerUsers(bot, core) {
       st.labelMap[lbl] = idx;
       const dt = inq.created_at ? ` • <code>${escapeHtml(formatDateTime(inq.created_at))}</code>` : '';
       const repBadge = unreadRepCount > 0
-        ? ` • 🔔 غير مقروء <b>(${unreadRepCount})</b>`
+        ? ` • 🔔 جديد <b>(${unreadRepCount})</b>`
         : (totalRepCount > 0 ? ` • 📖 مقروء (${totalRepCount})` : '');
       return `${idx + 1}. <b>#${inq.id}</b> — ${escapeHtml(inq.subject || inq.message || 'استفسار')}${repBadge}${dt}`;
     });
@@ -962,7 +873,7 @@ module.exports = function registerUsers(bot, core) {
       delete clientInquiryBrowse[userId];
       return replyTracked(
         ctx, userId,
-        `📭 <b>لا توجد استفسارات أو رسائل مسجلة لحسابك (<code>${userId}</code>) حتى الآن.</b>`,
+        `📭 <b>لا توجد استفسارات مسجلة لحسابك (<code>${userId}</code>) حتى الآن.</b>`,
         {
           parse_mode: 'HTML',
           ...Markup.keyboard([
@@ -1030,13 +941,13 @@ module.exports = function registerUsers(bot, core) {
       attachedMedia = {
         type: isVideoAttach ? 'video' : 'photo',
         ref: inqAttach,
-        senderLabel: currentInquiry.inquiry_type === 'admin_message' ? 'الإدارة' : 'أنت (العميل)'
+        senderLabel: 'أنت (العميل)'
       };
     }
 
     const inlineQuickReply = currentInquiry?.id
       ? Markup.inlineKeyboard([
-          [Markup.button.callback(`💬 فتح النقاش (#${currentInquiry.id})`, `client_open_chat_${currentInquiry.id}`)]
+          [Markup.button.callback(`💬 فتح دردشة مباشرة مع الإدارة (#${currentInquiry.id})`, `client_quick_reply_${currentInquiry.id}`)]
         ])
       : undefined;
 
@@ -1071,52 +982,11 @@ module.exports = function registerUsers(bot, core) {
   }
 
   async function openClientFollowUpComposer(ctx, userId, parentInquiryId = null) {
-    const { unreadRepliesCount } = await getClientRepliesSummary(userId);
     const cleanId = parentInquiryId ? Number(parentInquiryId) : null;
-
-    if (cleanId) {
-      await markInquiryRepliesAsRead(cleanId);
-    }
-
-    let linkedPropId = null;
-    if (cleanId) {
-      try {
-        const { data: inqRow } = await supabase
-          .from('user_inquiries')
-          .select('property_id')
-          .eq('id', cleanId)
-          .limit(1);
-        linkedPropId = (Array.isArray(inqRow) ? inqRow[0] : inqRow)?.property_id || null;
-      } catch (_) {}
-    }
-
-    userState[userId] = {
-      step: 'client_following_up_inquiry',
-      data: { parentInquiryId: cleanId, propertyId: linkedPropId },
-      chatId: ctx.chat.id,
-      wizardMsgId: null
-    };
-
-    const propTag = linkedPropId ? `\n🏠 <b>بخصوص الإعلان:</b> <code>#${linkedPropId}</code>` : '';
-    const titleLine = cleanId
-      ? `💬 <b>فتح النقاش والرد المباشر على الإدارة (<code>#${cleanId}</code>)</b>${propTag}`
-      : `💬 <b>إرسال رد أو استفسار جديد للإدارة</b>`;
-
-    await replyTracked(
-      ctx, userId,
-      `${titleLine}\n\nاكتب ردك الآن أو أرفق صورة/فيديو وسيصل مباشرة إلى الإدارة ويُسجل في استعلاماتك:`,
-      {
-        parse_mode: 'HTML',
-        ...Markup.keyboard([
-          [
-            getInquiriesMenuLabel(unreadRepliesCount),
-            unreadRepliesCount > 0 ? `⬅️ لوحة العميل (${unreadRepliesCount})` : '⬅️ لوحة العميل'
-          ],
-          ['🏠 القائمة الرئيسية']
-        ]).resize()
-      },
-      true
-    );
+    await openUserLiveChatWithAdmin(ctx, userId, {
+      inquiryId: cleanId,
+      silentOpen: false
+    });
   }
 
   async function getDynamicWilayas() {
@@ -1711,13 +1581,29 @@ module.exports = function registerUsers(bot, core) {
     }
   }
 
-  bot.start(async (ctx) => {
+  bot.start(async (ctx, next) => {
+    const startPayload = String(ctx.startPayload || '').trim();
+    const userId = ctx.from.id;
+
+    // فتح مباشر للدردشة مع الإدارة من رابط إشعار
+    const matchAdminChat = startPayload.match(/^adminchat_(\d+)(?:_(\S+))?$/);
+    if (matchAdminChat) {
+      await safeDeleteUserMessage(ctx);
+      delete browsingSession[userId];
+      delete supportUserSession[userId];
+      delete clientInquiryBrowse[userId];
+      const admId = Number(matchAdminChat[1]);
+      const extraTag = matchAdminChat[2] || '';
+      const adId = /^\d+$/.test(extraTag) ? Number(extraTag) : null;
+      const reviewId = extraTag.startsWith('r') ? Number(extraTag.slice(1)) : null;
+      await openUserLiveChatWithAdmin(ctx, userId, { adminId: admId, adId, reviewId, silentOpen: false });
+      return;
+    }
+
     await safeDeleteUserMessage(ctx);
     await ctx.sendChatAction('typing');
     const userName = ctx.from.first_name || 'مستخدمنا الكريم';
-    const userId = ctx.from.id;
 
-    const startPayload = ctx.startPayload || '';
     if (startPayload.startsWith('ref_')) {
       const referrerId = Number(startPayload.replace('ref_', ''));
       if (referrerId && referrerId !== userId) userState[userId] = { pendingReferrer: referrerId };
@@ -1728,6 +1614,7 @@ module.exports = function registerUsers(bot, core) {
     delete browsingSession[userId];
     delete supportUserSession[userId];
     delete clientInquiryBrowse[userId];
+    delete userLiveChatWithAdmin[userId];
     if (core.messenger?.messengerSession) delete core.messenger.messengerSession[userId];
     userLang[userId] = 'ar';
 
@@ -1739,6 +1626,22 @@ module.exports = function registerUsers(bot, core) {
       const authText = await getSetting('auth_prompt_template', `أهلاً بك يا <b>${userName}</b> في <b>منصة عقار الجزائر (Aqar)</b> 🏠\n\n⚠️ <b>تنبيه أمني:</b>\nللاستفادة من خدمات المنصة وتصفح العقارات، يرجى <b>تأكيد رقم هاتفك</b> أولاً بضغطة زر واحدة:`);
       await replyTracked(ctx, userId, authText.replace(/\\n/g, '\n'), { parse_mode: 'HTML', ...getAuthKeyboard() }, true);
     }
+  });
+
+  bot.action(/^user_open_admin_chat_(\d+)(?:_(\S+))?$/, async (ctx) => {
+    const userId = ctx.from.id;
+    const admId = Number(ctx.match[1]);
+    const extraTag = ctx.match[2] || '';
+    const adId = /^\d+$/.test(extraTag) ? Number(extraTag) : null;
+    const reviewId = extraTag.startsWith('r') ? Number(extraTag.slice(1)) : null;
+    await ctx.answerCbQuery('💬 تم فتح الدردشة المباشرة مع الإدارة');
+    await openUserLiveChatWithAdmin(ctx, userId, { adminId: admId, adId, reviewId, silentOpen: false });
+  });
+
+  bot.hears(/^🔚 إنهاء الدردشة(?: مع الإدارة| \(تنبيه اتصال فائت\))?$/, async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    const userId = ctx.from.id;
+    await closeUserLiveChatWithAdmin(ctx, userId);
   });
 
   bot.on('contact', async (ctx) => {
@@ -1798,6 +1701,7 @@ module.exports = function registerUsers(bot, core) {
     delete browsingSession[userId];
     delete supportUserSession[userId];
     delete clientInquiryBrowse[userId];
+    delete userLiveChatWithAdmin[userId];
     if (core.messenger?.messengerSession) delete core.messenger.messengerSession[userId];
 
     const unreadCount = core.messenger?.getUnreadCount ? await core.messenger.getUnreadCount(userId) : 0;
@@ -2112,7 +2016,7 @@ module.exports = function registerUsers(bot, core) {
           Markup.button.callback(`❌ رفض (#${requestId})`, `reject_${requestId}`),
           Markup.button.callback(`✅ قبول ونشر (#${requestId})`, `approve_${requestId}`)
         ],
-        [Markup.button.callback(`✉️ رد على العميل (${userId})`, `support_reply_${userId}`)]
+        [Markup.button.callback(`💬 فتح دردشة مع العميل (${userId})`, `admin_live_open_${userId}_${requestId}`)]
       ]);
 
       const adminIds = await getAdminIds();
@@ -2399,7 +2303,7 @@ module.exports = function registerUsers(bot, core) {
     userState[userId] = { step: 'support_dashboard', data: {}, chatId: ctx.chat.id, wizardMsgId: null };
 
     const alertLine = unreadRepliesCount > 0
-      ? `\n🔔 <b>تنبيه الإدارة:</b> لديك <b>(${unreadRepliesCount})</b> رسالة/رد غير مقروء عبر <b>(${unreadInquiriesCount})</b> نقاش — افتح <b>"${getInquiriesMenuLabel(unreadRepliesCount)}"</b> للاطلاع وفتح النقاش.`
+      ? `\n🔔 <b>تنبيه الإدارة (اتصال فائت / رد غير مقروء):</b> لديك <b>(${unreadRepliesCount})</b> رد جديد عبر <b>(${unreadInquiriesCount})</b> استعلام — افتح <b>"${getInquiriesMenuLabel(unreadRepliesCount)}"</b> للاطلاع والرد المباشر.`
       : '';
 
     const text =
@@ -2409,11 +2313,11 @@ module.exports = function registerUsers(bot, core) {
       `💼 <b>رصيد المحفظة:</b> <b>${walletBalance}</b>\n` +
       `🪙 <b>رصيد النقاط:</b> <b>${points} نقطة</b>\n` +
       `⭐ <b>المفضلة:</b> <b>${favAds.length} عقار</b>\n` +
-      `📨 <b>استعلاماتك ورسائل الإدارة:</b> الكل <b>${myInquiries.length}</b> | 🔔 غير مقروءة: <b>${unreadInquiriesCount}</b> | 📖 مقروءة: <b>${readInquiriesCount}</b> | 💬 غير مقروء: <b>(${unreadRepliesCount})</b>\n` +
+      `📨 <b>استعلاماتك:</b> الكل <b>${myInquiries.length}</b> | 🔔 غير مقروءة: <b>${unreadInquiriesCount}</b> | 📖 مقروءة: <b>${readInquiriesCount}</b> | 💬 ردود جديدة: <b>(${unreadRepliesCount})</b>\n` +
       `📊 <b>إعلاناتك:</b> إجمالي <b>${allAds.length}</b> | ⏳ معلق: <b>${pendingCount}</b> | ✅ مقبول: <b>${approvedCount}</b> | ❌ مرفوض: <b>${rejectedCount}</b>` +
       alertLine +
       (supportIntro ? `\n\n${supportIntro}` : '') +
-      `\n\n👇 <b>اختر "${getInquiriesMenuLabel(unreadRepliesCount)}" لمتابعة الرسائل وفتح النقاش:</b>`;
+      `\n\n👇 <b>اختر "${getInquiriesMenuLabel(unreadRepliesCount)}" لمتابعة استعلاماتك والردود عليها:</b>`;
 
     await replyTracked(ctx, userId, text, { parse_mode: 'HTML', ...getSupportHubKeyboard(unreadRepliesCount) }, true);
   }
@@ -2511,7 +2415,7 @@ module.exports = function registerUsers(bot, core) {
     return candidate;
   }
 
-  async function sendStructuredTicketToAdmins(ctx, senderUserId, ticketTitle, detailText, relatedAd = null, payloadType = 'text', mediaContent = {}, fallbackAdId = null, forcedAttachmentUrl = null, explicitPropertyId = null) {
+  async function sendStructuredTicketToAdmins(ctx, senderUserId, ticketTitle, detailText, relatedAd = null, payloadType = 'text', mediaContent = {}, fallbackAdId = null, forcedAttachmentUrl = null) {
     const adminIds = await getAdminIds();
     const dbUser = await getUserRecord(senderUserId);
     const fullName = escapeHtml(
@@ -2523,9 +2427,9 @@ module.exports = function registerUsers(bot, core) {
     const receiptRef = normalizeMediaRef(resolvedAd?.receipt_url || forcedAttachmentUrl);
     const isFreeAd = resolvedAd?.receipt_url === 'FREE_NO_RECEIPT';
 
-    const adIdNum = Number(explicitPropertyId || resolvedAd?.id || fallbackAdId);
+    const adIdNum = Number(resolvedAd?.id || fallbackAdId);
     const hasNumericAdId = Number.isFinite(adIdNum) && adIdNum > 0;
-    const adIdLabel = explicitPropertyId || resolvedAd?.id || fallbackAdId || null;
+    const adIdLabel = resolvedAd?.id || fallbackAdId || null;
 
     const attachmentRef =
       payloadType === 'photo' && mediaContent.fileId
@@ -2588,7 +2492,7 @@ module.exports = function registerUsers(bot, core) {
         Markup.button.callback(`✅ قبول ونشر (#${adIdNum})`, `approve_${adIdNum}`)
       ]);
     }
-    inlineRows.push([Markup.button.callback(`✉️ رد على العميل (${senderUserId})`, `support_reply_${senderUserId}`)]);
+    inlineRows.push([Markup.button.callback(`⚡ فتح دردشة مباشرة مع العميل (${senderUserId})`, `admin_live_open_${senderUserId}`)]);
 
     const replyMarkup = Markup.inlineKeyboard(inlineRows);
     const bodyText = detailText ? `\n💬 <b>الطلب:</b>\n${escapeHtml(detailText)}` : '';
@@ -2665,20 +2569,11 @@ module.exports = function registerUsers(bot, core) {
     );
   }
 
-  // زر إنلاين أو زر نصي: "💬 فتح النقاش (#ID)" / "💬 فتح النقاش #ID"
-  bot.action(/^(?:client_open_chat|client_quick_reply)_(\d+)$/, async (ctx) => {
+  bot.action(/^client_quick_reply_(\d+)$/, async (ctx) => {
     const userId = ctx.from.id;
     const inquiryId = Number(ctx.match[1]) || null;
-    await ctx.answerCbQuery('💬 فتح النقاش');
+    await ctx.answerCbQuery('💬 تم فتح الدردشة المباشرة');
     await openClientFollowUpComposer(ctx, userId, inquiryId);
-  });
-
-  bot.hears(/^💬 فتح النقاش(?:\s*#(\d+))?$/, async (ctx) => {
-    await safeDeleteUserMessage(ctx);
-    const userId = ctx.from.id;
-    const explicitId = ctx.match[1] ? Number(ctx.match[1]) : null;
-    const currentId = explicitId || clientInquiryBrowse[userId]?.items?.[clientInquiryBrowse[userId]?.index || 0]?.id || null;
-    await openClientFollowUpComposer(ctx, userId, currentId);
   });
 
   bot.hears(/^📨 استعلاماتي وردود الإدارة(?:\s*\(\d+\))?$/, async (ctx) => {
@@ -2936,19 +2831,22 @@ module.exports = function registerUsers(bot, core) {
       if (row.length === 5) { rows.push(row); row = []; }
     }
     if (row.length) rows.push(row);
-    rows.push(['🗂 تصفح إعلاناتي الخاصة']);
+    rows.push(['🗂 تصفح إعلاناتي الخاصة', '🏠 القائمة الرئيسية']);
 
-    await replyTracked(ctx, userId, `🔢 <b>اختر رقم إعلانك للانتقال إليه مباشرة (1 إلى ${total}):</b>`,
-      { parse_mode: 'HTML', ...Markup.keyboard(rows).resize() }, true);
+    const sent = await ctx.reply(
+      `🔢 <b>اختر رقم الإعلان من 1 إلى ${total}</b> أو اكتبه في رسالة:`,
+      { parse_mode: 'HTML', ...Markup.keyboard(rows).resize() }
+    );
+    if (sent?.message_id) trackBotMessage(userId, ctx.chat.id, sent.message_id);
   });
 
   bot.hears('💬 دعم واقتراحات وشكر', async (ctx) => {
     await safeDeleteUserMessage(ctx);
     const userId = ctx.from.id;
     const { unreadRepliesCount } = await getClientRepliesSummary(userId);
-    userState[userId] = { step: 'support_selecting_category', data: {}, chatId: ctx.chat.id, wizardMsgId: null };
-
-    await replyTracked(ctx, userId, `💬 <b>اختر نوع الرسالة أو الملاحظة:</b>`,
+    supportUserSession[userId] = { mode: 'support_categories', unreadRepliesCount };
+    await replyTracked(ctx, userId,
+      `💬 <b>الدعم والاقتراحات والشكر</b>\n\nاختر التصنيف المناسب أو افتح دردشة مباشرة مع الإدارة:`,
       { parse_mode: 'HTML', ...getSupportCategoriesKeyboard(unreadRepliesCount) }, true);
   });
 
@@ -2957,539 +2855,491 @@ module.exports = function registerUsers(bot, core) {
     const userId = ctx.from.id;
     const topups = await fetchUserWalletTopups(userId);
     const { unreadRepliesCount } = await getClientRepliesSummary(userId);
-    const dashBtn = unreadRepliesCount > 0 ? `⬅️ لوحة العميل (${unreadRepliesCount})` : '⬅️ لوحة العميل';
-
-    if (!topups || topups.length === 0) {
-      userState[userId] = {
-        step: 'payment_issue_writing_detail',
-        data: { selectedTopup: null },
-        chatId: ctx.chat.id,
-        wizardMsgId: null
-      };
-
-      return replyTracked(
-        ctx, userId,
-        `💳 <b>مشكلة في الدفع</b>\n` +
-        `━━━━━━━━━━━━━━━━━━━━\n` +
-        `لم نعثر على عمليات شحن سابقة مسجلة لحسابك.\n` +
-        `اكتب الآن تفاصيل مشكلة الدفع أو اختر سبباً سريعاً ليتم تسجيلها كاستعلام وإرسالها للإدارة:`,
-        {
-          parse_mode: 'HTML',
-          ...Markup.keyboard([
-            ['⏳ لم يصلني الرصيد بعد', '❌ تم رفض الدفع بدون سبب واضح'],
-            ['💬 دعم واقتراحات وشكر', dashBtn]
-          ]).resize()
-        },
-        true
-      );
-    }
-
-    const labelToTopup = {};
-    const summaryLines = topups.map((t, i) => {
-      const lbl = formatTopupChoiceLabel(t);
-      labelToTopup[lbl] = t;
-      const stText = TOPUP_STATUS_TEXT[t.status] || t.status || 'pending';
-      const amtText = formatMoney(sanitizeNumericPrice(t.amount || 0));
-      const dtText = t.created_at ? ` • <code>${escapeHtml(formatDateTime(t.created_at))}</code>` : '';
-      return `${i + 1}. <b>#${t.id}</b> — <b>${amtText}</b> (${stText})${dtText}`;
-    });
 
     userState[userId] = {
-      step: 'payment_issue_selecting_topup',
-      data: { labelToTopup },
+      step: 'payment_issue_writing_detail',
+      data: { category: '💳 مشكلة في الدفع', topups },
       chatId: ctx.chat.id,
       wizardMsgId: null
     };
 
-    const btnRows = chunkButtons(Object.keys(labelToTopup), 2);
-    btnRows.push(['💬 دعم واقتراحات وشكر', dashBtn]);
-    btnRows.push(['🏠 القائمة الرئيسية']);
+    const rows = [];
+    if (topups.length > 0) {
+      const topupLabels = topups.slice(0, 6).map(t => formatTopupChoiceLabel(t));
+      rows.push(...chunkButtons(topupLabels, 2));
+    }
+    rows.push([
+      getInquiriesMenuLabel(unreadRepliesCount),
+      unreadRepliesCount > 0 ? `⬅️ لوحة العميل (${unreadRepliesCount})` : '⬅️ لوحة العميل'
+    ]);
+    rows.push(['🏠 القائمة الرئيسية']);
+
+    const topupsHint = topups.length > 0
+      ? `\n🧾 <b>طلبات الشحن المرتبطة بحسابك:</b> يمكنك اختيار طلب شحن من الأزرار أدناه لرفعه مع رسالتك أو كتابة تفاصيلك مباشرة.`
+      : '';
 
     await replyTracked(
       ctx, userId,
-      `💳 <b>مشكلة في الدفع — اختر الدفعة المعنية:</b>\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n` +
-      `${summaryLines.join('\n')}\n\n` +
-      `👇 <b>اضغط على الدفعة التي تواجه فيها مشكلة لكتابة استعلامك بخصوصها:</b>`,
-      { parse_mode: 'HTML', ...Markup.keyboard(btnRows).resize() },
+      `💳 <b>مشكلة في الدفع أو الشحن</b>${topupsHint}\n\nاكتب تفاصيل المشكلة الآن أو أرفق صورة الوصل ليصل طلبك إلى الإدارة:`,
+      { parse_mode: 'HTML', ...Markup.keyboard(rows).resize() },
       true
     );
   });
 
-  bot.hears(['🏠 إعلان أو تصفح عقاري', '🪙 النقاط والمكافآت', '💡 اقتراح أو تحسين', '👏 شكر أو ملاحظة إيجابية', '💬 استفسار عام / أخرى'], async (ctx) => {
+  bot.hears(Object.keys(QUICK_SUPPORT_PRESETS), async (ctx) => {
     await safeDeleteUserMessage(ctx);
     const userId = ctx.from.id;
-    const chosenCat = ctx.message.text.trim();
-    const presetDetail = QUICK_SUPPORT_PRESETS[chosenCat] || chosenCat;
-
-    const savedInq = await sendStructuredTicketToAdmins(ctx, userId, chosenCat, presetDetail, null, 'text');
-    delete userState[userId];
+    const cat = ctx.message.text.trim();
     const { unreadRepliesCount } = await getClientRepliesSummary(userId);
 
-    const inqTag = savedInq?.id ? `\n🔖 <b>رقم الاستعلام:</b> <code>#${savedInq.id}</code>` : '';
-    const confirmMsg = chosenCat === '👏 شكر أو ملاحظة إيجابية'
-      ? `👏 <b>شكراً جزيلاً لك على كلماتك الطيبة وثقتك بمنصة عقار الجزائر.</b>${inqTag}`
-      : `✅ <b>تم تسجيل طلبك (${escapeHtml(chosenCat)}) وإرساله إلى الإدارة.</b>${inqTag}`;
-
-    await replyTracked(ctx, userId, confirmMsg, { parse_mode: 'HTML', ...getSupportHubKeyboard(unreadRepliesCount) }, true);
+    await sendStructuredTicketToAdmins(ctx, userId, cat, QUICK_SUPPORT_PRESETS[cat], null);
+    await replyTracked(
+      ctx, userId,
+      `✅ <b>تم إرسال طلبك (${escapeHtml(cat)}) إلى الإدارة بنجاح، وسيتم الرد عليك في أقرب وقت.</b>`,
+      {
+        parse_mode: 'HTML',
+        ...Markup.keyboard([
+          [getInquiriesMenuLabel(unreadRepliesCount), '💬 دعم واقتراحات وشكر'],
+          [
+            unreadRepliesCount > 0 ? `⬅️ لوحة العميل (${unreadRepliesCount})` : '⬅️ لوحة العميل',
+            '🏠 القائمة الرئيسية'
+          ]
+        ]).resize()
+      },
+      true
+    );
   });
 
-  bot.on('text', async (ctx) => {
+  bot.hears('ℹ️ عن المنصة', async (ctx) => {
+    await safeDeleteUserMessage(ctx);
     const userId = ctx.from.id;
-    const userText = ctx.message.text ? ctx.message.text.trim() : '';
-    if (userText.startsWith('/')) return;
+    const unreadCount = core.messenger?.getUnreadCount ? await core.messenger.getUnreadCount(userId) : 0;
+    const mainKb = await buildUserMainKeyboard(userId, unreadCount);
+    const aboutText = (await getSetting('about_text', '<b>منصة عقار الجزائر (Aqar)</b> 🏠\nمنصة متكاملة لعرض وتصفح العقارات بسهولة وأمان.')).replace(/\\n/g, '\n');
+    await replyTracked(ctx, userId, aboutText, { parse_mode: 'HTML', ...mainKb }, true);
+  });
 
-    if (userText === core.WAIT_BTN_TEXT) {
+  async function handleTextInput(ctx, next) {
+    const userId = ctx.from.id;
+    const text = ctx.message.text ? ctx.message.text.trim() : '';
+
+    if (text === core.WAIT_BTN_TEXT) {
       await safeDeleteUserMessage(ctx);
       return;
     }
 
-    const inqBrowse = clientInquiryBrowse[userId];
-    if (inqBrowse && inqBrowse.selectingIndex && inqBrowse.labelMap && Object.prototype.hasOwnProperty.call(inqBrowse.labelMap, userText)) {
+    if (text.startsWith('/')) return next();
+
+    const inqSt = clientInquiryBrowse[userId];
+    if (inqSt && inqSt.selectingIndex && inqSt.labelMap && Object.prototype.hasOwnProperty.call(inqSt.labelMap, text)) {
       await safeDeleteUserMessage(ctx);
-      const chosenIdx = inqBrowse.labelMap[userText];
-      return renderClientInquiryAt(ctx, userId, chosenIdx, false);
+      const targetIdx = inqSt.labelMap[text];
+      inqSt.selectingIndex = false;
+      return renderClientInquiryAt(ctx, userId, targetIdx, false);
     }
 
     const state = userState[userId];
-    if (!state) {
-      await notifyUseButtonsHint(ctx, userId);
-      return;
+    if (state && state.step === 'live_chat_with_admin') {
+      await safeDeleteUserMessage(ctx);
+      return sendLiveUserMessageToAdmins(ctx, userId, 'text', { text });
     }
 
-    if (state.step === 'payment_issue_selecting_topup') {
+    if (state && state.step === 'client_following_up_inquiry') {
       await safeDeleteUserMessage(ctx);
-      const chosenTopup = state.data?.labelToTopup?.[userText];
-      if (!chosenTopup) {
-        return replyTracked(
-          ctx, userId,
-          `⚠️ <b>يرجى اختيار إحدى الدفعات من الأزرار الظاهرة في الأسفل:</b>`,
-          { parse_mode: 'HTML' },
-          true
+      const parentId = state.data?.parentInquiryId || null;
+      delete userState[userId];
+      await sendStructuredTicketToAdmins(
+        ctx,
+        userId,
+        parentId ? `💬 متابعة على الاستعلام #${parentId}` : '💬 متابعة استفسار مع الإدارة',
+        text,
+        null,
+        'text',
+        {},
+        parentId
+      );
+      return renderClientInquiryAt(ctx, userId, 0, true, 'all');
+    }
+
+    if (state && state.step === 'payment_issue_writing_detail') {
+      await safeDeleteUserMessage(ctx);
+      const topups = state.data?.topups || [];
+      const matchedTopup = topups.find(t => formatTopupChoiceLabel(t) === text);
+      if (matchedTopup) {
+        state.data.selectedTopup = matchedTopup;
+        const stLabel = TOPUP_STATUS_TEXT[matchedTopup.status] || matchedTopup.status;
+        const amtLabel = formatMoney(sanitizeNumericPrice(matchedTopup.amount || 0));
+        const sent = await ctx.reply(
+          `✅ <b>تم تحديد طلب الشحن #${matchedTopup.id}</b> (${stLabel} • <b>${amtLabel}</b>).\nاكتب الآن تفاصيل مشكلتك أو أرفق صورة الوصل ليتم إرسالها مع الطلب:`,
+          { parse_mode: 'HTML' }
         );
+        if (sent?.message_id) trackBotMessage(userId, ctx.chat.id, sent.message_id);
+        return;
       }
 
-      const { unreadRepliesCount } = await getClientRepliesSummary(userId);
-      const dashBtn = unreadRepliesCount > 0 ? `⬅️ لوحة العميل (${unreadRepliesCount})` : '⬅️ لوحة العميل';
-
-      state.step = 'payment_issue_writing_detail';
-      state.data = { selectedTopup: chosenTopup };
-
-      const amtText = formatMoney(sanitizeNumericPrice(chosenTopup.amount || 0));
-      const stText = TOPUP_STATUS_TEXT[chosenTopup.status] || chosenTopup.status || 'pending';
-      const dtText = chosenTopup.created_at ? formatDateTime(chosenTopup.created_at) : 'غير مسجل';
-
-      return replyTracked(
-        ctx, userId,
-        `💳 <b>استعلام حول الدفعة #${chosenTopup.id}</b>\n` +
-        `━━━━━━━━━━━━━━━━━━━━\n` +
-        `• <b>المبلغ:</b> <b>${amtText}</b>\n` +
-        `• <b>حالة الدفعة:</b> <b>${stText}</b>\n` +
-        `• <b>تاريخ العملية:</b> <code>${escapeHtml(dtText)}</code>\n\n` +
-        `✍️ <b>اكتب الآن استفسارك أو تفاصيل المشكلة بخصوص هذه الدفعة، أو اختر سبباً سريعاً من الأسفل:</b>`,
-        {
-          parse_mode: 'HTML',
-          ...Markup.keyboard([
-            ['⏳ لم يصلني الرصيد بعد', '❌ تم رفض الدفع بدون سبب واضح'],
-            ['💬 دعم واقتراحات وشكر', dashBtn]
-          ]).resize()
-        },
-        true
-      );
-    }
-
-    if (state.step === 'payment_issue_writing_detail') {
-      await safeDeleteUserMessage(ctx);
-      const topup = state.data?.selectedTopup || null;
-      const topupRef = topup ? normalizeMediaRef(topup.receipt_urls || topup.receipt_url) : null;
-
-      const subjectTitle = topup
-        ? `مشكلة في الدفع — طلب شحن #${topup.id}`
-        : 'مشكلة في الدفع';
-
-      const topupContextLine = topup
-        ? `[بيانات الدفعة: طلب #${topup.id} | المبلغ: ${formatMoney(sanitizeNumericPrice(topup.amount || 0))} | الحالة الحالية: ${TOPUP_STATUS_TEXT[topup.status] || topup.status || 'pending'} | التاريخ: ${topup.created_at ? formatDateTime(topup.created_at) : 'غير مسجل'}]\n`
+      const selectedTopup = state.data?.selectedTopup || null;
+      const topupAttach = selectedTopup ? normalizeMediaRef(selectedTopup.receipt_urls || selectedTopup.receipt_url) : null;
+      const topupExtraText = selectedTopup
+        ? `\n🧾 <b>طلب الشحن المحدد:</b> #${selectedTopup.id} (${formatMoney(sanitizeNumericPrice(selectedTopup.amount || 0))} • ${TOPUP_STATUS_TEXT[selectedTopup.status] || selectedTopup.status})`
         : '';
 
-      const savedInq = await sendStructuredTicketToAdmins(
-        ctx,
-        userId,
-        subjectTitle,
-        `${topupContextLine}تفاصيل الاستعلام: ${userText}`,
-        null,
-        'text',
-        {},
-        null,
-        topupRef
-      );
-
       delete userState[userId];
       const { unreadRepliesCount } = await getClientRepliesSummary(userId);
-      const inqTag = savedInq?.id ? `\n🔖 <b>رقم الاستعلام المسجل:</b> <code>#${savedInq.id}</code>` : '';
-
+      await sendStructuredTicketToAdmins(
+        ctx, userId,
+        '💳 مشكلة في الدفع',
+        text + topupExtraText,
+        null, 'text', {}, null, topupAttach
+      );
       return replyTracked(
         ctx, userId,
-        `✅ <b>تم تسجيل استعلامك حول الدفعة وإرساله إلى الإدارة.</b>${inqTag}\nيمكنك متابعة الردود من قسم <b>"${getInquiriesMenuLabel(unreadRepliesCount)}"</b>.`,
-        { parse_mode: 'HTML', ...getSupportHubKeyboard(unreadRepliesCount) },
+        `✅ <b>تم تسجيل بلاغ مشكلة الدفع وإرساله إلى الإدارة، وسيتم الرد عليك في أقرب وقت.</b>`,
+        {
+          parse_mode: 'HTML',
+          ...Markup.keyboard([
+            [getInquiriesMenuLabel(unreadRepliesCount), '💬 دعم واقتراحات وشكر'],
+            [
+              unreadRepliesCount > 0 ? `⬅️ لوحة العميل (${unreadRepliesCount})` : '⬅️ لوحة العميل',
+              '🏠 القائمة الرئيسية'
+            ]
+          ]).resize()
+        },
         true
       );
     }
 
-    if (state.step === 'topup_waiting_amount') {
+    if (state && state.step === 'topup_waiting_amount') {
       await safeDeleteUserMessage(ctx);
-      const parsedAmt = sanitizeNumericPrice(userText);
-      const keepDraft = state.data?.publishAdDraft || null;
-
-      if (!parsedAmt || parsedAmt <= 0) {
-        return replyTracked(
-          ctx, userId,
-          `⚠️ <b>يرجى اختيار مبلغ جاهز أو كتابة مبلغ رقمي صحيح (مثال: 1000 أو 2500):</b>`,
-          {
-            parse_mode: 'HTML',
-            ...Markup.keyboard([
-              ['500 دج', '1000 دج', '2000 دج'],
-              ['5000 دج'],
-              ['⬅️ رجوع', '🏠 القائمة الرئيسية']
-            ]).resize()
-          },
-          true
-        );
+      const amount = sanitizeNumericPrice(text);
+      if (!amount || amount <= 0) {
+        const warn = await ctx.reply('⚠️ يرجى إدخال مبلغ صحيح أكبر من 0 (مثال: 500 أو 1000).', { parse_mode: 'HTML' });
+        setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warn.message_id).catch(() => {}), 3000);
+        return;
       }
 
+      const keepDraft = state.data?.publishAdDraft || null;
+      state.step = 'topup_waiting_receipt';
       state.data = {
-        amount: parsedAmt,
+        amount,
         ...(keepDraft ? { publishAdDraft: keepDraft } : {})
       };
-      state.step = 'topup_waiting_receipt';
+
+      const isForAdNote = keepDraft
+        ? `\n🏠 <i>بمجرد إرسال صورة الوصل سيتم إرسال عقارك مرفقاً بالوصل للمراجعة والموافقة مباشرة.</i>`
+        : '';
 
       return replyTracked(
         ctx, userId,
-        `💰 <b>المبلغ:</b> <b>${formatMoney(parsedAmt)}</b>\n\n` +
-        `📸 <b>أرسل الآن صورة وصل التحويل (صورة واحدة للعملية الحالية):</b>`,
+        `🧾 <b>مبلغ الشحن المحدد:</b> <b>${formatMoney(amount)}</b>${isForAdNote}\n\n📸 <b>أرسل الآن صورة وصل التحويل (BaridiMob / CCP):</b>`,
         {
           parse_mode: 'HTML',
-          ...Markup.keyboard([
-            ['⬅️ رجوع', '🏠 القائمة الرئيسية']
-          ]).resize()
+          ...Markup.keyboard([['⬅️ رجوع', '🏠 القائمة الرئيسية']]).resize()
         },
         true
       );
     }
 
-    if (state.step === 'client_following_up_inquiry') {
-      await safeDeleteUserMessage(ctx);
-      const parentId = state.data?.parentInquiryId;
-      const propId = state.data?.propertyId || null;
-
-      let followSubject = parentId ? `متابعة النقاش #${parentId}` : 'متابعة استفسار';
-      if (propId) followSubject = `رد على الإدارة بخصوص الإعلان #${propId}`;
-      if (parentId) {
-        try {
-          const { data: parentRow } = await supabase
-            .from('user_inquiries')
-            .select('inquiry_type, property_id')
-            .eq('id', Number(parentId))
-            .limit(1);
-          const pRow = Array.isArray(parentRow) ? parentRow[0] : parentRow;
-          if (pRow?.inquiry_type === 'rating') {
-            followSubject = `رد على التقييم (#${parentId})`;
-          } else if (pRow?.property_id) {
-            followSubject = `رد على الإدارة بخصوص الإعلان #${pRow.property_id}`;
-          }
-        } catch (_) {}
-      }
-
-      const savedFollow = await sendStructuredTicketToAdmins(
-        ctx,
-        userId,
-        followSubject,
-        userText,
-        null,
-        'text',
-        {},
-        parentId || null,
-        null,
-        propId
-      );
-
-      delete userState[userId];
-      const { unreadRepliesCount } = await getClientRepliesSummary(userId);
-      const followRef = savedFollow?.id ? ` (رقم النقاش: <code>#${savedFollow.id}</code>)` : '';
-      return replyTracked(
-        ctx,
-        userId,
-        `✅ <b>تم إرسال ردك إلى الإدارة بنجاح${followRef}.</b>`,
-        {
-          parse_mode: 'HTML',
-          ...Markup.keyboard([
-            [
-              getInquiriesMenuLabel(unreadRepliesCount),
-              unreadRepliesCount > 0 ? `⬅️ لوحة العميل (${unreadRepliesCount})` : '⬅️ لوحة العميل'
-            ],
-            ['🏠 القائمة الرئيسية']
-          ]).resize()
-        },
-        true
-      );
+    if (!state || state.step === 'publishing') {
+      await notifyUseButtonsHint(ctx, userId);
+      return next();
     }
+
+    await safeDeleteUserMessage(ctx);
 
     if (state.step === 'waiting_for_type') {
-      const validTypes = await getDynamicPropertyTypes();
-      const allowedTitles = validTypes.map(item => item.title);
-
-      if (allowedTitles.includes(userText)) {
-        await safeDeleteUserMessage(ctx);
-        state.data.property_type = userText;
-        state.step = 'waiting_for_state';
-        state.tempInput = '';
-        return renderWizard(ctx, userId);
+      const dynamicTypes = await getDynamicPropertyTypes();
+      const allowedTitles = dynamicTypes.length > 0
+        ? dynamicTypes.map(t => t.title)
+        : ['شقة', 'فيلا', 'منزل', 'قطعة أرض', 'محل تجاري'];
+      if (!allowedTitles.includes(text)) {
+        const warn = await ctx.reply('⚠️ يرجى اختيار <b>نوع العقار</b> من الأزرار المخصصة في الأسفل.', { parse_mode: 'HTML' });
+        setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warn.message_id).catch(() => {}), 3000);
+        return;
       }
-      await notifyUseButtonsHint(ctx, userId);
-      return;
+      state.data.property_type = text;
+      state.step = 'waiting_for_state';
+      return renderWizard(ctx, userId);
+    }
+
+    if (state.step === 'waiting_for_state') {
+      const wilayas = await getDynamicWilayas();
+      const matched = wilayas.find(w => w === text || `📍 ${w}` === text);
+      if (!matched) {
+        const warn = await ctx.reply('⚠️ يرجى اختيار <b>الولاية</b> من الأزرار المخصصة في الأسفل.', { parse_mode: 'HTML' });
+        setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warn.message_id).catch(() => {}), 3000);
+        return;
+      }
+      state.data.state_name = matched;
+      state.step = 'waiting_for_price';
+      state.tempInput = '';
+      return renderWizard(ctx, userId);
     }
 
     if (state.step === 'waiting_for_price' || state.step === 'waiting_for_phone') {
-      await safeDeleteUserMessage(ctx);
-      state.tempInput = state.tempInput || '';
+      const isPrice = state.step === 'waiting_for_price';
+      let cur = state.tempInput || '';
 
-      if (userText.startsWith('📥 القيمة الحالية:')) {
-        return;
-      } else if (userText >= '0' && userText <= '9') {
-        state.tempInput += userText;
+      if (text.startsWith('📥 القيمة الحالية:')) return;
+
+      if (/^[0-9]$/.test(text)) {
+        if (cur.length < (isPrice ? 12 : 10)) cur += text;
+        state.tempInput = cur;
         return renderWizard(ctx, userId);
-      } else if (userText === '+مليون') {
-        state.tempInput += '000000';
+      }
+      if (text === '+مليون' && isPrice) {
+        const currentNum = parseInt(cur || '0', 10) || 0;
+        cur = String(currentNum + 1000000);
+        state.tempInput = cur;
         return renderWizard(ctx, userId);
-      } else if (userText === '⌫') {
-        state.tempInput = state.tempInput.slice(0, -1);
+      }
+      if (text === '⌫') {
+        cur = cur.slice(0, -1);
+        state.tempInput = cur;
         return renderWizard(ctx, userId);
-      } else if (userText === '🗑️ مسح') {
+      }
+      if (text === '🗑️ مسح') {
         state.tempInput = '';
         return renderWizard(ctx, userId);
-      } else if (userText === '✅ [ OK ] تأكيد') {
-        if (!state.tempInput || state.tempInput.length === 0) {
-          const warnMsg = await ctx.reply('⚠️ <b>يرجى إدخال الرقم في الحقل أولاً!</b>', { parse_mode: 'HTML' });
-          setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warnMsg.message_id).catch(() => {}), 2500);
+      }
+      if (text === '✅ [ OK ] تأكيد') {
+        if (!cur || cur === '0') {
+          const warn = await ctx.reply(
+            isPrice ? '⚠️ يرجى تشكيل قيمة السعر أولاً قبل التأكيد.' : '⚠️ يرجى إدخال رقم الهاتف أولاً قبل التأكيد.',
+            { parse_mode: 'HTML' }
+          );
+          setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warn.message_id).catch(() => {}), 2500);
           return;
         }
-
-        if (state.step === 'waiting_for_price') {
-          state.data.price = state.tempInput;
+        if (isPrice) {
+          state.data.price = cur;
           state.step = 'waiting_for_phone';
           state.tempInput = '';
-          return renderWizard(ctx, userId);
-        } else if (state.step === 'waiting_for_phone') {
-          if (state.tempInput.length < 9) {
-            const warnMsg = await ctx.reply('⚠️ <b>رقم الهاتف قصير جداً!</b>', { parse_mode: 'HTML' });
-            setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warnMsg.message_id).catch(() => {}), 2500);
-            return;
-          }
-          state.data.phone = state.tempInput;
+        } else {
+          state.data.phone = cur;
           state.step = 'waiting_for_description';
           state.data.features_list = state.data.features_list || [];
           state.tempInput = '';
-          return renderWizard(ctx, userId);
         }
+        return renderWizard(ctx, userId);
       }
-      await notifyUseButtonsHint(ctx, userId);
+
+      const warn = await ctx.reply('👇 يرجى استخدام أزرار لوحة الأرقام في الأسفل لإدخال القيمة ثم تأكيدها.', { parse_mode: 'HTML' });
+      setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warn.message_id).catch(() => {}), 2500);
       return;
     }
 
     if (state.step === 'waiting_for_description') {
-      await safeDeleteUserMessage(ctx);
       state.data.features_list = state.data.features_list || [];
 
-      if (userText === '↩️ تراجع عن الأخيرة') {
-        if (state.data.features_list.length > 0) {
-          state.data.features_list.pop();
-          return renderWizard(ctx, userId);
-        }
-        return;
-      }
-
-      if (userText === '🗑️ مسح الكل') {
-        state.data.features_list = [];
-        return renderWizard(ctx, userId);
-      }
-
-      if (userText === '✅ تأكيد الوصف والانتقال') {
+      if (text === '✅ تأكيد الوصف والانتقال') {
         if (state.data.features_list.length === 0) {
-          const warnMsg = await ctx.reply('⚠️ <b>يرجى اختيار ميزة واحدة على الأقل قبل التأكيد!</b>', { parse_mode: 'HTML' });
-          setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warnMsg.message_id).catch(() => {}), 2500);
+          const warn = await ctx.reply('⚠️ يرجى اختيار ميزة واحدة على الأقل من الأزرار قبل التأكيد.', { parse_mode: 'HTML' });
+          setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warn.message_id).catch(() => {}), 3000);
           return;
         }
         state.data.description = state.data.features_list.join(' | ');
         state.step = 'waiting_for_media';
-        state.data.media_items = [];
+        state.data.media_items = state.data.media_items || [];
         return renderWizard(ctx, userId);
       }
 
-      const validFeatures = await getDynamicFeatures();
-      const allowedFeatures = validFeatures.map(f => f.title);
-
-      if (allowedFeatures.includes(userText)) {
-        if (!state.data.features_list.includes(userText)) state.data.features_list.push(userText);
+      if (text === '↩️ تراجع عن الأخيرة') {
+        state.data.features_list.pop();
         return renderWizard(ctx, userId);
       }
-      await notifyUseButtonsHint(ctx, userId);
-      return;
+
+      if (text === '🗑️ مسح الكل') {
+        state.data.features_list = [];
+        return renderWizard(ctx, userId);
+      }
+
+      const dynFeatures = await getDynamicFeatures();
+      const allowedFeatures = dynFeatures.map(f => f.title);
+      if (allowedFeatures.length > 0 && !allowedFeatures.includes(text)) {
+        const warn = await ctx.reply('⚠️ يرجى اختيار المزايا من الأزرار المخصصة في الأسفل فقط.', { parse_mode: 'HTML' });
+        setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warn.message_id).catch(() => {}), 2500);
+        return;
+      }
+
+      if (!state.data.features_list.includes(text)) {
+        state.data.features_list.push(text);
+      }
+      return renderWizard(ctx, userId);
     }
 
     if (state.step === 'waiting_for_media') {
-      await safeDeleteUserMessage(ctx);
-
-      if (userText === '🗑️ مسح الوسائط المرفقة' || userText === '🗑️ مسح الصور المرفقة') {
-        state.data.media_items = [];
-        state.data.media_label = null;
-        return renderWizard(ctx, userId);
-      }
-
-      if (userText.startsWith('✅ إنهاء إرفاق')) {
-        if (!state.data.media_items || state.data.media_items.length === 0) {
-          const warnMsg = await ctx.reply('⚠️ <b>يرجى إرسال صورة أو فيديو واحد على الأقل أولاً!</b>', { parse_mode: 'HTML' });
-          setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warnMsg.message_id).catch(() => {}), 2500);
+      state.data.media_items = state.data.media_items || [];
+      if (text.startsWith('✅ إنهاء إرفاق الوسائط')) {
+        if (state.data.media_items.length === 0) {
+          const warn = await ctx.reply('⚠️ يرجى إرسال صورة أو فيديو واحد على الأقل قبل الانتقال.', { parse_mode: 'HTML' });
+          setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warn.message_id).catch(() => {}), 3000);
           return;
         }
         state.step = 'waiting_for_payment_choice';
         return renderWizard(ctx, userId);
       }
-      await notifyUseButtonsHint(ctx, userId);
+      if (text === '🗑️ مسح الوسائط المرفقة') {
+        state.data.media_items = [];
+        state.data.media_label = null;
+        return renderWizard(ctx, userId);
+      }
+      const warn = await ctx.reply('📸 أرسل الصور أو الفيديوهات مباشرة، ثم اضغط <b>✅ إنهاء إرفاق الوسائط</b>.', { parse_mode: 'HTML' });
+      setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warn.message_id).catch(() => {}), 2500);
       return;
     }
 
-    await notifyUseButtonsHint(ctx, userId);
-  });
+    return next();
+  }
 
-  bot.on('photo', async (ctx) => {
+  bot.on('text', handleTextInput);
+
+  bot.on('photo', async (ctx, next) => {
     const userId = ctx.from.id;
     const state = userState[userId];
-    const unreadCount = core.messenger?.getUnreadCount ? await core.messenger.getUnreadCount(userId) : 0;
-    const mainKb = await buildUserMainKeyboard(userId, unreadCount);
+    const photo = ctx.message.photo[ctx.message.photo.length - 1];
 
-    await safeDeleteUserMessage(ctx);
-
-    if (state && state.step === 'topup_waiting_receipt') {
-      const photo = ctx.message.photo[ctx.message.photo.length - 1];
-      const amount = state.data?.amount || 0;
-      state.step = 'publishing';
-
-      try {
-        return await submitWalletTopupRequest(ctx, userId, amount, photo.file_id);
-      } catch (err) {
-        console.error('submitWalletTopupRequest error:', err);
-        delete userState[userId];
-        return replyTracked(
-          ctx, userId,
-          `⚠️ <b>تعذر تسجيل الطلب:</b> <code>${escapeHtml(err.message || 'خطأ')}</code>`,
-          { parse_mode: 'HTML', ...mainKb },
-          true
-        );
-      }
+    if (state && state.step === 'live_chat_with_admin') {
+      await safeDeleteUserMessage(ctx);
+      return sendLiveUserMessageToAdmins(ctx, userId, 'photo', {
+        fileId: photo.file_id,
+        caption: ctx.message.caption || ''
+      });
     }
 
     if (state && state.step === 'client_following_up_inquiry') {
-      const photo = ctx.message.photo[ctx.message.photo.length - 1];
-      const parentId = state.data?.parentInquiryId;
-      const propId = state.data?.propertyId || null;
-      const savedFollow = await sendStructuredTicketToAdmins(
+      await safeDeleteUserMessage(ctx);
+      const parentId = state.data?.parentInquiryId || null;
+      delete userState[userId];
+      await sendStructuredTicketToAdmins(
         ctx,
         userId,
-        propId ? `رد على الإدارة بخصوص الإعلان #${propId}` : (parentId ? `متابعة النقاش #${parentId}` : 'متابعة استفسار'),
+        parentId ? `💬 متابعة على الاستعلام #${parentId}` : '💬 متابعة استفسار مع الإدارة',
         ctx.message.caption || '🖼 صورة مرفقة من العميل',
         null,
         'photo',
         { fileId: photo.file_id, caption: ctx.message.caption || '' },
-        parentId || null,
-        null,
-        propId
+        parentId
       );
+      return renderClientInquiryAt(ctx, userId, 0, true, 'all');
+    }
+
+    if (state && state.step === 'payment_issue_writing_detail') {
+      await safeDeleteUserMessage(ctx);
+      const selectedTopup = state.data?.selectedTopup || null;
+      const topupExtraText = selectedTopup
+        ? `\n🧾 <b>طلب الشحن المحدد:</b> #${selectedTopup.id} (${formatMoney(sanitizeNumericPrice(selectedTopup.amount || 0))} • ${TOPUP_STATUS_TEXT[selectedTopup.status] || selectedTopup.status})`
+        : '';
       delete userState[userId];
       const { unreadRepliesCount } = await getClientRepliesSummary(userId);
-      const followRef = savedFollow?.id ? ` (رقم النقاش: <code>#${savedFollow.id}</code>)` : '';
+      await sendStructuredTicketToAdmins(
+        ctx, userId,
+        '💳 مشكلة في الدفع',
+        (ctx.message.caption || 'مرفق صورة وصل أو إثبات دفع') + topupExtraText,
+        null, 'photo', { fileId: photo.file_id, caption: ctx.message.caption || '' }
+      );
       return replyTracked(
-        ctx,
-        userId,
-        `✅ <b>تم إرسال الصورة وتسجيل ردك للإدارة${followRef}.</b>`,
+        ctx, userId,
+        `✅ <b>تم استلام مرفق مشكلة الدفع وإرساله إلى الإدارة، وسيتم الرد عليك في أقرب وقت.</b>`,
         {
           parse_mode: 'HTML',
           ...Markup.keyboard([
+            [getInquiriesMenuLabel(unreadRepliesCount), '💬 دعم واقتراحات وشكر'],
             [
-              getInquiriesMenuLabel(unreadRepliesCount),
-              unreadRepliesCount > 0 ? `⬅️ لوحة العميل (${unreadRepliesCount})` : '⬅️ لوحة العميل'
-            ],
-            ['🏠 القائمة الرئيسية']
+              unreadRepliesCount > 0 ? `⬅️ لوحة العميل (${unreadRepliesCount})` : '⬅️ لوحة العميل',
+              '🏠 القائمة الرئيسية'
+            ]
           ]).resize()
         },
         true
       );
     }
 
-    if (state && state.step === 'waiting_for_media') {
-      const photo = ctx.message.photo[ctx.message.photo.length - 1];
-      state.data.media_items = state.data.media_items || [];
+    if (state && state.step === 'topup_waiting_receipt') {
+      await safeDeleteUserMessage(ctx);
+      const amount = state.data?.amount;
+      if (!amount) {
+        return openWalletTopupScreen(ctx, userId, null, state.data?.publishAdDraft || null);
+      }
+      return submitWalletTopupRequest(ctx, userId, amount, photo.file_id);
+    }
 
+    if (state && state.step === 'waiting_for_media') {
+      await safeDeleteUserMessage(ctx);
+      state.data.media_items = state.data.media_items || [];
       if (state.data.media_items.length >= MAX_PROPERTY_IMAGES) {
-        const warnMsg = await ctx.reply(`⚠️ <b>وصلت للحد الأقصى (${MAX_PROPERTY_IMAGES} ملفات).</b> اضغط زر الإنهاء في الأسفل.`, { parse_mode: 'HTML' });
-        setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warnMsg.message_id).catch(() => {}), 2500);
+        const warn = await ctx.reply(`⚠️ الحد الأقصى للوسائط هو ${MAX_PROPERTY_IMAGES} ملفات.`, { parse_mode: 'HTML' });
+        setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warn.message_id).catch(() => {}), 2500);
         return;
       }
-
       state.data.media_items.push({ type: 'photo', file_id: photo.file_id });
       state.data.media_label = formatMediaSummaryLabel(state.data.media_items);
       return renderWizard(ctx, userId);
     }
 
     if (state && state.step === 'waiting_for_payment_receipt') {
-      const receiptPhoto = ctx.message.photo[ctx.message.photo.length - 1];
-      state.step = 'publishing';
-
-      try {
-        return await submitPropertyWithReceiptRequest(ctx, userId, state.data, receiptPhoto.file_id, null);
-      } catch (err) {
-        console.error('Receipt publish error:', err);
-        delete userState[userId];
-        await replyTracked(ctx, userId, '⚠️ حدث خطأ، يرجى المحاولة مرة أخرى.', mainKb, true);
-      }
+      await safeDeleteUserMessage(ctx);
+      return submitPropertyWithReceiptRequest(ctx, userId, state.data, photo.file_id, null);
     }
-  });
-
-  bot.on('video', async (ctx) => {
-    const userId = ctx.from.id;
-    const state = userState[userId];
 
     await safeDeleteUserMessage(ctx);
+    return next();
+  });
+
+  bot.on('video', async (ctx, next) => {
+    const userId = ctx.from.id;
+    const state = userState[userId];
+    const vid = ctx.message.video;
+
+    if (state && state.step === 'live_chat_with_admin') {
+      await safeDeleteUserMessage(ctx);
+      return sendLiveUserMessageToAdmins(ctx, userId, 'video', {
+        fileId: vid.file_id,
+        caption: ctx.message.caption || ''
+      });
+    }
 
     if (state && state.step === 'client_following_up_inquiry') {
-      const video = ctx.message.video;
-      const parentId = state.data?.parentInquiryId;
-      const propId = state.data?.propertyId || null;
-      const savedFollow = await sendStructuredTicketToAdmins(
+      await safeDeleteUserMessage(ctx);
+      const parentId = state.data?.parentInquiryId || null;
+      delete userState[userId];
+      await sendStructuredTicketToAdmins(
         ctx,
         userId,
-        propId ? `رد على الإدارة بخصوص الإعلان #${propId}` : (parentId ? `متابعة النقاش #${parentId}` : 'متابعة استفسار'),
+        parentId ? `💬 متابعة على الاستعلام #${parentId}` : '💬 متابعة استفسار مع الإدارة',
         ctx.message.caption || '🎥 فيديو مرفق من العميل',
         null,
         'video',
-        { fileId: video.file_id, caption: ctx.message.caption || '' },
-        parentId || null,
-        null,
-        propId
+        { fileId: vid.file_id, caption: ctx.message.caption || '' },
+        parentId
       );
+      return renderClientInquiryAt(ctx, userId, 0, true, 'all');
+    }
+
+    if (state && state.step === 'payment_issue_writing_detail') {
+      await safeDeleteUserMessage(ctx);
+      const selectedTopup = state.data?.selectedTopup || null;
+      const topupExtraText = selectedTopup
+        ? `\n🧾 <b>طلب الشحن المحدد:</b> #${selectedTopup.id} (${formatMoney(sanitizeNumericPrice(selectedTopup.amount || 0))} • ${TOPUP_STATUS_TEXT[selectedTopup.status] || selectedTopup.status})`
+        : '';
       delete userState[userId];
       const { unreadRepliesCount } = await getClientRepliesSummary(userId);
-      const followRef = savedFollow?.id ? ` (رقم النقاش: <code>#${savedFollow.id}</code>)` : '';
+      await sendStructuredTicketToAdmins(
+        ctx, userId,
+        '💳 مشكلة في الدفع',
+        (ctx.message.caption || 'مرفق فيديو توضيحي') + topupExtraText,
+        null, 'video', { fileId: vid.file_id, caption: ctx.message.caption || '' }
+      );
       return replyTracked(
-        ctx,
-        userId,
-        `✅ <b>تم إرسال الفيديو وتسجيل ردك للإدارة${followRef}.</b>`,
+        ctx, userId,
+        `✅ <b>تم استلام مرفق الفيديو وإرساله إلى الإدارة، وسيتم الرد عليك في أقرب وقت.</b>`,
         {
           parse_mode: 'HTML',
           ...Markup.keyboard([
+            [getInquiriesMenuLabel(unreadRepliesCount), '💬 دعم واقتراحات وشكر'],
             [
-              getInquiriesMenuLabel(unreadRepliesCount),
-              unreadRepliesCount > 0 ? `⬅️ لوحة العميل (${unreadRepliesCount})` : '⬅️ لوحة العميل'
-            ],
-            ['🏠 القائمة الرئيسية']
+              unreadRepliesCount > 0 ? `⬅️ لوحة العميل (${unreadRepliesCount})` : '⬅️ لوحة العميل',
+              '🏠 القائمة الرئيسية'
+            ]
           ]).resize()
         },
         true
@@ -3497,33 +3347,32 @@ module.exports = function registerUsers(bot, core) {
     }
 
     if (state && state.step === 'waiting_for_media') {
-      const video = ctx.message.video;
+      await safeDeleteUserMessage(ctx);
       state.data.media_items = state.data.media_items || [];
-
       if (state.data.media_items.length >= MAX_PROPERTY_IMAGES) {
-        const warnMsg = await ctx.reply(`⚠️ <b>وصلت للحد الأقصى (${MAX_PROPERTY_IMAGES} ملفات).</b> اضغط زر الإنهاء في الأسفل.`, { parse_mode: 'HTML' });
-        setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warnMsg.message_id).catch(() => {}), 2500);
+        const warn = await ctx.reply(`⚠️ الحد الأقصى للوسائط هو ${MAX_PROPERTY_IMAGES} ملفات.`, { parse_mode: 'HTML' });
+        setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warn.message_id).catch(() => {}), 2500);
         return;
       }
-
-      state.data.media_items.push({ type: 'video', file_id: video.file_id });
+      state.data.media_items.push({ type: 'video', file_id: vid.file_id });
       state.data.media_label = formatMediaSummaryLabel(state.data.media_items);
       return renderWizard(ctx, userId);
     }
-  });
 
-  // ربط دوال التسجيل والإشعار على core لتستدعيها لوحة الإدارة عند إرسال رسالة مباشرة للعميل
-  if (core) {
-    core.recordAdminDirectMessageForClient = recordAdminDirectMessageForClient;
-    core.notifyClientOfAdminMessage = notifyClientOfAdminMessage;
-  }
+    await safeDeleteUserMessage(ctx);
+    return next();
+  });
 
   return {
     openUserHome,
-    platformRating,
-    browse,
-    recordAdminDirectMessageForClient,
-    notifyClientOfAdminMessage,
-    getClientRepliesSummary
+    openSupportDashboard,
+    renderUserOwnAdBrowser,
+    renderClientInquiryAt,
+    openClientFollowUpComposer,
+    openUserLiveChatWithAdmin,
+    closeUserLiveChatWithAdmin,
+    getFavoritesMenuLabel: () => BTN_FAVORITES_MENU,
+    fetchUserFavoriteProperties: browse.fetchUserFavoriteProperties,
+    renderUserFavoritesBrowser: browse.renderUserFavoritesBrowser
   };
 };
