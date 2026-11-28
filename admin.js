@@ -120,6 +120,22 @@ module.exports = function registerAdmin(bot, core) {
     rejected: '❌ مرفوض'
   };
 
+  function buildRepliesListBlock(replies = []) {
+    if (!Array.isArray(replies) || replies.length === 0) {
+      return `\n💬 <b>الردود (0):</b>\n<i>— لا توجد ردود بعد —</i>`;
+    }
+    const items = replies.map((r, rIdx) => {
+      const rRole = ROLE_LABELS[r.admin_role] || r.admin_role || 'مسؤول';
+      const rTime = formatDateTime(r.created_at);
+      const rMsg = escapeHtml(
+        r.reply_message ||
+        (r.media_type === 'photo' ? '🖼 صورة مرفقة' : r.media_type === 'video' ? '🎥 فيديو مرفق' : '')
+      );
+      return `${rIdx + 1}. <b>[${rRole}]</b> (<code>${escapeHtml(rTime)}</code>): ${rMsg}`;
+    });
+    return `\n💬 <b>الردود (${replies.length}):</b>\n` + items.join('\n');
+  }
+
   function getAdminMenuKeyboard() {
     const rows = [
       ['⏳ المعلقة', '✅ المنشورة', '❌ المرفوضة'],
@@ -517,31 +533,24 @@ module.exports = function registerAdmin(bot, core) {
       ? escapeHtml(String(reviewRow.comment).trim())
       : '<i>تقييم بالنجوم فقط بدون تعليق نصي</i>';
 
-    let repliesBlock = `\n💬 <b>الردود المسجلة (${replies.length}):</b>\n`;
-    if (!replies || replies.length === 0) {
-      repliesBlock += `<i>— لا توجد ردود مسجلة لهذا التقييم بعد —</i>`;
-    } else {
-      repliesBlock += replies.map((r, rIdx) => {
-        const rTime = formatDateTime(r.created_at);
-        const rMsg = escapeHtml(
-          r.reply_message ||
-          (r.media_type === 'photo' ? '🖼 صورة مرفقة' : r.media_type === 'video' ? '🎥 فيديو مرفق' : '')
-        );
-        return `${rIdx + 1}. (<code>${escapeHtml(rTime)}</code>): ${rMsg}`;
-      }).join('\n');
-    }
-
-    const fullText =
+    const repliesBlock = buildRepliesListBlock(replies);
+    const headerPart =
       `⭐ <b>جدول التقييمات والنجوم</b> • ${filterTitles[ratingFilter] || 'الكل'} • <code>#${reviewRow.id}</code> (${idx + 1}/${total})\n` +
       `📊 <b>إجمالي التقييمات:</b> <b>${summary.total}</b> | ⭐ <b>مجموع النجوم:</b> <b>${summary.totalStars}</b> | 📈 <b>المتوسط:</b> <b>${summary.average}</b>\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
       `👤 <b>المقيّم:</b> <b>${escapeHtml(fullName)}</b> (<code>${reviewRow.user_id}</code>)\n` +
       `🌟 <b>التقييم:</b> <b>${starsVisual}</b>\n` +
       `🕒 <b>التاريخ:</b> <code>${escapeHtml(formatDateTime(reviewRow.updated_at || reviewRow.created_at))}</code>\n` +
-      `💬 <b>التعليق:</b> ${commentText}` +
-      repliesBlock;
+      `💬 <b>التعليق:</b> ${commentText}`;
 
-    return fitTelegramText(fullText, false);
+    const fullText = headerPart + repliesBlock;
+    if (fullText.length <= 4000) return fullText;
+
+    const maxHeaderLen = Math.max(250, 3950 - repliesBlock.length);
+    const trimmedHeader = headerPart.length > maxHeaderLen
+      ? headerPart.slice(0, maxHeaderLen) + '…'
+      : headerPart;
+    return fitTelegramText(trimmedHeader + repliesBlock, false);
   }
 
   async function renderAdminRatingAt(ctx, adminId, ratingFilter = 'all', index = 0, refreshList = false) {
@@ -1018,32 +1027,27 @@ module.exports = function registerAdmin(bot, core) {
       : '';
     const subjectLine = inquiry.subject ? `📌 <b>الموضوع:</b> ${escapeHtml(inquiry.subject)}\n` : '';
 
-    let repliesBlock = `\n💬 <b>الردود (${replies.length}):</b>\n`;
-    if (!replies || replies.length === 0) {
-      repliesBlock += `<i>— لا توجد ردود بعد —</i>`;
-    } else {
-      const formattedReplies = replies.map((r, rIdx) => {
-        const rRole = ROLE_LABELS[r.admin_role] || r.admin_role || 'مسؤول';
-        const rTime = formatDateTime(r.created_at);
-        const rMsg = escapeHtml(
-          r.reply_message ||
-          (r.media_type === 'photo' ? '🖼 صورة مرفقة' : r.media_type === 'video' ? '🎥 فيديو مرفق' : '')
-        );
-        return `${rIdx + 1}. <b>[${rRole}]</b> (<code>${escapeHtml(rTime)}</code>): ${rMsg}`;
-      });
-      repliesBlock += formattedReplies.join('\n');
-    }
+    const repliesBlock = buildRepliesListBlock(replies);
+    const limit = isMediaCaption ? 980 : 3950;
 
-    const fullText =
+    const headerPart =
       `${filterTitles[statusFilter] || '📩 الاستعلامات'} • <code>#${inquiry.id}</code> (${idx + 1}/${total})\n` +
       `📊 <b>الحالة:</b> ${statusLabel} | 🎯 ${roleLabel}\n` +
       `👤 <b>العميل:</b> <code>${inquiry.user_id}</code> • 🕒 <code>${escapeHtml(formatDateTime(inquiry.created_at))}</code>\n` +
       propLine +
       subjectLine +
-      `📝 <b>الاستعلام:</b> ${escapeHtml(inquiry.message || '')}` +
-      repliesBlock;
+      `📝 <b>الاستعلام:</b> ${escapeHtml(inquiry.message || '')}`;
 
-    return fitTelegramText(fullText, isMediaCaption);
+    const fullText = headerPart + repliesBlock;
+    if (fullText.length <= limit) return fullText;
+
+    const maxHeaderLen = Math.max(180, limit - repliesBlock.length - 10);
+    const trimmedHeader = headerPart.length > maxHeaderLen
+      ? headerPart.slice(0, maxHeaderLen) + '…'
+      : headerPart;
+
+    const combined = trimmedHeader + repliesBlock;
+    return combined.length <= limit ? combined : fitTelegramText(combined, isMediaCaption);
   }
 
   async function renderAdminInquiryAt(ctx, adminId, statusFilter = 'all', index = 0, refreshList = false) {
