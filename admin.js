@@ -56,7 +56,6 @@ module.exports = function registerAdmin(bot, core) {
   const lastAdminButtonHintAt = {};
   const adminHintTimers = {};
 
-  // الخطوات المسموح فيها بالكتابة اليدوية للأدمن (تُستثنى من تنبيه "استعمل الأزرار")
   const ADMIN_FREE_TEXT_STEPS = new Set([
     'searching_admin_ads',
     'replying_to_inquiry',
@@ -643,7 +642,8 @@ module.exports = function registerAdmin(bot, core) {
       admin_role: 'general_support',
       reply_message: replyText || null,
       media_type: payloadType,
-      attachment_url: attachmentUrl
+      attachment_url: attachmentUrl,
+      is_read: false
     }]);
 
     if (insertReplyErr) {
@@ -1157,7 +1157,8 @@ module.exports = function registerAdmin(bot, core) {
       admin_role: inquiry.target_role || 'general_support',
       reply_message: replyText || null,
       media_type: payloadType,
-      attachment_url: attachmentUrl
+      attachment_url: attachmentUrl,
+      is_read: false
     }]);
 
     if (insertReplyErr) {
@@ -1341,7 +1342,9 @@ module.exports = function registerAdmin(bot, core) {
             userIdStr === cleanQuery
           );
         });
-        addResults(matchedPub, 'published');
+        for (const r of matchedPub) {
+          addResults([r], 'published');
+        }
       }
     } catch (e) {
       console.error('searchAdminAds error:', e);
@@ -1846,7 +1849,6 @@ module.exports = function registerAdmin(bot, core) {
     await handleAdminAction({ ...ctx, match: [null, String(adId)] }, 'reject');
   });
 
-  // أزرار تصفح صور وفيديوهات العقار
   bot.hears('الصورة التالية 🖼', async (ctx) => {
     await safeDeleteUserMessage(ctx);
     const adminId = ctx.from.id;
@@ -1952,7 +1954,49 @@ module.exports = function registerAdmin(bot, core) {
   });
 
   async function deliverAdminReplyToUser(ctx, adminId, targetUserId, payloadType, content, adId = null) {
-    const adLine = adId ? `📌 <b>بخصوص الإعلان:</b> <code>#${adId}</code>\n` : '';
+    const cleanUserId = Number(targetUserId);
+    const cleanAdId = adId ? Number(adId) : null;
+    const rawMsg = payloadType === 'text'
+      ? (content.text || '')
+      : (content.caption || (payloadType === 'photo' ? '🖼 صورة مرفقة' : '🎥 فيديو مرفق'));
+    const attachmentUrl = payloadType === 'text' ? null : `tg:${content.fileId}`;
+
+    let inquiryId = null;
+    try {
+      const subjectLabel = cleanAdId ? `رسالة الإدارة بخصوص الإعلان #${cleanAdId}` : 'رسالة من الإدارة';
+      const { data: createdInq } = await supabase
+        .from('user_inquiries')
+        .insert([{
+          user_id: cleanUserId,
+          property_id: cleanAdId,
+          property_source: cleanAdId ? 'pending_properties' : null,
+          inquiry_type: 'general',
+          target_role: 'general_support',
+          subject: subjectLabel,
+          message: rawMsg || subjectLabel,
+          attachment_url: attachmentUrl,
+          status: 'in_progress'
+        }])
+        .select('id')
+        .single();
+
+      if (createdInq?.id) {
+        inquiryId = Number(createdInq.id);
+        await supabase.from('inquiry_replies').insert([{
+          inquiry_id: inquiryId,
+          admin_id: adminId,
+          admin_role: 'general_support',
+          reply_message: rawMsg || null,
+          media_type: payloadType,
+          attachment_url: attachmentUrl,
+          is_read: false
+        }]);
+      }
+    } catch (dbErr) {
+      console.error('deliverAdminReplyToUser db error:', dbErr);
+    }
+
+    const adLine = cleanAdId ? `📌 <b>بخصوص الإعلان:</b> <code>#${cleanAdId}</code>\n` : '';
     const header = `📩 <b>رسالة من إدارة عقار الجزائر</b>\n${adLine}━━━━━━━━━━━━━━━━━━━━\n`;
 
     try {
@@ -1961,16 +2005,16 @@ module.exports = function registerAdmin(bot, core) {
           header + (content.caption ? escapeHtml(content.caption) : '🖼 <i>مرفق صورة</i>'),
           true
         );
-        await ctx.telegram.sendPhoto(targetUserId, content.fileId, { caption: cap, parse_mode: 'HTML' });
+        await ctx.telegram.sendPhoto(cleanUserId, content.fileId, { caption: cap, parse_mode: 'HTML' });
       } else if (payloadType === 'video') {
         const cap = fitTelegramText(
           header + (content.caption ? escapeHtml(content.caption) : '🎥 <i>مرفق فيديو</i>'),
           true
         );
-        await ctx.telegram.sendVideo(targetUserId, content.fileId, { caption: cap, parse_mode: 'HTML' });
+        await ctx.telegram.sendVideo(cleanUserId, content.fileId, { caption: cap, parse_mode: 'HTML' });
       } else {
         await ctx.telegram.sendMessage(
-          targetUserId,
+          cleanUserId,
           fitTelegramText(header + escapeHtml(content.text), false),
           { parse_mode: 'HTML' }
         );
@@ -1978,15 +2022,15 @@ module.exports = function registerAdmin(bot, core) {
     } catch (e) {
       delete userState[adminId];
       return replyTracked(ctx, adminId,
-        `⚠️ تعذر إيصال الرسالة إلى <code>${targetUserId}</code> (قد يكون أوقف استقبال الرسائل).`,
+        `⚠️ تعذر إيصال الرسالة إلى <code>${cleanUserId}</code> (قد يكون أوقف استقبال الرسائل).`,
         { parse_mode: 'HTML', ...getAdminMenuKeyboard() }, true);
     }
 
     delete userState[adminId];
     const kb = core.previewMode[adminId] ? core.getMainMenuKeyboard(adminId) : getAdminMenuKeyboard();
-    const doneAdText = adId ? ` بخصوص الإعلان <code>#${adId}</code>` : '';
+    const doneAdText = cleanAdId ? ` بخصوص الإعلان <code>#${cleanAdId}</code>` : '';
     await replyTracked(ctx, adminId,
-      `✅ <b>تم إرسال الرسالة بنجاح</b> إلى <code>${targetUserId}</code>${doneAdText}.`,
+      `✅ <b>تم إرسال الرسالة بنجاح</b> إلى <code>${cleanUserId}</code>${doneAdText}.`,
       { parse_mode: 'HTML', ...kb }, true);
   }
 
