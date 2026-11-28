@@ -1,6 +1,15 @@
 'use strict';
 // =========================================================================
-// 🛡️ SERVER ADMIN — لوحة تحكم الإدارة (ترابط حيّ ومباشر مع المستخدمين)
+// 🛡️ SERVER ADMIN — لوحة تحكم الإدارة
+// - استعادة وإبقاء أزرار تصفح صور وفيديوهات العقار (السابق / التالي / عداد العنصر)
+// - فصل صورة الوصل عن صور وفيديوهات العقار ومنع تكرارها
+// - زر مباشر لمعاينة الوصل للإعلانات المعلقة فقط متى كان موجوداً مع أزرار الموافقة/الرفض والرجوع للعقار
+// - التنقل بين الإعلانات (المعلقة / المنشورة / المرفوضة / البحث)
+// - تصفح طلبات الشحن (wallet_topups) والموافقة أو الرفض أو المراسلة
+// - إدارة ومعاينة استعلامات المستخدمين (user_inquiries) وسجل الردود (inquiry_replies)
+// - قراءة ومعاينة جدول التقييمات والنجوم (platform_reviews) والتنقل بينها والرد عليها في جدول الردود وإشعار المستخدم
+// - المرفق في الاستعلام والرد مدمج داخل نفس الرسالة (caption) بدون رسائل مرفق منفصلة
+// - مراسلة ناشر الإعلان أو صاحب طلب الشحن (#ID) مباشرة
 // =========================================================================
 
 const RATING_STAR_LABELS = {
@@ -44,18 +53,15 @@ module.exports = function registerAdmin(bot, core) {
   const adminInquiryState = {};
   const adminTopupState = {};
   const adminRatingState = {};
-  const adminLiveChat = {}; // جلسة الدردشة الحية للأدمن مع عميل محدد
   const lastAdminButtonHintAt = {};
   const adminHintTimers = {};
 
-  core.adminLiveChat = adminLiveChat;
-
+  // الخطوات المسموح فيها بالكتابة اليدوية للأدمن (تُستثنى من تنبيه "استعمل الأزرار")
   const ADMIN_FREE_TEXT_STEPS = new Set([
     'searching_admin_ads',
     'replying_to_inquiry',
     'replying_to_rating',
-    'replying_to_support_user',
-    'live_chat_with_user'
+    'replying_to_support_user'
   ]);
 
   function isAdminFreeTextAllowed(adminId) {
@@ -124,13 +130,6 @@ module.exports = function registerAdmin(bot, core) {
     const webBtn = getWebsiteButton();
     if (webBtn) rows.push([webBtn]);
     return Markup.keyboard(rows).resize();
-  }
-
-  function getAdminLiveChatKeyboard(targetUserId) {
-    return Markup.keyboard([
-      [`🔚 إنهاء الدردشة مع (${targetUserId})`],
-      ['🎛 لوحة الإدارة', '👁 معاينة المنصة كمستخدم']
-    ]).resize();
   }
 
   function getAdminReceiptPreviewKeyboard(adId) {
@@ -354,110 +353,6 @@ module.exports = function registerAdmin(bot, core) {
     return null;
   }
 
-  // =========================================================================
-  // ⚡ فتح الدردشة المباشرة بين الأدمن والعميل (مرتبطة بـ users.js)
-  // =========================================================================
-  async function openAdminLiveChatWithUser(ctx, adminId, targetUserId, contextMeta = {}) {
-    const uid = Number(targetUserId);
-    if (!uid) return;
-
-    const adId = contextMeta.adId || null;
-    const inquiryId = contextMeta.inquiryId || null;
-    const reviewId = contextMeta.reviewId || null;
-
-    adminLiveChat[adminId] = {
-      targetUserId: uid,
-      adId,
-      inquiryId,
-      reviewId,
-      history: []
-    };
-
-    userState[adminId] = {
-      step: 'live_chat_with_user',
-      data: { targetUserId: uid, adId, inquiryId, reviewId },
-      chatId: ctx.chat.id,
-      wizardMsgId: null
-    };
-
-    // ربط العميل أيضاً بجلسة دردشة مفتوحة جاهزة مع الإدارة
-    if (typeof core.openUserLiveChatWithAdmin === 'function') {
-      await core.openUserLiveChatWithAdmin(ctx, uid, {
-        adminId,
-        adId,
-        inquiryId,
-        reviewId,
-        silentOpen: true
-      }).catch(() => {});
-    }
-
-    const refParts = [];
-    if (adId) refParts.push(`🏠 إعلان <code>#${adId}</code>`);
-    if (inquiryId) refParts.push(`📩 استعلام <code>#${inquiryId}</code>`);
-    if (reviewId) refParts.push(`⭐ تقييم <code>#${reviewId}</code>`);
-    const refLine = refParts.length ? `\n📌 <b>السياق:</b> ${refParts.join(' • ')}` : '';
-
-    await replyTracked(
-      ctx,
-      adminId,
-      `🟢 <b>دردشة مباشرة مفتوحة مع العميل</b> <code>${uid}</code>${refLine}\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n` +
-      `✍️ <i>اكتب رسالتك أو أرسل صورة/فيديو الآن وسيصل للعميل فوراً مع زر فتح الدردشة المباشرة للرد عليك في نفس الخيط.</i>`,
-      { parse_mode: 'HTML', ...getAdminLiveChatKeyboard(uid) },
-      true
-    );
-  }
-
-  async function forwardLiveMessageToAdmin(ctx, adminId, clientUserId, payloadType, content, meta = {}) {
-    const adId = meta.adId || null;
-    const inquiryId = meta.inquiryId || null;
-    const botUsername = ctx.botInfo?.username || bot.botInfo?.username || '';
-    const deepLink = botUsername
-      ? `https://t.me/${botUsername}?start=adminchat_${clientUserId}${adId ? `_${adId}` : ''}`
-      : '';
-
-    const refLine = adId ? `📌 <b>بخصوص الإعلان:</b> <code>#${adId}</code>\n` : (inquiryId ? `📌 <b>متابعة الاستعلام:</b> <code>#${inquiryId}</code>\n` : '');
-    const clientName = escapeHtml(
-      [ctx.from?.first_name, ctx.from?.last_name].filter(Boolean).join(' ') || 'عميل'
-    );
-
-    const header =
-      `💬 <b>رد مباشر من العميل: ${clientName}</b> (<code>${clientUserId}</code>)\n` +
-      refLine +
-      `━━━━━━━━━━━━━━━━━━━━\n` +
-      (deepLink ? `⚡ <b>فتح مباشر للدردشة:</b> <a href="${escapeHtml(deepLink)}">💬 فتح الدردشة مع العميل (${clientUserId})</a>\n` : '');
-
-    const inlineKb = Markup.inlineKeyboard([
-      [Markup.button.callback(`💬 فتح الدردشة مع العميل (${clientUserId})`, `admin_live_open_${clientUserId}${adId ? `_${adId}` : ''}`)]
-    ]);
-
-    try {
-      if (payloadType === 'photo') {
-        const cap = fitTelegramText(
-          header + (content.caption ? `\n💬 <b>الرسالة:</b> ${escapeHtml(content.caption)}` : '\n🖼 <b>صورة مرسلة من العميل</b>'),
-          true
-        );
-        await ctx.telegram.sendPhoto(adminId, content.fileId, { caption: cap, parse_mode: 'HTML', ...inlineKb });
-      } else if (payloadType === 'video') {
-        const cap = fitTelegramText(
-          header + (content.caption ? `\n💬 <b>الرسالة:</b> ${escapeHtml(content.caption)}` : '\n🎥 <b>فيديو مرسل من العميل</b>'),
-          true
-        );
-        await ctx.telegram.sendVideo(adminId, content.fileId, { caption: cap, parse_mode: 'HTML', ...inlineKb });
-      } else {
-        await ctx.telegram.sendMessage(
-          adminId,
-          fitTelegramText(header + `\n💬 <b>الرسالة:</b> ${escapeHtml(content.text || '')}`, false),
-          { parse_mode: 'HTML', link_preview_options: { is_disabled: true }, ...inlineKb }
-        );
-      }
-    } catch (e) {
-      console.error('forwardLiveMessageToAdmin error:', e?.message || e);
-    }
-  }
-
-  core.forwardLiveMessageToAdmin = forwardLiveMessageToAdmin;
-
   async function openAdminHome(ctx, showStatsNotice = false) {
     const adminId = ctx.from.id;
     delete userState[adminId];
@@ -465,7 +360,6 @@ module.exports = function registerAdmin(bot, core) {
     delete adminInquiryState[adminId];
     delete adminTopupState[adminId];
     delete adminRatingState[adminId];
-    delete adminLiveChat[adminId];
     core.resetSessions(adminId);
 
     const stats = typeof runSingleKnockWithSmartWake === 'function'
@@ -605,8 +499,7 @@ module.exports = function registerAdmin(bot, core) {
 
   function buildRatingInlineButtons(reviewRow) {
     return Markup.inlineKeyboard([
-      [Markup.button.callback(`💬 الرد على التقييم (#${reviewRow.id})`, `rate_reply_${reviewRow.id}`)],
-      [Markup.button.callback(`⚡ فتح دردشة مباشرة مع العميل (${reviewRow.user_id})`, `admin_live_open_${reviewRow.user_id}`)]
+      [Markup.button.callback(`💬 الرد على التقييم (#${reviewRow.id})`, `rate_reply_${reviewRow.id}`)]
     ]);
   }
 
@@ -763,27 +656,9 @@ module.exports = function registerAdmin(bot, core) {
 
     const targetUserId = Number(reviewRow.user_id);
     const starsVisual = formatRatingStars(reviewRow.rating);
-    const botUsername = ctx.botInfo?.username || bot.botInfo?.username || '';
-    const openChatUrl = botUsername
-      ? `https://t.me/${botUsername}?start=adminchat_${adminId}_r${reviewId}`
-      : '';
-
     const userHeader =
       `📩 <b>رد من إدارة عقار الجزائر على تقييمك للمنصة (#${reviewId} • ${starsVisual})</b>\n` +
-      (openChatUrl ? `⚡ <b>فتح مباشر للدردشة:</b> <a href="${escapeHtml(openChatUrl)}">💬 فتح الدردشة مع الإدارة</a>\n` : '') +
       `━━━━━━━━━━━━━━━━━━━━\n`;
-
-    const userInlineKb = Markup.inlineKeyboard([
-      [Markup.button.callback(`💬 فتح الدردشة مع الإدارة (رد مباشر)`, `user_open_admin_chat_${adminId}_r${reviewId}`)]
-    ]);
-
-    if (typeof core.openUserLiveChatWithAdmin === 'function') {
-      await core.openUserLiveChatWithAdmin(ctx, targetUserId, {
-        adminId,
-        reviewId,
-        silentOpen: true
-      }).catch(() => {});
-    }
 
     let delivered = true;
     let deliverErrorReason = '';
@@ -793,18 +668,18 @@ module.exports = function registerAdmin(bot, core) {
           userHeader + (rawCaption ? escapeHtml(rawCaption) : '🖼 <i>صورة مرفقة من الإدارة</i>'),
           true
         );
-        await ctx.telegram.sendPhoto(targetUserId, content.fileId, { caption: cap, parse_mode: 'HTML', ...userInlineKb });
+        await ctx.telegram.sendPhoto(targetUserId, content.fileId, { caption: cap, parse_mode: 'HTML' });
       } else if (payloadType === 'video') {
         const cap = fitTelegramText(
           userHeader + (rawCaption ? escapeHtml(rawCaption) : '🎥 <i>فيديو مرفق من الإدارة</i>'),
           true
         );
-        await ctx.telegram.sendVideo(targetUserId, content.fileId, { caption: cap, parse_mode: 'HTML', ...userInlineKb });
+        await ctx.telegram.sendVideo(targetUserId, content.fileId, { caption: cap, parse_mode: 'HTML' });
       } else {
         await ctx.telegram.sendMessage(
           targetUserId,
           fitTelegramText(userHeader + escapeHtml(replyText), false),
-          { parse_mode: 'HTML', link_preview_options: { is_disabled: true }, ...userInlineKb }
+          { parse_mode: 'HTML' }
         );
       }
     } catch (e) {
@@ -815,7 +690,7 @@ module.exports = function registerAdmin(bot, core) {
 
     delete userState[adminId];
     const deliveryNote = delivered
-      ? `✅ <b>تم تسجيل الرد في جدول الردود (<code>#${inquiryId}</code>) وإرسال الإشعار مع زر الفتح المباشر للمستخدم.</b>`
+      ? `✅ <b>تم تسجيل الرد في جدول الردود (<code>#${inquiryId}</code>) وإرسال الإشعار للمستخدم بنجاح.</b>`
       : `✅ <b>تم تسجيل الرد في جدول الردود (<code>#${inquiryId}</code>)</b> (⚠️ تعذر الإرسال المباشر للمستخدم: <code>${escapeHtml(deliverErrorReason)}</code>).`;
 
     await ctx.reply(deliveryNote, { parse_mode: 'HTML' }).catch(() => {});
@@ -887,7 +762,7 @@ module.exports = function registerAdmin(bot, core) {
 
     await replyTracked(
       ctx, adminId,
-      `💬 <b>الرد على التقييم</b> <code>#${reviewId}</code>\n\nاكتب ردك أو أرفق صورة/فيديو ليُسجّل في جدول الردود ويُرسل إشعار مع زر فتح الدردشة للمستخدم:`,
+      `💬 <b>الرد على التقييم</b> <code>#${reviewId}</code>\n\nاكتب ردك أو أرفق صورة/فيديو ليُسجّل في جدول الردود ويُرسل إشعار للمستخدم:`,
       { parse_mode: 'HTML', ...Markup.keyboard([['⭐ التقييمات والنجوم', '🎛 لوحة الإدارة']]).resize() },
       true
     );
@@ -912,7 +787,7 @@ module.exports = function registerAdmin(bot, core) {
 
     await replyTracked(
       ctx, adminId,
-      `💬 <b>الرد على التقييم</b> <code>#${reviewId}</code>\n\nاكتب ردك أو أرفق صورة/فيديو ليُسجّل في جدول الردود ويُرسل إشعار مع زر فتح الدردشة للمستخدم:`,
+      `💬 <b>الرد على التقييم</b> <code>#${reviewId}</code>\n\nاكتب ردك أو أرفق صورة/فيديو ليُسجّل في جدول الردود ويُرسل إشعار للمستخدم:`,
       { parse_mode: 'HTML', ...Markup.keyboard([['⭐ التقييمات والنجوم', '🎛 لوحة الإدارة']]).resize() },
       true
     );
@@ -956,7 +831,7 @@ module.exports = function registerAdmin(bot, core) {
       ]);
     }
     if (topup.user_id) {
-      rows.push([Markup.button.callback(`💬 فتح دردشة مع العميل (${topup.user_id})`, `admin_live_open_${topup.user_id}`)]);
+      rows.push([Markup.button.callback(`✉️ مراسلة العميل (${topup.user_id})`, `support_reply_${topup.user_id}`)]);
     }
     return rows.length > 0 ? Markup.inlineKeyboard(rows) : undefined;
   }
@@ -1110,8 +985,7 @@ module.exports = function registerAdmin(bot, core) {
   function buildInquiryInlineButtons(inquiry) {
     const id = inquiry.id;
     const rows = [
-      [Markup.button.callback(`💬 الرد على الاستعلام (#${id})`, `inq_reply_${id}`)],
-      [Markup.button.callback(`⚡ فتح دردشة مباشرة مع العميل (${inquiry.user_id})`, `admin_live_open_${inquiry.user_id}${inquiry.property_id ? `_${inquiry.property_id}` : ''}`)]
+      [Markup.button.callback(`💬 الرد على الاستعلام (#${id})`, `inq_reply_${id}`)]
     ];
 
     const statusRow = [];
@@ -1298,31 +1172,11 @@ module.exports = function registerAdmin(bot, core) {
       await supabase.from('user_inquiries').update({ status: 'in_progress' }).eq('id', inquiryId);
     }
 
-    const targetUserId = Number(inquiry.user_id);
     const propLine = inquiry.property_id ? `🏠 <b>بخصوص الإعلان:</b> <code>#${inquiry.property_id}</code>\n` : '';
-    const botUsername = ctx.botInfo?.username || bot.botInfo?.username || '';
-    const openChatUrl = botUsername
-      ? `https://t.me/${botUsername}?start=adminchat_${adminId}${inquiry.property_id ? `_${inquiry.property_id}` : ''}`
-      : '';
-
     const userHeader =
       `📩 <b>رد من إدارة عقار الجزائر على استعلامك #${inquiryId}</b>\n` +
       propLine +
-      (openChatUrl ? `⚡ <b>فتح مباشر للدردشة:</b> <a href="${escapeHtml(openChatUrl)}">💬 فتح الدردشة مع الإدارة</a>\n` : '') +
       `━━━━━━━━━━━━━━━━━━━━\n`;
-
-    const userInlineKb = Markup.inlineKeyboard([
-      [Markup.button.callback(`💬 فتح الدردشة مع الإدارة (رد مباشر)`, `user_open_admin_chat_${adminId}${inquiry.property_id ? `_${inquiry.property_id}` : ''}`)]
-    ]);
-
-    if (typeof core.openUserLiveChatWithAdmin === 'function') {
-      await core.openUserLiveChatWithAdmin(ctx, targetUserId, {
-        adminId,
-        adId: inquiry.property_id || null,
-        inquiryId,
-        silentOpen: true
-      }).catch(() => {});
-    }
 
     let delivered = true;
     let deliverErrorReason = '';
@@ -1332,18 +1186,18 @@ module.exports = function registerAdmin(bot, core) {
           userHeader + (rawCaption ? escapeHtml(rawCaption) : '🖼 <i>صورة مرفقة من الإدارة</i>'),
           true
         );
-        await ctx.telegram.sendPhoto(targetUserId, content.fileId, { caption: cap, parse_mode: 'HTML', ...userInlineKb });
+        await ctx.telegram.sendPhoto(inquiry.user_id, content.fileId, { caption: cap, parse_mode: 'HTML' });
       } else if (payloadType === 'video') {
         const cap = fitTelegramText(
           userHeader + (rawCaption ? escapeHtml(rawCaption) : '🎥 <i>فيديو مرفق من الإدارة</i>'),
           true
         );
-        await ctx.telegram.sendVideo(targetUserId, content.fileId, { caption: cap, parse_mode: 'HTML', ...userInlineKb });
+        await ctx.telegram.sendVideo(inquiry.user_id, content.fileId, { caption: cap, parse_mode: 'HTML' });
       } else {
         await ctx.telegram.sendMessage(
-          targetUserId,
+          inquiry.user_id,
           fitTelegramText(userHeader + escapeHtml(replyText), false),
-          { parse_mode: 'HTML', link_preview_options: { is_disabled: true }, ...userInlineKb }
+          { parse_mode: 'HTML' }
         );
       }
     } catch (e) {
@@ -1354,7 +1208,7 @@ module.exports = function registerAdmin(bot, core) {
 
     delete userState[adminId];
     const deliveryNote = delivered
-      ? `✅ <b>تم حفظ الرد في سجل الاستعلام #${inquiryId} وإرساله للعميل مع زر فتح الدردشة المباشرة.</b>`
+      ? `✅ <b>تم حفظ الرد في سجل الاستعلام #${inquiryId} وإرساله للعميل بنجاح.</b>`
       : `✅ <b>تم حفظ الرد في سجل الاستعلام #${inquiryId}</b> (⚠️ تعذر الإرسال المباشر للعميل: <code>${escapeHtml(deliverErrorReason)}</code>).`;
 
     await ctx.reply(deliveryNote, { parse_mode: 'HTML' }).catch(() => {});
@@ -1364,7 +1218,7 @@ module.exports = function registerAdmin(bot, core) {
   }
 
   // =========================================================================
-  // 🏠 تصفح الإعلانات والبحث
+  // 🏠 تصفح الإعلانات والبحث (أزرار تصفح صور وفيديوهات العقار + فصل الوصل)
   // =========================================================================
   function separateAdReceiptAndPropertyMedia(item, isPendingAd) {
     const receiptRef = isPendingAd ? normalizeMediaRef(item.receipt_url) : null;
@@ -1499,7 +1353,6 @@ module.exports = function registerAdmin(bot, core) {
   function buildAdInlineButtons(item, filterType) {
     const rows = [];
     const adId = item.id;
-    const ownerId = item.user_id || item._resolvedUserId;
 
     if (filterType === 'pending') {
       rows.push([
@@ -1513,10 +1366,6 @@ module.exports = function registerAdmin(bot, core) {
       ]);
     } else if (filterType === 'published') {
       rows.push([Markup.button.callback(`🗑 حذف المنشور (#${adId})`, `del_pub_${adId}`)]);
-    }
-
-    if (ownerId) {
-      rows.push([Markup.button.callback(`💬 فتح دردشة مع المعلن (${ownerId})`, `admin_live_open_${ownerId}_${adId}`)]);
     }
 
     return rows.length > 0 ? Markup.inlineKeyboard(rows) : undefined;
@@ -1737,35 +1586,8 @@ module.exports = function registerAdmin(bot, core) {
     await clearTrackedBotMessages(ctx, adminId, keepIds);
   }
 
-  bot.start(async (ctx, next) => {
-    const payload = String(ctx.startPayload || '').trim();
-    const adminIds = await getAdminIds();
-    const isAdmin = adminIds.includes(ctx.from.id);
-
-    const matchAdminChat = payload.match(/^adminchat_(\d+)(?:_(\d+))?$/);
-    if (matchAdminChat && isAdmin) {
-      await safeDeleteUserMessage(ctx);
-      return openAdminLiveChatWithUser(ctx, ctx.from.id, Number(matchAdminChat[1]), {
-        adId: matchAdminChat[2] ? Number(matchAdminChat[2]) : null
-      });
-    }
-
-    if (isAdmin && !payload) {
-      await safeDeleteUserMessage(ctx);
-      return openAdminHome(ctx);
-    }
-    if (typeof next === 'function') return next();
-  });
-
-  bot.hears(/^🔚 إنهاء الدردشة مع \((\d+)\)$/, async (ctx) => {
+  bot.start(async (ctx) => {
     await safeDeleteUserMessage(ctx);
-    const adminId = ctx.from.id;
-    const targetUserId = Number(ctx.match[1]);
-    delete adminLiveChat[adminId];
-    delete userState[adminId];
-    if (typeof core.closeUserLiveChatWithAdmin === 'function') {
-      await core.closeUserLiveChatWithAdmin(ctx, targetUserId, adminId).catch(() => {});
-    }
     await openAdminHome(ctx);
   });
 
@@ -1773,14 +1595,12 @@ module.exports = function registerAdmin(bot, core) {
     await safeDeleteUserMessage(ctx);
     const adminId = ctx.from.id;
     delete userState[adminId];
-    delete adminLiveChat[adminId];
     if (core.previewMode[adminId]) return core.modules.user.openUserHome(ctx);
     return openAdminHome(ctx);
   });
 
   bot.hears('👁 معاينة المنصة كمستخدم', async (ctx) => {
     await safeDeleteUserMessage(ctx);
-    delete adminLiveChat[ctx.from.id];
     await core.enterPreview(ctx);
   });
 
@@ -1837,7 +1657,20 @@ module.exports = function registerAdmin(bot, core) {
     await safeDeleteUserMessage(ctx);
     const adminId = ctx.from.id;
     const targetUserId = Number(ctx.match[1]);
-    await openAdminLiveChatWithUser(ctx, adminId, targetUserId);
+
+    userState[adminId] = {
+      step: 'replying_to_support_user',
+      data: { targetUserId, adId: null },
+      chatId: ctx.chat.id,
+      wizardMsgId: null
+    };
+
+    await replyTracked(
+      ctx, adminId,
+      `✉️ <b>مراسلة العميل</b> <code>${targetUserId}</code>\n\nاكتب رسالتك أو أرفق صورة/فيديو لإرسالها مباشرة:`,
+      { parse_mode: 'HTML', ...Markup.keyboard([['🎛 لوحة الإدارة']]).resize() },
+      true
+    );
   });
 
   bot.hears(['📩 الاستعلامات', '📂 كل الاستعلامات'], async (ctx) => {
@@ -1898,7 +1731,7 @@ module.exports = function registerAdmin(bot, core) {
 
     await replyTracked(
       ctx, adminId,
-      `💬 <b>الرد على الاستعلام</b> <code>#${inquiryId}</code>\n\nاكتب ردك أو أرفق صورة/فيديو لحفظه في سجل الردود وإرساله للعميل مع زر فتح الدردشة المباشرة:`,
+      `💬 <b>الرد على الاستعلام</b> <code>#${inquiryId}</code>\n\nاكتب ردك أو أرفق صورة/فيديو لحفظه في سجل الردود وإرساله للعميل:`,
       { parse_mode: 'HTML', ...Markup.keyboard([['📩 الاستعلامات', '🎛 لوحة الإدارة']]).resize() },
       true
     );
@@ -1923,7 +1756,7 @@ module.exports = function registerAdmin(bot, core) {
 
     await replyTracked(
       ctx, adminId,
-      `💬 <b>الرد على الاستعلام</b> <code>#${inquiryId}</code>\n\nاكتب ردك أو أرفق صورة/فيديو لحفظه في سجل الردود وإرساله للعميل مع زر فتح الدردشة المباشرة:`,
+      `💬 <b>الرد على الاستعلام</b> <code>#${inquiryId}</code>\n\nاكتب ردك أو أرفق صورة/فيديو لحفظه في سجل الردود وإرساله للعميل:`,
       { parse_mode: 'HTML', ...Markup.keyboard([['📩 الاستعلامات', '🎛 لوحة الإدارة']]).resize() },
       true
     );
@@ -2013,6 +1846,7 @@ module.exports = function registerAdmin(bot, core) {
     await handleAdminAction({ ...ctx, match: [null, String(adId)] }, 'reject');
   });
 
+  // أزرار تصفح صور وفيديوهات العقار
   bot.hears('الصورة التالية 🖼', async (ctx) => {
     await safeDeleteUserMessage(ctx);
     const adminId = ctx.from.id;
@@ -2075,20 +1909,19 @@ module.exports = function registerAdmin(bot, core) {
       }, true);
     }
 
-    await openAdminLiveChatWithUser(ctx, adminId, targetUserId, { adId });
-  });
+    userState[adminId] = {
+      step: 'replying_to_support_user',
+      data: { targetUserId, adId },
+      chatId: ctx.chat.id,
+      wizardMsgId: null
+    };
 
-  bot.action(/^admin_live_open_(\d+)(?:_(\d+))?$/, async (ctx) => {
-    const adminId = ctx.from.id;
-    const targetUserId = Number(ctx.match[1]);
-    const adId = ctx.match[2] ? Number(ctx.match[2]) : null;
-
-    const adminIds = await getAdminIds();
-    if (!adminIds.includes(adminId)) {
-      return ctx.answerCbQuery('⛔ هذا الإجراء مخصص للإدارة فقط.', { show_alert: true });
-    }
-    await ctx.answerCbQuery('💬 تم فتح الدردشة المباشرة');
-    await openAdminLiveChatWithUser(ctx, adminId, targetUserId, { adId });
+    await replyTracked(
+      ctx, adminId,
+      `✉️ <b>مراسلة المعلن</b> <code>${targetUserId}</code> بخصوص الإعلان <code>#${adId}</code>\n\nاكتب رسالتك أو أرفق صورة/فيديو لإرسالها مباشرة:`,
+      { parse_mode: 'HTML', ...Markup.keyboard([['🎛 لوحة الإدارة']]).resize() },
+      true
+    );
   });
 
   bot.action(/^support_reply_(\d+)(?:_(\d+))?$/, async (ctx) => {
@@ -2101,35 +1934,26 @@ module.exports = function registerAdmin(bot, core) {
       return ctx.answerCbQuery('⛔ هذا الإجراء مخصص للإدارة فقط.', { show_alert: true });
     }
     await ctx.answerCbQuery();
-    await openAdminLiveChatWithUser(ctx, adminId, targetUserId, { adId });
+
+    userState[adminId] = {
+      step: 'replying_to_support_user',
+      data: { targetUserId, adId },
+      chatId: ctx.chat.id,
+      wizardMsgId: null
+    };
+
+    const adRefText = adId ? ` بخصوص الإعلان <code>#${adId}</code>` : '';
+    await replyTracked(
+      ctx, adminId,
+      `✉️ <b>مراسلة المعلن</b> <code>${targetUserId}</code>${adRefText}\n\nاكتب رسالتك أو أرفق صورة/فيديو لإرسالها مباشرة:`,
+      { parse_mode: 'HTML', ...Markup.keyboard([['🎛 لوحة الإدارة']]).resize() },
+      true
+    );
   });
 
   async function deliverAdminReplyToUser(ctx, adminId, targetUserId, payloadType, content, adId = null) {
-    const uid = Number(targetUserId);
     const adLine = adId ? `📌 <b>بخصوص الإعلان:</b> <code>#${adId}</code>\n` : '';
-    const botUsername = ctx.botInfo?.username || bot.botInfo?.username || '';
-    const deepLink = botUsername
-      ? `https://t.me/${botUsername}?start=adminchat_${adminId}${adId ? `_${adId}` : ''}`
-      : '';
-
-    // فتح/تحديث جلسة الدردشة المباشرة للعميل ليرد فوراً في نفس الخيط
-    if (typeof core.openUserLiveChatWithAdmin === 'function') {
-      await core.openUserLiveChatWithAdmin(ctx, uid, {
-        adminId,
-        adId,
-        silentOpen: true
-      }).catch(() => {});
-    }
-
-    const header =
-      `📩 <b>رسالة مباشرة من إدارة عقار الجزائر</b>\n` +
-      adLine +
-      (deepLink ? `⚡ <b>فتح مباشر للدردشة:</b> <a href="${escapeHtml(deepLink)}">💬 فتح الدردشة مع الإدارة</a>\n` : '') +
-      `━━━━━━━━━━━━━━━━━━━━\n`;
-
-    const userInlineKb = Markup.inlineKeyboard([
-      [Markup.button.callback(`💬 فتح الدردشة مع الإدارة (رد مباشر)`, `user_open_admin_chat_${adminId}${adId ? `_${adId}` : ''}`)]
-    ]);
+    const header = `📩 <b>رسالة من إدارة عقار الجزائر</b>\n${adLine}━━━━━━━━━━━━━━━━━━━━\n`;
 
     try {
       if (payloadType === 'photo') {
@@ -2137,43 +1961,32 @@ module.exports = function registerAdmin(bot, core) {
           header + (content.caption ? escapeHtml(content.caption) : '🖼 <i>مرفق صورة</i>'),
           true
         );
-        await ctx.telegram.sendPhoto(uid, content.fileId, { caption: cap, parse_mode: 'HTML', ...userInlineKb });
+        await ctx.telegram.sendPhoto(targetUserId, content.fileId, { caption: cap, parse_mode: 'HTML' });
       } else if (payloadType === 'video') {
         const cap = fitTelegramText(
           header + (content.caption ? escapeHtml(content.caption) : '🎥 <i>مرفق فيديو</i>'),
           true
         );
-        await ctx.telegram.sendVideo(uid, content.fileId, { caption: cap, parse_mode: 'HTML', ...userInlineKb });
+        await ctx.telegram.sendVideo(targetUserId, content.fileId, { caption: cap, parse_mode: 'HTML' });
       } else {
         await ctx.telegram.sendMessage(
-          uid,
+          targetUserId,
           fitTelegramText(header + escapeHtml(content.text), false),
-          { parse_mode: 'HTML', link_preview_options: { is_disabled: true }, ...userInlineKb }
+          { parse_mode: 'HTML' }
         );
       }
     } catch (e) {
+      delete userState[adminId];
       return replyTracked(ctx, adminId,
-        `⚠️ تعذر إيصال الرسالة إلى <code>${uid}</code> (قد يكون أوقف استقبال الرسائل).`,
-        { parse_mode: 'HTML', ...getAdminLiveChatKeyboard(uid) }, true);
-    }
-
-    const isLiveSession = userState[adminId]?.step === 'live_chat_with_user';
-    if (isLiveSession) {
-      const previewText = payloadType === 'text'
-        ? escapeHtml(content.text || '')
-        : (payloadType === 'photo' ? '🖼 صورة مرسلة' : '🎥 فيديو مرسل');
-      await ctx.reply(
-        `✅ <b>أُرسلت للعميل</b> <code>${uid}</code>: <i>${previewText}</i>\n👇 <i>يمكنك متابعة الكتابة في الدردشة المباشرة أو الضغط على "إنهاء الدردشة"</i>`,
-        { parse_mode: 'HTML', ...getAdminLiveChatKeyboard(uid) }
-      ).catch(() => {});
-      return;
+        `⚠️ تعذر إيصال الرسالة إلى <code>${targetUserId}</code> (قد يكون أوقف استقبال الرسائل).`,
+        { parse_mode: 'HTML', ...getAdminMenuKeyboard() }, true);
     }
 
     delete userState[adminId];
     const kb = core.previewMode[adminId] ? core.getMainMenuKeyboard(adminId) : getAdminMenuKeyboard();
     const doneAdText = adId ? ` بخصوص الإعلان <code>#${adId}</code>` : '';
     await replyTracked(ctx, adminId,
-      `✅ <b>تم إرسال الرسالة وفتح الاتصال المباشر</b> مع <code>${uid}</code>${doneAdText}.`,
+      `✅ <b>تم إرسال الرسالة بنجاح</b> إلى <code>${targetUserId}</code>${doneAdText}.`,
       { parse_mode: 'HTML', ...kb }, true);
   }
 
@@ -2226,7 +2039,7 @@ module.exports = function registerAdmin(bot, core) {
       return saveInquiryReplyAndNotifyUser(ctx, adminId, inquiryId, 'text', { text });
     }
 
-    if (state && (state.step === 'replying_to_support_user' || state.step === 'live_chat_with_user')) {
+    if (state && state.step === 'replying_to_support_user') {
       await safeDeleteUserMessage(ctx);
       const targetUserId = state.data?.targetUserId;
       const adId = state.data?.adId || null;
@@ -2257,7 +2070,7 @@ module.exports = function registerAdmin(bot, core) {
         fileId: photo.file_id, caption: ctx.message.caption || ''
       });
     }
-    if (state && (state.step === 'replying_to_support_user' || state.step === 'live_chat_with_user')) {
+    if (state && state.step === 'replying_to_support_user') {
       await safeDeleteUserMessage(ctx);
       const photo = ctx.message.photo[ctx.message.photo.length - 1];
       return deliverAdminReplyToUser(ctx, adminId, state.data.targetUserId, 'photo', {
@@ -2283,7 +2096,7 @@ module.exports = function registerAdmin(bot, core) {
         fileId: ctx.message.video.file_id, caption: ctx.message.caption || ''
       });
     }
-    if (state && (state.step === 'replying_to_support_user' || state.step === 'live_chat_with_user')) {
+    if (state && state.step === 'replying_to_support_user') {
       await safeDeleteUserMessage(ctx);
       return deliverAdminReplyToUser(ctx, adminId, state.data.targetUserId, 'video', {
         fileId: ctx.message.video.file_id, caption: ctx.message.caption || ''
@@ -2527,5 +2340,5 @@ module.exports = function registerAdmin(bot, core) {
   bot.action(/^requeue_(\d+)$/, (ctx) => handleAdminAction(ctx, 'requeue'));
   bot.action(/^del_pub_(\d+)$/, (ctx) => handleAdminAction(ctx, 'delete_published'));
 
-  return { openAdminHome, openAdminLiveChatWithUser, forwardLiveMessageToAdmin };
+  return { openAdminHome };
 };
