@@ -186,7 +186,6 @@ module.exports = function registerUsers(bot, core) {
 
   // =========================================================================
   // 🏠 إرسال طلب نشر عقار مرفق بالوصل مباشرة إلى pending_properties والإدارة
-  // (يُستخدم في النشر المباشر بالوصل أو عند الشحن لأجل النشر والرصيد 0)
   // =========================================================================
   async function submitPropertyWithReceiptRequest(ctx, userId, adData, receiptFileId, topupAmount = null) {
     const unreadCount = core.messenger?.getUnreadCount ? await core.messenger.getUnreadCount(userId) : 0;
@@ -285,7 +284,6 @@ module.exports = function registerUsers(bot, core) {
 
   async function submitWalletTopupRequest(ctx, userId, amount, receiptFileId) {
     const stateData = userState[userId]?.data || {};
-    // إذا جاء الشحن من مسار نشر عقار (والرصيد كان غير كافٍ)، نرسل العقار + الوصل مباشرة كطلب نشر عقار
     if (stateData.publishAdDraft && stateData.publishAdDraft.property_type) {
       return await submitPropertyWithReceiptRequest(
         ctx,
@@ -296,7 +294,6 @@ module.exports = function registerUsers(bot, core) {
       );
     }
 
-    // شحن محفظة مستقل كما كان سابقاً
     const unreadCount = core.messenger?.getUnreadCount ? await core.messenger.getUnreadCount(userId) : 0;
     const mainKb = await buildUserMainKeyboard(userId, unreadCount);
     const cleanAmount = sanitizeNumericPrice(amount);
@@ -468,6 +465,179 @@ module.exports = function registerUsers(bot, core) {
     }
   }
 
+  // =========================================================================
+  // 📩 تسجيل رسالة مباشرة أرسلتها الإدارة للعميل كـ "رد/رسالة إدارية غير مقروءة"
+  // ليظهر العداد في (📞 الدعم والإدارة) وتظهر في الاستعلامات مع زر فتح النقاش
+  // =========================================================================
+  async function recordAdminDirectMessageForClient({
+    userId,
+    propertyId = null,
+    propertySource = null,
+    subject = null,
+    messageText = '',
+    adminRole = 'super_admin',
+    attachmentUrl = null,
+    mediaType = 'text'
+  }) {
+    const cleanUserId = Number(userId);
+    if (!cleanUserId) return null;
+
+    try {
+      const numPropId = Number(propertyId);
+      const cleanPropId = Number.isFinite(numPropId) && numPropId > 0 ? numPropId : null;
+      const derivedSubject = subject || (cleanPropId ? `رسالة الإدارة بخصوص الإعلان #${cleanPropId}` : 'رسالة من الإدارة');
+
+      // نبحث عن استعلام مفتوح مرتبط بنفس الإعلان إن وُجد، وإلا ننشئ سجلاً جديداً لكي يبرز كعنصر جديد غير مقروء
+      let targetInquiryId = null;
+
+      if (cleanPropId) {
+        const { data: existingRows } = await supabase
+          .from('user_inquiries')
+          .select('id, status')
+          .eq('user_id', cleanUserId)
+          .eq('property_id', cleanPropId)
+          .in('status', ['open', 'in_progress'])
+          .order('id', { ascending: false })
+          .limit(1);
+
+        if (Array.isArray(existingRows) && existingRows.length > 0) {
+          targetInquiryId = existingRows[0].id;
+        }
+      }
+
+      if (!targetInquiryId) {
+        const { data: createdInq, error: inqErr } = await supabase
+          .from('user_inquiries')
+          .insert([{
+            user_id: cleanUserId,
+            property_id: cleanPropId,
+            property_source: cleanPropId ? (propertySource || 'pending_properties') : null,
+            inquiry_type: 'admin_message',
+            target_role: adminRole || 'super_admin',
+            subject: derivedSubject,
+            message: messageText || derivedSubject,
+            attachment_url: mediaType !== 'text' ? attachmentUrl : null,
+            status: 'in_progress'
+          }])
+          .select()
+          .single();
+
+        if (inqErr || !createdInq) {
+          console.error('recordAdminDirectMessageForClient create inquiry error:', inqErr);
+          return null;
+        }
+        targetInquiryId = createdInq.id;
+      } else {
+        await supabase
+          .from('user_inquiries')
+          .update({
+            status: 'in_progress',
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', targetInquiryId);
+      }
+
+      const { data: replyRow, error: repErr } = await supabase
+        .from('inquiry_replies')
+        .insert([{
+          inquiry_id: targetInquiryId,
+          user_id: cleanUserId,
+          admin_role: adminRole || 'super_admin',
+          reply_message: messageText || (mediaType === 'photo' ? '🖼 صورة مرفقة' : mediaType === 'video' ? '🎥 فيديو مرفق' : ''),
+          attachment_url: attachmentUrl || null,
+          media_type: mediaType || 'text',
+          is_read: false
+        }])
+        .select()
+        .single();
+
+      if (repErr) {
+        console.error('recordAdminDirectMessageForClient insert reply error:', repErr);
+      }
+
+      return { inquiryId: targetInquiryId, reply: replyRow || null };
+    } catch (e) {
+      console.error('recordAdminDirectMessageForClient error:', e);
+      return null;
+    }
+  }
+
+  // إشعار العميل برسالة إدارية مع زر "💬 فتح النقاش" وتحديث العداد فوراً
+  async function notifyClientOfAdminMessage(ctxOrTelegram, userId, {
+    propertyId = null,
+    propertySource = null,
+    subject = null,
+    messageText = '',
+    adminRole = 'super_admin',
+    attachmentUrl = null,
+    mediaType = 'text',
+    sendNotificationMessage = true
+  } = {}) {
+    const cleanUserId = Number(userId);
+    if (!cleanUserId) return null;
+
+    const recorded = await recordAdminDirectMessageForClient({
+      userId: cleanUserId,
+      propertyId,
+      propertySource,
+      subject,
+      messageText,
+      adminRole,
+      attachmentUrl,
+      mediaType
+    });
+
+    const inquiryId = recorded?.inquiryId || null;
+    const { unreadRepliesCount } = await getClientRepliesSummary(cleanUserId);
+    const mainKb = await buildUserMainKeyboard(cleanUserId, 0);
+    const tg = ctxOrTelegram?.telegram || ctxOrTelegram || bot.telegram;
+
+    if (sendNotificationMessage && tg) {
+      const propLine = propertyId ? `\n🏠 <b>بخصوص الإعلان:</b> <code>#${escapeHtml(String(propertyId))}</code>` : '';
+      const inqLine = inquiryId ? `\n🔖 <b>رقم النقاش:</b> <code>#${inquiryId}</code>` : '';
+      const badgeLine = `\n🔔 <b>رسائل غير مقروءة في الدعم والإدارة:</b> <b>(${unreadRepliesCount})</b>`;
+      const notifText =
+        `📩 <b>رسالة جديدة من إدارة عقار الجزائر</b>${propLine}${inqLine}${badgeLine}\n` +
+        `━━━━━━━━━━━━━━━━━━━━\n` +
+        `${escapeHtml(messageText || '')}\n\n` +
+        `👇 اضغط <b>"💬 فتح النقاش"</b> للرد مباشرة على الإدارة أو افتح <b>"${getSupportButtonLabel(unreadRepliesCount)}"</b>.`;
+
+      const inlineKb = inquiryId
+        ? Markup.inlineKeyboard([
+            [Markup.button.callback(`💬 فتح النقاش (#${inquiryId})`, `client_open_chat_${inquiryId}`)]
+          ])
+        : undefined;
+
+      try {
+        if (mediaType === 'photo' && attachmentUrl) {
+          await tg.sendPhoto(cleanUserId, normalizeMediaRef(attachmentUrl), {
+            caption: fitTelegramText(notifText, true),
+            parse_mode: 'HTML',
+            ...(inlineKb || {}),
+            ...mainKb
+          });
+        } else if (mediaType === 'video' && attachmentUrl) {
+          await tg.sendVideo(cleanUserId, normalizeMediaRef(attachmentUrl), {
+            caption: fitTelegramText(notifText, true),
+            parse_mode: 'HTML',
+            ...(inlineKb || {}),
+            ...mainKb
+          });
+        } else {
+          await tg.sendMessage(cleanUserId, fitTelegramText(notifText, false), {
+            parse_mode: 'HTML',
+            ...(inlineKb || {}),
+            ...mainKb
+          });
+        }
+      } catch (e) {
+        console.error('notifyClientOfAdminMessage send error:', e.message);
+      }
+    }
+
+    return recorded;
+  }
+
   async function fetchClientInquiriesByUserId(userId) {
     try {
       const { data, error } = await supabase
@@ -629,7 +799,7 @@ module.exports = function registerUsers(bot, core) {
     ]);
 
     if (currentInquiry && currentInquiry.id) {
-      rows.push([`💬 متابعة الاستعلام #${currentInquiry.id}`]);
+      rows.push([`💬 فتح النقاش #${currentInquiry.id}`]);
     }
     rows.push([
       '💬 دعم واقتراحات وشكر',
@@ -662,7 +832,7 @@ module.exports = function registerUsers(bot, core) {
       ? `✅ <b>الردود:</b> تم الرد (${combinedReplies.length})\n`
       : `⏳ <b>الردود:</b> بانتظار الإدارة\n`;
 
-    let repliesSection = `\n💬 <b>ردود الإدارة:</b>\n`;
+    let repliesSection = `\n💬 <b>ردود ورسائل الإدارة:</b>\n`;
     if (!hasReplies) {
       repliesSection += `<i>— لا توجد ردود بعد —</i>`;
     } else {
@@ -677,6 +847,11 @@ module.exports = function registerUsers(bot, core) {
       }).join('\n');
     }
 
+    const isAdminInitiated = inquiry.inquiry_type === 'admin_message';
+    const topBodyLine = isAdminInitiated
+      ? `📩 <b>رسالة الإدارة:</b> ${escapeHtml(inquiry.message || '')}`
+      : `📝 <b>استفسارك:</b> ${escapeHtml(inquiry.message || '')}`;
+
     const text =
       `📨 <b>استعلاماتي (${getFilterModeTitle(filterMode)})</b> • <code>#${inquiry.id}</code> (${idx + 1}/${total})\n` +
       `📊 ${statusText} | 🎯 ${roleText}\n` +
@@ -685,8 +860,8 @@ module.exports = function registerUsers(bot, core) {
       propLine +
       `🕒 <code>${escapeHtml(formatDateTime(inquiry.created_at))}</code>\n` +
       subjectLine +
-      `📝 <b>استفسارك:</b> ${escapeHtml(inquiry.message || '')}` +
-      repliesSection;
+      `${topBodyLine}` +
+      (isAdminInitiated && hasReplies ? '' : repliesSection);
 
     return fitTelegramText(text, isMediaCaption);
   }
@@ -729,7 +904,7 @@ module.exports = function registerUsers(bot, core) {
       st.labelMap[lbl] = idx;
       const dt = inq.created_at ? ` • <code>${escapeHtml(formatDateTime(inq.created_at))}</code>` : '';
       const repBadge = unreadRepCount > 0
-        ? ` • 🔔 جديد <b>(${unreadRepCount})</b>`
+        ? ` • 🔔 غير مقروء <b>(${unreadRepCount})</b>`
         : (totalRepCount > 0 ? ` • 📖 مقروء (${totalRepCount})` : '');
       return `${idx + 1}. <b>#${inq.id}</b> — ${escapeHtml(inq.subject || inq.message || 'استفسار')}${repBadge}${dt}`;
     });
@@ -787,7 +962,7 @@ module.exports = function registerUsers(bot, core) {
       delete clientInquiryBrowse[userId];
       return replyTracked(
         ctx, userId,
-        `📭 <b>لا توجد استفسارات مسجلة لحسابك (<code>${userId}</code>) حتى الآن.</b>`,
+        `📭 <b>لا توجد استفسارات أو رسائل مسجلة لحسابك (<code>${userId}</code>) حتى الآن.</b>`,
         {
           parse_mode: 'HTML',
           ...Markup.keyboard([
@@ -855,13 +1030,13 @@ module.exports = function registerUsers(bot, core) {
       attachedMedia = {
         type: isVideoAttach ? 'video' : 'photo',
         ref: inqAttach,
-        senderLabel: 'أنت (العميل)'
+        senderLabel: currentInquiry.inquiry_type === 'admin_message' ? 'الإدارة' : 'أنت (العميل)'
       };
     }
 
     const inlineQuickReply = currentInquiry?.id
       ? Markup.inlineKeyboard([
-          [Markup.button.callback(`💬 رد مباشر على الإدارة (#${currentInquiry.id})`, `client_quick_reply_${currentInquiry.id}`)]
+          [Markup.button.callback(`💬 فتح النقاش (#${currentInquiry.id})`, `client_open_chat_${currentInquiry.id}`)]
         ])
       : undefined;
 
@@ -899,15 +1074,32 @@ module.exports = function registerUsers(bot, core) {
     const { unreadRepliesCount } = await getClientRepliesSummary(userId);
     const cleanId = parentInquiryId ? Number(parentInquiryId) : null;
 
+    if (cleanId) {
+      await markInquiryRepliesAsRead(cleanId);
+    }
+
+    let linkedPropId = null;
+    if (cleanId) {
+      try {
+        const { data: inqRow } = await supabase
+          .from('user_inquiries')
+          .select('property_id')
+          .eq('id', cleanId)
+          .limit(1);
+        linkedPropId = (Array.isArray(inqRow) ? inqRow[0] : inqRow)?.property_id || null;
+      } catch (_) {}
+    }
+
     userState[userId] = {
       step: 'client_following_up_inquiry',
-      data: { parentInquiryId: cleanId },
+      data: { parentInquiryId: cleanId, propertyId: linkedPropId },
       chatId: ctx.chat.id,
       wizardMsgId: null
     };
 
+    const propTag = linkedPropId ? `\n🏠 <b>بخصوص الإعلان:</b> <code>#${linkedPropId}</code>` : '';
     const titleLine = cleanId
-      ? `💬 <b>الرد المباشر على الإدارة (الاستعلام <code>#${cleanId}</code>)</b>`
+      ? `💬 <b>فتح النقاش والرد المباشر على الإدارة (<code>#${cleanId}</code>)</b>${propTag}`
       : `💬 <b>إرسال رد أو استفسار جديد للإدارة</b>`;
 
     await replyTracked(
@@ -1069,7 +1261,6 @@ module.exports = function registerUsers(bot, core) {
     return `✨ <b>محفظتك نشطة وجاهزة</b> — استثمر رصيدك أو اجمع نقاطاً إضافية لتوسيع فرصك على المنصة.`;
   }
 
-  // يدعم تمرير publishAdDraft إذا كان الشحن قادماً من مسار نشر عقار والرصيد غير كافٍ
   async function openWalletTopupScreen(ctx, userId, prefillAmount = null, publishAdDraft = null) {
     const ccpRip = await getSetting('ccp_rip', '00234567890123456789');
     const ccpName = await getSetting('ccp_name', '');
@@ -2208,7 +2399,7 @@ module.exports = function registerUsers(bot, core) {
     userState[userId] = { step: 'support_dashboard', data: {}, chatId: ctx.chat.id, wizardMsgId: null };
 
     const alertLine = unreadRepliesCount > 0
-      ? `\n🔔 <b>تنبيه الإدارة:</b> لديك <b>(${unreadRepliesCount})</b> رد جديد غير مقروء عبر <b>(${unreadInquiriesCount})</b> استعلام — افتح <b>"${getInquiriesMenuLabel(unreadRepliesCount)}"</b> للاطلاع عليه.`
+      ? `\n🔔 <b>تنبيه الإدارة:</b> لديك <b>(${unreadRepliesCount})</b> رسالة/رد غير مقروء عبر <b>(${unreadInquiriesCount})</b> نقاش — افتح <b>"${getInquiriesMenuLabel(unreadRepliesCount)}"</b> للاطلاع وفتح النقاش.`
       : '';
 
     const text =
@@ -2218,11 +2409,11 @@ module.exports = function registerUsers(bot, core) {
       `💼 <b>رصيد المحفظة:</b> <b>${walletBalance}</b>\n` +
       `🪙 <b>رصيد النقاط:</b> <b>${points} نقطة</b>\n` +
       `⭐ <b>المفضلة:</b> <b>${favAds.length} عقار</b>\n` +
-      `📨 <b>استعلاماتك:</b> الكل <b>${myInquiries.length}</b> | 🔔 غير مقروءة: <b>${unreadInquiriesCount}</b> | 📖 مقروءة: <b>${readInquiriesCount}</b> | 💬 ردود جديدة: <b>(${unreadRepliesCount})</b>\n` +
+      `📨 <b>استعلاماتك ورسائل الإدارة:</b> الكل <b>${myInquiries.length}</b> | 🔔 غير مقروءة: <b>${unreadInquiriesCount}</b> | 📖 مقروءة: <b>${readInquiriesCount}</b> | 💬 غير مقروء: <b>(${unreadRepliesCount})</b>\n` +
       `📊 <b>إعلاناتك:</b> إجمالي <b>${allAds.length}</b> | ⏳ معلق: <b>${pendingCount}</b> | ✅ مقبول: <b>${approvedCount}</b> | ❌ مرفوض: <b>${rejectedCount}</b>` +
       alertLine +
       (supportIntro ? `\n\n${supportIntro}` : '') +
-      `\n\n👇 <b>اختر "${getInquiriesMenuLabel(unreadRepliesCount)}" لمتابعة استعلاماتك والردود عليها:</b>`;
+      `\n\n👇 <b>اختر "${getInquiriesMenuLabel(unreadRepliesCount)}" لمتابعة الرسائل وفتح النقاش:</b>`;
 
     await replyTracked(ctx, userId, text, { parse_mode: 'HTML', ...getSupportHubKeyboard(unreadRepliesCount) }, true);
   }
@@ -2320,7 +2511,7 @@ module.exports = function registerUsers(bot, core) {
     return candidate;
   }
 
-  async function sendStructuredTicketToAdmins(ctx, senderUserId, ticketTitle, detailText, relatedAd = null, payloadType = 'text', mediaContent = {}, fallbackAdId = null, forcedAttachmentUrl = null) {
+  async function sendStructuredTicketToAdmins(ctx, senderUserId, ticketTitle, detailText, relatedAd = null, payloadType = 'text', mediaContent = {}, fallbackAdId = null, forcedAttachmentUrl = null, explicitPropertyId = null) {
     const adminIds = await getAdminIds();
     const dbUser = await getUserRecord(senderUserId);
     const fullName = escapeHtml(
@@ -2332,9 +2523,9 @@ module.exports = function registerUsers(bot, core) {
     const receiptRef = normalizeMediaRef(resolvedAd?.receipt_url || forcedAttachmentUrl);
     const isFreeAd = resolvedAd?.receipt_url === 'FREE_NO_RECEIPT';
 
-    const adIdNum = Number(resolvedAd?.id || fallbackAdId);
+    const adIdNum = Number(explicitPropertyId || resolvedAd?.id || fallbackAdId);
     const hasNumericAdId = Number.isFinite(adIdNum) && adIdNum > 0;
-    const adIdLabel = resolvedAd?.id || fallbackAdId || null;
+    const adIdLabel = explicitPropertyId || resolvedAd?.id || fallbackAdId || null;
 
     const attachmentRef =
       payloadType === 'photo' && mediaContent.fileId
@@ -2474,11 +2665,20 @@ module.exports = function registerUsers(bot, core) {
     );
   }
 
-  bot.action(/^client_quick_reply_(\d+)$/, async (ctx) => {
+  // زر إنلاين أو زر نصي: "💬 فتح النقاش (#ID)" / "💬 فتح النقاش #ID"
+  bot.action(/^(?:client_open_chat|client_quick_reply)_(\d+)$/, async (ctx) => {
     const userId = ctx.from.id;
     const inquiryId = Number(ctx.match[1]) || null;
-    await ctx.answerCbQuery();
+    await ctx.answerCbQuery('💬 فتح النقاش');
     await openClientFollowUpComposer(ctx, userId, inquiryId);
+  });
+
+  bot.hears(/^💬 فتح النقاش(?:\s*#(\d+))?$/, async (ctx) => {
+    await safeDeleteUserMessage(ctx);
+    const userId = ctx.from.id;
+    const explicitId = ctx.match[1] ? Number(ctx.match[1]) : null;
+    const currentId = explicitId || clientInquiryBrowse[userId]?.items?.[clientInquiryBrowse[userId]?.index || 0]?.id || null;
+    await openClientFollowUpComposer(ctx, userId, currentId);
   });
 
   bot.hears(/^📨 استعلاماتي وردود الإدارة(?:\s*\(\d+\))?$/, async (ctx) => {
@@ -2979,18 +3179,22 @@ module.exports = function registerUsers(bot, core) {
     if (state.step === 'client_following_up_inquiry') {
       await safeDeleteUserMessage(ctx);
       const parentId = state.data?.parentInquiryId;
+      const propId = state.data?.propertyId || null;
 
-      let followSubject = parentId ? `متابعة للاستعلام #${parentId}` : 'متابعة استفسار';
+      let followSubject = parentId ? `متابعة النقاش #${parentId}` : 'متابعة استفسار';
+      if (propId) followSubject = `رد على الإدارة بخصوص الإعلان #${propId}`;
       if (parentId) {
         try {
           const { data: parentRow } = await supabase
             .from('user_inquiries')
-            .select('inquiry_type')
+            .select('inquiry_type, property_id')
             .eq('id', Number(parentId))
             .limit(1);
-          const pType = (Array.isArray(parentRow) ? parentRow[0] : parentRow)?.inquiry_type;
-          if (pType === 'rating') {
+          const pRow = Array.isArray(parentRow) ? parentRow[0] : parentRow;
+          if (pRow?.inquiry_type === 'rating') {
             followSubject = `رد على التقييم (#${parentId})`;
+          } else if (pRow?.property_id) {
+            followSubject = `رد على الإدارة بخصوص الإعلان #${pRow.property_id}`;
           }
         } catch (_) {}
       }
@@ -3003,16 +3207,18 @@ module.exports = function registerUsers(bot, core) {
         null,
         'text',
         {},
-        parentId || null
+        parentId || null,
+        null,
+        propId
       );
 
       delete userState[userId];
       const { unreadRepliesCount } = await getClientRepliesSummary(userId);
-      const followRef = savedFollow?.id ? ` (رقم الاستعلام: <code>#${savedFollow.id}</code>)` : '';
+      const followRef = savedFollow?.id ? ` (رقم النقاش: <code>#${savedFollow.id}</code>)` : '';
       return replyTracked(
         ctx,
         userId,
-        `✅ <b>تم تسجيل متابعتك في استعلاماتك وإرسالها للإدارة${followRef}.</b>`,
+        `✅ <b>تم إرسال ردك إلى الإدارة بنجاح${followRef}.</b>`,
         {
           parse_mode: 'HTML',
           ...Markup.keyboard([
@@ -3184,23 +3390,26 @@ module.exports = function registerUsers(bot, core) {
     if (state && state.step === 'client_following_up_inquiry') {
       const photo = ctx.message.photo[ctx.message.photo.length - 1];
       const parentId = state.data?.parentInquiryId;
+      const propId = state.data?.propertyId || null;
       const savedFollow = await sendStructuredTicketToAdmins(
         ctx,
         userId,
-        parentId ? `متابعة للاستعلام #${parentId}` : 'متابعة استفسار',
+        propId ? `رد على الإدارة بخصوص الإعلان #${propId}` : (parentId ? `متابعة النقاش #${parentId}` : 'متابعة استفسار'),
         ctx.message.caption || '🖼 صورة مرفقة من العميل',
         null,
         'photo',
         { fileId: photo.file_id, caption: ctx.message.caption || '' },
-        parentId || null
+        parentId || null,
+        null,
+        propId
       );
       delete userState[userId];
       const { unreadRepliesCount } = await getClientRepliesSummary(userId);
-      const followRef = savedFollow?.id ? ` (رقم الاستعلام: <code>#${savedFollow.id}</code>)` : '';
+      const followRef = savedFollow?.id ? ` (رقم النقاش: <code>#${savedFollow.id}</code>)` : '';
       return replyTracked(
         ctx,
         userId,
-        `✅ <b>تم إرسال الصورة وتسجيل متابعتك للإدارة${followRef}.</b>`,
+        `✅ <b>تم إرسال الصورة وتسجيل ردك للإدارة${followRef}.</b>`,
         {
           parse_mode: 'HTML',
           ...Markup.keyboard([
@@ -3251,24 +3460,28 @@ module.exports = function registerUsers(bot, core) {
     await safeDeleteUserMessage(ctx);
 
     if (state && state.step === 'client_following_up_inquiry') {
+      const video = ctx.message.video;
       const parentId = state.data?.parentInquiryId;
+      const propId = state.data?.propertyId || null;
       const savedFollow = await sendStructuredTicketToAdmins(
         ctx,
         userId,
-        parentId ? `متابعة للاستعلام #${parentId}` : 'متابعة استفسار',
+        propId ? `رد على الإدارة بخصوص الإعلان #${propId}` : (parentId ? `متابعة النقاش #${parentId}` : 'متابعة استفسار'),
         ctx.message.caption || '🎥 فيديو مرفق من العميل',
         null,
         'video',
-        { fileId: ctx.message.video.file_id, caption: ctx.message.caption || '' },
-        parentId || null
+        { fileId: video.file_id, caption: ctx.message.caption || '' },
+        parentId || null,
+        null,
+        propId
       );
       delete userState[userId];
       const { unreadRepliesCount } = await getClientRepliesSummary(userId);
-      const followRef = savedFollow?.id ? ` (رقم الاستعلام: <code>#${savedFollow.id}</code>)` : '';
+      const followRef = savedFollow?.id ? ` (رقم النقاش: <code>#${savedFollow.id}</code>)` : '';
       return replyTracked(
         ctx,
         userId,
-        `✅ <b>تم إرسال الفيديو وتسجيل متابعتك للإدارة${followRef}.</b>`,
+        `✅ <b>تم إرسال الفيديو وتسجيل ردك للإدارة${followRef}.</b>`,
         {
           parse_mode: 'HTML',
           ...Markup.keyboard([
@@ -3299,5 +3512,18 @@ module.exports = function registerUsers(bot, core) {
     }
   });
 
-  return { openUserHome, platformRating, browse };
+  // ربط دوال التسجيل والإشعار على core لتستدعيها لوحة الإدارة عند إرسال رسالة مباشرة للعميل
+  if (core) {
+    core.recordAdminDirectMessageForClient = recordAdminDirectMessageForClient;
+    core.notifyClientOfAdminMessage = notifyClientOfAdminMessage;
+  }
+
+  return {
+    openUserHome,
+    platformRating,
+    browse,
+    recordAdminDirectMessageForClient,
+    notifyClientOfAdminMessage,
+    getClientRepliesSummary
+  };
 };
