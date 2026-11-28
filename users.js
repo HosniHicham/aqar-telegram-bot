@@ -656,7 +656,7 @@ module.exports = function registerUsers(bot, core) {
       ? `✅ <b>الردود:</b> تم الرد (${combinedReplies.length})\n`
       : `⏳ <b>الردود:</b> بانتظار الإدارة\n`;
 
-    let repliesSection = `\n💬 <b>ردود الإدارة:</b>\n`;
+    let repliesSection = `\n💬 <b>ردود الإدارة (${combinedReplies.length}):</b>\n`;
     if (!hasReplies) {
       repliesSection += `<i>— لا توجد ردود بعد —</i>`;
     } else {
@@ -671,7 +671,7 @@ module.exports = function registerUsers(bot, core) {
       }).join('\n');
     }
 
-    const text =
+    const headerPart =
       `📨 <b>استعلاماتي (${getFilterModeTitle(filterMode)})</b> • <code>#${inquiry.id}</code> (${idx + 1}/${total})\n` +
       `📊 ${statusText} | 🎯 ${roleText}\n` +
       replyBanner +
@@ -679,10 +679,19 @@ module.exports = function registerUsers(bot, core) {
       propLine +
       `🕒 <code>${escapeHtml(formatDateTime(inquiry.created_at))}</code>\n` +
       subjectLine +
-      `📝 <b>استفسارك:</b> ${escapeHtml(inquiry.message || '')}` +
-      repliesSection;
+      `📝 <b>استفسارك:</b> ${escapeHtml(inquiry.message || '')}`;
 
-    return fitTelegramText(text, isMediaCaption);
+    const limit = isMediaCaption ? 980 : 3950;
+    const fullText = headerPart + repliesSection;
+    if (fullText.length <= limit) return fullText;
+
+    const maxHeaderLen = Math.max(180, limit - repliesSection.length - 10);
+    const trimmedHeader = headerPart.length > maxHeaderLen
+      ? headerPart.slice(0, maxHeaderLen) + '…'
+      : headerPart;
+
+    const combined = trimmedHeader + repliesSection;
+    return combined.length <= limit ? combined : fitTelegramText(combined, isMediaCaption);
   }
 
   async function showClientInquiryIndexMenu(ctx, userId) {
@@ -3037,12 +3046,18 @@ module.exports = function registerUsers(bot, core) {
         const items = state.data.media_items || [];
         if (items.length === 0) {
           const warnMsg = await ctx.reply(
-            '⚠️ <b>يرجى إرفاق صورة أو فيديو واحد على الأقل قبل المتابعة.</b>',
+            '⚠️ <b>يرجى إرفاق صورة أو فيديو واحد على الأقل أولاً.</b>',
             { parse_mode: 'HTML' }
           );
           setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warnMsg.message_id).catch(() => {}), 3000);
           return;
         }
+        const pCount = items.filter(i => i.type === 'photo').length;
+        const vCount = items.filter(i => i.type === 'video').length;
+        const summaryParts = [];
+        if (pCount > 0) summaryParts.push(`${pCount} صورة`);
+        if (vCount > 0) summaryParts.push(`${vCount} فيديو`);
+        state.data.media_label = summaryParts.join(' + ');
         state.step = 'waiting_for_payment_choice';
         return renderWizard(ctx, userId);
       }
@@ -3050,72 +3065,74 @@ module.exports = function registerUsers(bot, core) {
       if (userText === '🗑️ مسح الوسائط المرفقة') {
         state.data.media_items = [];
         state.data.media_label = null;
-        return renderWizard(ctx, userId);
+        return renderWizard(ctx, userId, { footer: '🗑️ تم مسح الوسائط المرفقة. أرسل صورك أو فيديوهاتك من جديد:' });
       }
 
-      const warnMsg = await ctx.reply(
-        '📸 <b>يرجى إرسال صورة أو فيديو للعقار، أو الضغط على زر "✅ إنهاء إرفاق الوسائط ... والانتقال".</b>',
-        { parse_mode: 'HTML' }
-      );
-      setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warnMsg.message_id).catch(() => {}), 3000);
+      await notifyUseButtonsHint(ctx, userId);
       return;
     }
 
     if (state.step === 'waiting_for_price' || state.step === 'waiting_for_phone') {
       await safeDeleteUserMessage(ctx);
       const isPrice = state.step === 'waiting_for_price';
-      let cur = state.tempInput || '';
-
-      if (userText.startsWith('📥 القيمة الحالية:')) return;
+      let current = state.tempInput || '';
 
       if (/^[0-9]$/.test(userText)) {
-        if (cur === '0') cur = userText;
-        else if (cur.length < (isPrice ? 12 : 15)) cur += userText;
-        state.tempInput = cur;
+        if (current.length < (isPrice ? 12 : 15)) {
+          current = current === '0' ? userText : current + userText;
+        }
+        state.tempInput = current;
         return renderWizard(ctx, userId);
       }
 
       if (userText === '+مليون' && isPrice) {
-        const currentNum = parseInt(cur || '0', 10) || 0;
-        cur = String(currentNum + 1000000);
-        state.tempInput = cur;
+        const currentNum = Number(current || '0');
+        current = String(currentNum + 1000000);
+        state.tempInput = current;
         return renderWizard(ctx, userId);
       }
 
       if (userText === '⌫') {
-        cur = cur.slice(0, -1);
-        state.tempInput = cur;
+        current = current.slice(0, -1);
+        state.tempInput = current;
         return renderWizard(ctx, userId);
       }
 
       if (userText === '🗑️ مسح') {
-        cur = '';
-        state.tempInput = cur;
+        state.tempInput = '';
         return renderWizard(ctx, userId);
       }
 
       if (userText === '✅ [ OK ] تأكيد') {
-        if (!cur || cur === '0') {
+        const cleanVal = current.trim();
+        if (!cleanVal || cleanVal === '0') {
           const warnMsg = await ctx.reply(
-            isPrice ? '⚠️ <b>يرجى إدخال سعر صحيح أكبر من صفر.</b>' : '⚠️ <b>يرجى إدخال رقم هاتف صحيح.</b>',
+            isPrice ? '⚠️ <b>يرجى إدخال قيمة السعر أولاً قبل التأكيد.</b>' : '⚠️ <b>يرجى إدخال رقم الهاتف أولاً قبل التأكيد.</b>',
             { parse_mode: 'HTML' }
           );
           setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warnMsg.message_id).catch(() => {}), 3000);
           return;
         }
+        if (!isPrice && cleanVal.length < 8) {
+          const warnMsg = await ctx.reply('⚠️ <b>رقم الهاتف قصير، يرجى إكماله ثم الضغط على تأكيد.</b>', { parse_mode: 'HTML' });
+          setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warnMsg.message_id).catch(() => {}), 3000);
+          return;
+        }
 
         if (isPrice) {
-          state.data.price = cur;
+          state.data.price = cleanVal;
           state.step = 'waiting_for_phone';
           state.tempInput = '';
-          return renderWizard(ctx, userId);
         } else {
-          state.data.phone = cur;
+          state.data.phone = cleanVal;
           state.step = 'waiting_for_description';
           state.tempInput = '';
-          return renderWizard(ctx, userId);
+          state.data.features_list = state.data.features_list || [];
         }
+        return renderWizard(ctx, userId);
       }
+
+      if (userText.startsWith('📥 القيمة الحالية:')) return;
 
       await notifyUseButtonsHint(ctx, userId);
       return;
@@ -3125,16 +3142,47 @@ module.exports = function registerUsers(bot, core) {
   });
 
   bot.on('photo', async (ctx) => {
-    await safeDeleteUserMessage(ctx);
     const userId = ctx.from.id;
     const state = userState[userId];
-    const photo = ctx.message.photo[ctx.message.photo.length - 1];
+    const photoObj = ctx.message.photo[ctx.message.photo.length - 1];
+    const fileId = photoObj.file_id;
+    const caption = ctx.message.caption ? ctx.message.caption.trim() : '';
+
+    if (state && state.step === 'client_following_up_inquiry') {
+      await safeDeleteUserMessage(ctx);
+      const parentId = state.data?.parentInquiryId || null;
+      const subjectTitle = parentId
+        ? `متابعة استعلام #${parentId} (مرفق صورة)`
+        : 'مرفق صورة من العميل';
+
+      const savedInq = await sendStructuredTicketToAdmins(
+        ctx,
+        userId,
+        subjectTitle,
+        caption || 'مرفق صورة من العميل',
+        null,
+        'photo',
+        { fileId, caption }
+      );
+
+      delete userState[userId];
+      const { unreadRepliesCount } = await getClientRepliesSummary(userId);
+      const inqTag = savedInq?.id ? `\n🔖 <b>رقم الاستعلام المسجل:</b> <code>#${savedInq.id}</code>` : '';
+
+      return replyTracked(
+        ctx, userId,
+        `✅ <b>تم إرسال الصورة وردك إلى الإدارة وتسجيله في استعلاماتك بنجاح.</b>${inqTag}`,
+        { parse_mode: 'HTML', ...getSupportHubKeyboard(unreadRepliesCount) },
+        true
+      );
+    }
 
     if (state && state.step === 'payment_issue_writing_detail') {
+      await safeDeleteUserMessage(ctx);
       const topup = state.data?.selectedTopup || null;
       const subjectTitle = topup
-        ? `مشكلة في الدفع — طلب شحن #${topup.id}`
-        : 'مشكلة في الدفع';
+        ? `مشكلة في الدفع — طلب شحن #${topup.id} (مرفق صورة)`
+        : 'مشكلة في الدفع (مرفق صورة)';
       const topupContextLine = topup
         ? `[بيانات الدفعة: طلب #${topup.id} | المبلغ: ${formatMoney(sanitizeNumericPrice(topup.amount || 0))} | الحالة الحالية: ${TOPUP_STATUS_TEXT[topup.status] || topup.status || 'pending'}]\n`
         : '';
@@ -3143,11 +3191,10 @@ module.exports = function registerUsers(bot, core) {
         ctx,
         userId,
         subjectTitle,
-        `${topupContextLine}${ctx.message.caption || ''}`.trim(),
+        `${topupContextLine}${caption || 'مرفق صورة بخصوص مشكلة الدفع'}`,
         null,
         'photo',
-        { fileId: photo.file_id, caption: ctx.message.caption || '' },
-        null
+        { fileId, caption }
       );
 
       delete userState[userId];
@@ -3156,119 +3203,60 @@ module.exports = function registerUsers(bot, core) {
 
       return replyTracked(
         ctx, userId,
-        `✅ <b>تم إرسال استعلامك ومرفقك حول الدفع إلى الإدارة بنجاح.</b>${inqTag}`,
-        { parse_mode: 'HTML', ...getSupportHubKeyboard(unreadRepliesCount) },
-        true
-      );
-    }
-
-    if (state && state.step === 'client_following_up_inquiry') {
-      const parentId = state.data?.parentInquiryId || null;
-      const subjectTitle = parentId ? `متابعة استعلام #${parentId}` : 'رد أو استفسار من العميل';
-
-      const savedInq = await sendStructuredTicketToAdmins(
-        ctx,
-        userId,
-        subjectTitle,
-        ctx.message.caption || '',
-        null,
-        'photo',
-        { fileId: photo.file_id, caption: ctx.message.caption || '' },
-        null
-      );
-
-      delete userState[userId];
-      const { unreadRepliesCount } = await getClientRepliesSummary(userId);
-      const inqTag = savedInq?.id ? `\n🔖 <b>رقم الاستعلام المسجل:</b> <code>#${savedInq.id}</code>` : '';
-
-      return replyTracked(
-        ctx, userId,
-        `✅ <b>تم إرسال ردك مع الصورة إلى الإدارة وتسجيله في استعلاماتك بنجاح.</b>${inqTag}`,
+        `✅ <b>تم تسجيل استعلامك حول الدفع مع الصورة وإرساله إلى الإدارة.</b>${inqTag}`,
         { parse_mode: 'HTML', ...getSupportHubKeyboard(unreadRepliesCount) },
         true
       );
     }
 
     if (state && state.step === 'topup_waiting_receipt') {
+      await safeDeleteUserMessage(ctx);
       const amount = state.data?.amount;
-      if (!amount) {
-        state.step = 'topup_waiting_amount';
-        return replyTracked(ctx, userId, '⚠️ <b>يرجى تحديد مبلغ الشحن أولاً.</b>', { parse_mode: 'HTML' }, true);
-      }
-      return submitWalletTopupRequest(ctx, userId, amount, photo.file_id);
+      return await submitWalletTopupRequest(ctx, userId, amount, fileId);
     }
 
     if (state && state.step === 'waiting_for_media') {
+      await safeDeleteUserMessage(ctx);
       state.data.media_items = state.data.media_items || [];
       if (state.data.media_items.length >= MAX_PROPERTY_IMAGES) {
-        const warnMsg = await ctx.reply(
-          `⚠️ <b>لقد وصلت إلى الحد الأقصى (${MAX_PROPERTY_IMAGES} ملفات). اضغط على "✅ إنهاء إرفاق الوسائط ... والانتقال".</b>`,
-          { parse_mode: 'HTML' }
-        );
-        setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warnMsg.message_id).catch(() => {}), 3000);
-        return;
+        return renderWizard(ctx, userId, {
+          footer: `⚠️ <b>وصلت إلى الحد الأقصى (${MAX_PROPERTY_IMAGES} ملفات). اضغط "✅ إنهاء إرفاق الوسائط" للمتابعة.</b>`
+        });
       }
-      state.data.media_items.push({ type: 'photo', file_id: photo.file_id });
-      state.data.media_label = formatMediaSummaryLabel(state.data.media_items);
-      return renderWizard(ctx, userId);
+      state.data.media_items.push({ type: 'photo', file_id: fileId });
+      const summary = formatMediaSummaryLabel(state.data.media_items);
+      return renderWizard(ctx, userId, { footer: `${summary}\nأرسل ملفات أخرى أو اضغط <b>✅ إنهاء إرفاق الوسائط</b>:` });
     }
 
     if (state && state.step === 'waiting_for_payment_receipt') {
-      return submitPropertyWithReceiptRequest(ctx, userId, state.data, photo.file_id, null);
+      await safeDeleteUserMessage(ctx);
+      return await submitPropertyWithReceiptRequest(ctx, userId, state.data, fileId);
     }
+
+    await safeDeleteUserMessage(ctx);
   });
 
   bot.on('video', async (ctx) => {
-    await safeDeleteUserMessage(ctx);
     const userId = ctx.from.id;
     const state = userState[userId];
-    const video = ctx.message.video;
-
-    if (state && state.step === 'payment_issue_writing_detail') {
-      const topup = state.data?.selectedTopup || null;
-      const subjectTitle = topup
-        ? `مشكلة في الدفع — طلب شحن #${topup.id}`
-        : 'مشكلة في الدفع';
-      const topupContextLine = topup
-        ? `[بيانات الدفعة: طلب #${topup.id} | المبلغ: ${formatMoney(sanitizeNumericPrice(topup.amount || 0))} | الحالة الحالية: ${TOPUP_STATUS_TEXT[topup.status] || topup.status || 'pending'}]\n`
-        : '';
-
-      const savedInq = await sendStructuredTicketToAdmins(
-        ctx,
-        userId,
-        subjectTitle,
-        `${topupContextLine}${ctx.message.caption || ''}`.trim(),
-        null,
-        'video',
-        { fileId: video.file_id, caption: ctx.message.caption || '' },
-        null
-      );
-
-      delete userState[userId];
-      const { unreadRepliesCount } = await getClientRepliesSummary(userId);
-      const inqTag = savedInq?.id ? `\n🔖 <b>رقم الاستعلام المسجل:</b> <code>#${savedInq.id}</code>` : '';
-
-      return replyTracked(
-        ctx, userId,
-        `✅ <b>تم إرسال استعلامك ومرفق الفيديو حول الدفع إلى الإدارة بنجاح.</b>${inqTag}`,
-        { parse_mode: 'HTML', ...getSupportHubKeyboard(unreadRepliesCount) },
-        true
-      );
-    }
+    const videoId = ctx.message.video.file_id;
+    const caption = ctx.message.caption ? ctx.message.caption.trim() : '';
 
     if (state && state.step === 'client_following_up_inquiry') {
+      await safeDeleteUserMessage(ctx);
       const parentId = state.data?.parentInquiryId || null;
-      const subjectTitle = parentId ? `متابعة استعلام #${parentId}` : 'رد أو استفسار من العميل';
+      const subjectTitle = parentId
+        ? `متابعة استعلام #${parentId} (مرفق فيديو)`
+        : 'مرفق فيديو من العميل';
 
       const savedInq = await sendStructuredTicketToAdmins(
         ctx,
         userId,
         subjectTitle,
-        ctx.message.caption || '',
+        caption || 'مرفق فيديو من العميل',
         null,
         'video',
-        { fileId: video.file_id, caption: ctx.message.caption || '' },
-        null
+        { fileId: videoId, caption }
       );
 
       delete userState[userId];
@@ -3277,37 +3265,27 @@ module.exports = function registerUsers(bot, core) {
 
       return replyTracked(
         ctx, userId,
-        `✅ <b>تم إرسال ردك مع الفيديو إلى الإدارة وتسجيله في استعلاماتك بنجاح.</b>${inqTag}`,
+        `✅ <b>تم إرسال الفيديو وردك إلى الإدارة وتسجيله في استعلاماتك بنجاح.</b>${inqTag}`,
         { parse_mode: 'HTML', ...getSupportHubKeyboard(unreadRepliesCount) },
         true
       );
     }
 
     if (state && state.step === 'waiting_for_media') {
+      await safeDeleteUserMessage(ctx);
       state.data.media_items = state.data.media_items || [];
       if (state.data.media_items.length >= MAX_PROPERTY_IMAGES) {
-        const warnMsg = await ctx.reply(
-          `⚠️ <b>لقد وصلت إلى الحد الأقصى (${MAX_PROPERTY_IMAGES} ملفات). اضغط على "✅ إنهاء إرفاق الوسائط ... والانتقال".</b>`,
-          { parse_mode: 'HTML' }
-        );
-        setTimeout(() => ctx.telegram.deleteMessage(ctx.chat.id, warnMsg.message_id).catch(() => {}), 3000);
-        return;
+        return renderWizard(ctx, userId, {
+          footer: `⚠️ <b>وصلت إلى الحد الأقصى (${MAX_PROPERTY_IMAGES} ملفات). اضغط "✅ إنهاء إرفاق الوسائط" للمتابعة.</b>`
+        });
       }
-      state.data.media_items.push({ type: 'video', file_id: video.file_id });
-      state.data.media_label = formatMediaSummaryLabel(state.data.media_items);
-      return renderWizard(ctx, userId);
+      state.data.media_items.push({ type: 'video', file_id: videoId });
+      const summary = formatMediaSummaryLabel(state.data.media_items);
+      return renderWizard(ctx, userId, { footer: `${summary}\nأرسل ملفات أخرى أو اضغط <b>✅ إنهاء إرفاق الوسائط</b>:` });
     }
+
+    await safeDeleteUserMessage(ctx);
   });
 
-  return {
-    openUserHome,
-    openSupportDashboard,
-    renderUserOwnAdBrowser,
-    renderClientInquiryAt,
-    getClientRepliesSummary,
-    getSupportHubKeyboard,
-    getInquiriesMenuLabel,
-    buildUserMainKeyboard,
-    registerFreeTextStep
-  };
+  return { openUserHome };
 };
